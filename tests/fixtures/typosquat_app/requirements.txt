@@ -1,0 +1,5 @@
+flask==2.0.1
+werkzeug==0.15.0
+jinja2==2.10
+flsk==1.0.0
+requsts==2.0.0

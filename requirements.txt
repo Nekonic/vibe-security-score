@@ -1,0 +1,4 @@
+# Scorer's OWN dependencies (NOT the participant app's).
+# Keep this minimal and stdlib-first; the participant requirements are installed
+# in an isolated container, never here.
+requests>=2.31,<3

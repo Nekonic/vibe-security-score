@@ -3,6 +3,13 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Local OSV vulnerability DB snapshot (provisioned per environment, not committed)
+/data/osv_db/
+# Local SQLite DBs created by sample apps when run
+*.db
+*.sqlite
+*.sqlite3
+
 # C extensions
 *.so
 
