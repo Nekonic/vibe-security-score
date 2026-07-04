@@ -1,1 +1,0 @@
-# vibe-security-score

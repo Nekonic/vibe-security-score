@@ -1,0 +1,35 @@
+[project]
+name = "vibe-security-score"
+version = "0.1.0"
+description = "부스용 보안 코딩 챌린지 자동 채점기 (Django 채점기 + Codex 생성 + 격리 컨테이너 채점)."
+requires-python = ">=3.11"
+# Grader/operator runtime deps ONLY. The participant app's requirements are
+# installed inside the sandbox container, never here.
+dependencies = [
+    "django>=5,<7",
+    "pyyaml>=6",
+    "requests>=2.31",
+    "packaging>=23",
+]
+
+[project.optional-dependencies]
+# Production server extras (Linux). Install with: uv sync --extra prod
+prod = [
+    "gunicorn>=21",       # WSGI server for the web UI/admin
+    "psycopg[binary]>=3.1",  # PostgreSQL driver (recommended prod DB)
+]
+
+[dependency-groups]
+# Dev/test tools. Installed by default with `uv sync`; excluded with --no-dev.
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+# This repo is a set of apps/scripts, not an installable library — don't try to
+# build/install the root as a package; uv only manages the environment.
+package = false
+
+[tool.pytest.ini_options]
+# scoring/ and codex_runner/ pytest suites (the Django suite runs via manage.py).
+testpaths = ["scoring", "codex_runner"]

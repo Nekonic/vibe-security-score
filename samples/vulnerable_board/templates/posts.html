@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}글 목록 - 게시판{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <h1>글 작성</h1>
+    <form class="stack" action="{{ url_for('posts_view') }}" method="post">
+      <label>
+        제목
+        <input name="title" required>
+      </label>
+      <label>
+        내용
+        <textarea name="content" required></textarea>
+      </label>
+      <button type="submit">작성하기</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>글 목록</h2>
+    <div class="stack">
+      {% for post in posts %}
+        <article class="post">
+          <h3>{{ post.title }}</h3>
+          <p class="meta">작성자: {{ post.author }}</p>
+          <p class="content">{{ post.content }}</p>
+        </article>
+      {% else %}
+        <p class="empty">아직 작성된 글이 없습니다.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

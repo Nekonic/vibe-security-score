@@ -223,3 +223,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# vibe-security-score: generated/runtime artifacts
+staticfiles/
+data/generated/
+data/submissions/
+data/codex_transcripts/
+.codex/

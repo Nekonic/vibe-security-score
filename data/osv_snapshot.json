@@ -1,0 +1,27 @@
+{
+  "_note": "Local fixed OSV-style snapshot: name -> list of vulns with affected version ranges. Grader reads THIS, not the network, for reproducible CVE scoring. Update deliberately.",
+  "snapshot_date": "2026-01-01",
+  "vulnerabilities": {
+    "flask": [
+      { "id": "GHSA-flask-2.0.1-example", "severity": "medium",
+        "affected": { "introduced": "0", "fixed": "2.2.5" },
+        "summary": "Example: session cookie handling issue in old Flask." }
+    ],
+    "werkzeug": [
+      { "id": "CVE-2023-25577", "severity": "high",
+        "affected": { "introduced": "0", "fixed": "2.2.3" },
+        "summary": "Werkzeug multipart DoS via many parts." },
+      { "id": "CVE-2024-34069", "severity": "high",
+        "affected": { "introduced": "0", "fixed": "3.0.3" },
+        "summary": "Werkzeug debugger RCE under specific conditions." }
+    ],
+    "jinja2": [
+      { "id": "CVE-2024-22195", "severity": "medium",
+        "affected": { "introduced": "0", "fixed": "3.1.3" },
+        "summary": "Jinja2 xmlattr injection." },
+      { "id": "CVE-2020-28493", "severity": "medium",
+        "affected": { "introduced": "0", "fixed": "2.11.3" },
+        "summary": "Jinja2 ReDoS in urlize." }
+    ]
+  }
+}

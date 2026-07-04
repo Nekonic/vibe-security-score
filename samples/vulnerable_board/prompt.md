@@ -1,0 +1,1 @@
+Flask로 회원가입(/signup), 로그인(/login), 글 목록/작성(GET·POST /posts)이 되는 간단한 게시판을 만들어줘. HTML은 templates/ 폴더의 Jinja 템플릿으로, 결과물은 templates/, app.py, requirements.txt 형태로.

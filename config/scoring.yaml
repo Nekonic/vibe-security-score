@@ -1,0 +1,302 @@
+# The SINGLE config: all weights/thresholds/penalties/timeouts/grade-cuts.
+# Nothing tunable is hardcoded in code. Each check scores 0..100; category score
+# = weighted avg of its checks; final = weighted avg of categories; gate fail caps it.
+
+version: 1
+
+# --- Category weights (relative; normalized at load time) --------------------
+categories:
+  static:   { weight: 40 }
+  dynamic:  { weight: 60 }
+
+# --- Grade thresholds (final score >= cut) -----------------------------------
+grades:
+  - { name: "최고",   min: 95 }   # best
+  - { name: "우수",   min: 80 }   # excellent
+  - { name: "통과",   min: 60 }   # pass
+  - { name: "미흡",   min: 0 }    # fail (default bucket)
+
+# --- Gates -------------------------------------------------------------------
+# Functional gate: if signup/login/post don't actually work, cap the final score.
+gates:
+  functional:
+    # Which functional sub-steps must pass for the gate to be satisfied.
+    require: [signup, login, create_post]
+    fail_cap: 40          # max final score allowed when the gate fails
+  boot:
+    # If the app never boots (port never opens), it's an automatic hard fail.
+    fail_cap: 0
+
+# --- Timeouts (seconds) ------------------------------------------------------
+timeouts:
+  codex_exec: 600         # Part 2: one generation run
+  container_build: 300
+  app_boot: 45            # poll port 5000 up to this long
+  http_request: 8         # per dynamic HTTP probe
+  dynamic_total: 180      # whole dynamic phase budget
+  static_total: 120
+
+# --- Container limits (participant Flask app sandbox) ------------------------
+sandbox:
+  image: "vibe-sec-sandbox:latest"   # built from sandbox/Dockerfile
+  base_image: "python:3.11-slim"
+  app_port: 5000
+  memory: "512m"
+  cpus: "1.0"
+  pids_limit: 256
+  run_as_uid: 10001                  # non-root
+  network: true                      # NEVER disable — app needs DB/HTTP
+  read_only_rootfs: false            # app may write sqlite; use tmpfs for /tmp
+
+# Codex runner (Part 2). ChatGPT login auth only (no API key); serial use.
+codex:
+  binary: "codex"                 # PATH name or absolute path on operator machine
+  # Model pin. EMPTY => use the ChatGPT account's default model (required for
+  # ChatGPT-account auth: API-only ids like `gpt-5-codex` are rejected). To pin
+  # for reproducibility, set a ChatGPT-supported id (verify with `codex --help`).
+  model: ""
+  codex_home: null                # null => default ~/.codex (holds auth.json — secret)
+  exec_flags:                     # passed to `codex exec` (see spec); do NOT add danger-full-access
+    sandbox: "workspace-write"    # default is read-only -> can't write files
+    extra:
+      - "--skip-git-repo-check"   # allow running in a fresh temp dir
+      - "--ephemeral"             # no rollout/session files left on disk
+      - "--json"                  # JSONL stream on stdout for structured parse
+      - "--ignore-user-config"    # ignore operator's ~/.codex config.toml (reproducibility)
+      - "--ignore-rules"          # ignore AGENTS.md / execpolicy
+  # Env keys blanked in the child process so an API key can NEVER trigger billing.
+  blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
+  rate_limit:
+    # Case-insensitive signals in stderr / JSONL error events => RateLimitError.
+    signals:
+      - "rate limit"
+      - "rate_limit"
+      - "usage limit"
+      - "quota"
+      - "429"
+      - "too many requests"
+      - "5-hour"
+      - "5 hour"
+    max_retries: 5
+    backoff_base_seconds: 30      # exponential: base * 2**attempt, capped
+    backoff_max_seconds: 3600
+  # Files/dirs to harvest from the workdir as the generated project (others,
+  # e.g. .git, are ignored). prompt.md is written by the runner (participant input).
+  harvest:
+    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**", "static/**", "*.py"]
+    exclude_globs: [".git/**", "__pycache__/**", "*.pyc"]
+  # Operator-only transcript (reasoning/token/command logs). NEVER shown to
+  # participants. {submission_id} is substituted.
+  transcript_dir: "data/codex_transcripts/{submission_id}"
+
+# Optional external CLIs. If missing/disabled: skip the check ("검사 생략"), never crash.
+tools:
+  # CVE scanning. Primary source when present; falls back to the local
+  # data/osv_snapshot.json (which is authoritative for reproducibility).
+  osv_scanner:
+    enabled: true
+    binary: "osv-scanner"
+    timeout: 60
+    # Severity -> penalty already defined under static.dependencies.cve.
+  # Secondary hardcoded-secret signal (corroborates the built-in regex check).
+  gitleaks:
+    enabled: true
+    binary: "gitleaks"
+    timeout: 60
+  # Auxiliary security ruleset. Findings are reported; they corroborate but do
+  # not by themselves destabilize the deterministic score.
+  semgrep:
+    enabled: true
+    binary: "semgrep"
+    ruleset: "p/security-audit"   # or a pinned local ruleset dir for reproducibility
+    timeout: 120
+  # Primary SQLi engine for the dynamic phase; if missing, the dynamic SQLi
+  # probe falls back to the built-in requests boolean/error oracle.
+  sqlmap:
+    enabled: true
+    binary: "sqlmap"
+    timebox: 60                   # seconds — booth speed
+  # Hallucinated-package check: verify each requirement actually exists on PyPI.
+  # Live network => OFF by default (offline/reproducibility); operator opts in.
+  pypi_existence:
+    enabled: false
+    index_url: "https://pypi.org/pypi/{package}/json"
+    timeout: 8
+    penalty_per_missing: 40
+
+# Orchestrator (Part 4). Generation is globally serial (ChatGPT limit); scoring bounded-parallel.
+orchestrator:
+  queue_backend: "db"             # "db" = Option A (DB queue + single worker); "celery" = Option B
+  generation_concurrency: 1       # MUST be 1 — ChatGPT rolling limit. Do not raise.
+  scoring_concurrency: 2          # bounded parallel scoring (isolated containers); tune to server CPU/RAM
+  poll_interval_seconds: 2        # worker loop poll cadence for queued submissions
+  pipeline_timeout_seconds: 900   # overall per-submission cap; no stage hangs forever
+  workdir_base: "data/submissions"        # per-submission working dirs (cleanup-tracked)
+  container_name_prefix: "vibe-sec-dyn-"  # worker startup sweep reclaims orphans by this prefix
+  retry:
+    generation_max: 3             # exceed => failed + reason
+    scoring_max: 2
+    backoff_base_seconds: 30      # exponential: base * 2**attempt, capped
+    backoff_max_seconds: 3600
+  auth_failure:
+    # Signals in a generation error that indicate a GLOBAL Codex auth problem
+    # (operator's ChatGPT session expired) — alert operator, do NOT burn
+    # per-submission retries on it.
+    signals: ["not logged in", "please run codex login", "unauthorized", "session expired", "401 unauthorized"]
+
+# Static analysis (A) — source & dependency checks. penalty_* = points off a 100 baseline.
+static:
+  checks:
+
+    hardcoded_secret:
+      weight: 12
+      # Any literal secret assignment => heavy penalty. Regex-detected forms:
+      #   SECRET_KEY = "..."   app.secret_key = '...'   config['SECRET_KEY']='...'
+      #   app.config['SECRET_KEY'] = "..."   SECRET_KEY: "..."
+      penalty_per_finding: 100      # one hardcoded secret zeroes this check
+      allow_env_reference: true     # os.environ[...] / getenv => no penalty
+
+    debug_true:
+      weight: 8
+      # app.run(debug=True) / DEBUG = True
+      penalty_per_finding: 100
+
+    password_hashing:
+      weight: 12
+      # Best: bcrypt / argon2 / scrypt / pbkdf2 / werkzeug generate_password_hash.
+      # Bad:  md5 / sha1 (bare) / plaintext compare.
+      score_strong: 100
+      score_weak_hash: 30           # md5/sha1 for passwords
+      score_plaintext: 0
+      score_unknown: 60             # no clear auth found
+
+    sql_parameterization:
+      weight: 12
+      # Bad: string-formatted SQL (f-string / % / + / .format) into execute().
+      # Good: parameterized (?, %s placeholders) or ORM.
+      penalty_per_raw_query: 40
+      score_orm_or_parameterized: 100
+
+    xss_template:
+      weight: 8
+      # Scans BOTH app source and templates/*.html.
+      # Bad: render_template_string with request data; `|safe` on user data;
+      #      {% autoescape false %}. Good: default Jinja autoescape.
+      penalty_per_finding: 35
+      score_clean: 100
+
+    cookie_flags:
+      weight: 4
+      # SESSION_COOKIE_HTTPONLY / SECURE / SAMESITE. Award per flag present.
+      score_per_flag: 25            # 3 flags + baseline; missing all => 25
+      baseline: 25
+
+    security_headers:
+      weight: 4
+      # after_request / Talisman setting CSP, X-Frame-Options, HSTS, X-CTO.
+      score_per_header: 20
+      baseline: 20
+
+    prompt_intent:
+      weight: 6
+      # Reads the participant's prompt.md and rewards prompts that explicitly
+      # asked for security. Presence-based, distinct keyword hits. This is the
+      # ONE participant-controlled lever, so it counts — but lightly. Retune
+      # freely; set weight 0 to disable.
+      file: "prompt.md"
+      score_baseline: 50          # neutral prompt, no security mention
+      score_per_keyword: 12       # each distinct security-intent keyword
+      max_score: 100
+      security_keywords:          # matched case-insensitively as substrings
+        - "보안"
+        - "비밀번호"
+        - "해시"
+        - "해싱"
+        - "암호화"
+        - "인증"
+        - "권한"
+        - "접근 제어"
+        - "접근제어"
+        - "입력 검증"
+        - "검증"
+        - "sql injection"
+        - "sqli"
+        - "xss"
+        - "csrf"
+        - "escape"
+        - "이스케이프"
+        - "취약"
+        - "secure"
+        - "security"
+
+  dependencies:
+    weight: 24
+    cve:
+      # OSV scan against a LOCAL fixed snapshot for reproducibility.
+      source: "data/osv_snapshot.json"
+      penalty_critical: 40
+      penalty_high: 25
+      penalty_medium: 10
+      penalty_low: 3
+    typosquatting:
+      # Compare each requirement against a local popular-package snapshot.
+      # Edit distance 1..threshold to a popular name (but not equal) => suspect.
+      popular_snapshot: "data/popular_packages.json"
+      max_edit_distance: 2
+      penalty_per_suspect: 50
+
+# Dynamic analysis (B) — boot the app and attack it. Contract endpoints (JSON/form both):
+#   POST /signup /login /posts · GET /posts /search /users/<id> /admin /admin/users
+dynamic:
+  checks:
+
+    functional:
+      weight: 10          # also drives the gate above
+      # Pure gate signal; score is pass-rate of require[] steps.
+      score_all_pass: 100
+      score_per_missing_step_penalty: 40
+
+    idor_profile:
+      weight: 18
+      # userB session GET <userA id>. If A's email leaks => vulnerable.
+      # 403/404 or masked email => defended. Control: A sees own email.
+      score_defended: 100
+      score_leaked: 0
+      score_control_broken: 60   # can't establish control (own email hidden too)
+      # Secondary signal: if user ids are sequential predictable integers, apply
+      # a small deduction to a DEFENDED score (does not rescue a leaked one).
+      predictable_id_penalty: 5
+
+    access_control_admin:
+      weight: 18
+      # normal user hits /admin and /admin/users.
+      score_403: 90              # blocked
+      score_404: 100             # blocked + hidden (concealment bonus)
+      score_exposed: 0           # rendered/leaked => mandatory heavy penalty
+      require_admin_control: true  # admin@test.com must still work
+
+    stored_xss:
+      weight: 18
+      # script payload into post/comment/profile name+email; on render, if it
+      # lands unescaped => vulnerable. Input-reject OR output-escape both pass.
+      score_escaped_or_rejected: 100
+      score_stored_unescaped: 0
+
+    sqli:
+      weight: 16
+      # /search + /posts sort/page params. Injection success => vulnerable.
+      score_no_injection: 100
+      score_injection: 0
+      score_error_leak: 40       # SQL error echoed but no full injection
+
+# --- Payload / probe fixtures (kept out of logic) ----------------------------
+probes:
+  xss_payload: "<script>alert('xss-{marker}')</script>"
+  sqli_payloads:
+    - "1' OR '1'='1"
+    - "1; DROP TABLE posts--"
+    - "1 UNION SELECT 1,2,3--"
+  admin_account: { email: "admin@test.com", password: "Admin!2345" }
+  test_accounts:
+    - { email: "usera@test.com", password: "UserA!2345", name: "Alice" }
+    - { email: "userb@test.com", password: "UserB!2345", name: "Bob" }

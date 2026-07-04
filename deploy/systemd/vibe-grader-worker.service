@@ -1,0 +1,20 @@
+[Unit]
+Description=vibe-security-score pipeline worker (serial generation -> parallel scoring)
+After=network.target postgresql.service docker.service
+Wants=postgresql.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=vibe
+Group=vibe
+# The worker spawns sandbox containers -> needs Docker socket access.
+SupplementaryGroups=docker
+WorkingDirectory=/opt/vibe-security-score/grader
+EnvironmentFile=/etc/vibe-grader.env
+ExecStart=/opt/vibe-security-score/.venv/bin/python manage.py run_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

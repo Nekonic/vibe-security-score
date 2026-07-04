@@ -1,0 +1,21 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}One Prompt Secure Coding Challenge{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'submissions/bootstrap.min.css' %}">
+</head>
+<body class="bg-body-tertiary">
+  <nav class="navbar bg-primary mb-4" data-bs-theme="dark">
+    <div class="container d-flex justify-content-between align-items-center" style="max-width: 780px;">
+      <a class="navbar-brand mb-0 h1" href="{% url 'submissions:submit' %}">One Prompt Secure Coding Challenge</a>
+      <a class="btn btn-outline-light btn-sm" href="{% url 'submissions:leaderboard' %}">🏆 순위</a>
+    </div>
+  </nav>
+  <main class="container pb-5" style="max-width: 780px;">
+    {% block body %}{% endblock %}
+  </main>
+</body>
+</html>

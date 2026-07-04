@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}회원가입 - 게시판{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <h1>회원가입</h1>
+    <form class="stack" action="{{ url_for('signup') }}" method="post">
+      <label>
+        아이디
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>
+        비밀번호
+        <input name="password" type="password" autocomplete="new-password" required>
+      </label>
+      <button type="submit">가입하기</button>
+    </form>
+  </section>
+{% endblock %}

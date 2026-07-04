@@ -1,0 +1,17 @@
+[Unit]
+Description=vibe-security-score web UI/admin (gunicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=vibe
+Group=vibe
+WorkingDirectory=/opt/vibe-security-score
+EnvironmentFile=/etc/vibe-grader.env
+ExecStart=/opt/vibe-security-score/.venv/bin/gunicorn -c deploy/gunicorn.conf.py grader.wsgi:application
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

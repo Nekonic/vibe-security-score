@@ -1,0 +1,16 @@
+{
+  "_note": "Local fixed snapshot of popular PyPI names for typosquatting checks. Reproducibility over freshness — bump deliberately.",
+  "snapshot_date": "2026-01-01",
+  "packages": [
+    "requests", "urllib3", "certifi", "charset-normalizer", "idna",
+    "flask", "werkzeug", "jinja2", "markupsafe", "itsdangerous", "click",
+    "django", "djangorestframework", "gunicorn", "uvicorn", "starlette", "fastapi",
+    "sqlalchemy", "alembic", "psycopg2", "psycopg2-binary", "pymysql", "redis",
+    "numpy", "pandas", "scipy", "matplotlib", "pillow", "scikit-learn",
+    "python-dateutil", "pytz", "six", "setuptools", "wheel", "pip",
+    "pytest", "pyyaml", "cryptography", "bcrypt", "argon2-cffi", "passlib",
+    "boto3", "botocore", "aiohttp", "httpx", "pydantic", "typing-extensions",
+    "beautifulsoup4", "lxml", "openpyxl", "python-dotenv", "celery", "flask-login",
+    "flask-sqlalchemy", "flask-wtf", "wtforms", "email-validator", "gevent"
+  ]
+}

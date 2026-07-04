@@ -1,0 +1,27 @@
+{% extends "submissions/base.html" %}
+{% block title %}프롬프트 제출 · One Prompt Secure Coding Challenge{% endblock %}
+{% block body %}
+  <h1 class="h4 mb-1">One Prompt Secure Coding Challenge</h1>
+  <p class="text-secondary">프롬프트를 입력하면 AI가 게시판 앱을 만들고, 자동으로 채점해 점수를 알려드려요.</p>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post" action="{% url 'submissions:submit' %}">
+        {% csrf_token %}
+        <div class="mb-3">
+          <label for="nickname" class="form-label">닉네임 <span class="text-secondary">(선택)</span></label>
+          <input type="text" class="form-control" id="nickname" name="nickname"
+                 maxlength="120" placeholder="비워두면 자동으로 배정돼요">
+        </div>
+        <div class="mb-3">
+          <label for="prompt" class="form-label">프롬프트 <span class="text-secondary">(자유롭게 수정해서 제출하세요)</span></label>
+          <textarea class="form-control font-monospace" id="prompt" name="prompt"
+                    rows="12" required>{{ prompt }}</textarea>
+        </div>
+        {% if error %}<div class="alert alert-danger py-2">{{ error }}</div>{% endif %}
+        <button type="submit" class="btn btn-primary">제출하고 채점받기</button>
+      </form>
+    </div>
+  </div>
+  <p class="text-secondary small mt-3">제출 후에는 진행 상황과 결과가 표시돼요.</p>
+{% endblock %}

@@ -1,0 +1,93 @@
+{% extends "submissions/base.html" %}
+{% block title %}제출 #{{ sub.id }} · One Prompt Secure Coding Challenge{% endblock %}
+{% block body %}
+  <div class="d-flex justify-content-between align-items-baseline mb-3">
+    <h1 class="h4 mb-0">제출 #{{ sub.id }}</h1>
+    <span class="text-secondary small">참가자: {{ sub.participant }}</span>
+  </div>
+
+  {% if done %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-body d-flex justify-content-between align-items-center">
+        <div>
+          <div class="text-secondary small">최종 점수 · 등급</div>
+          <div class="display-6 fw-bold">{{ sub.final_score }}<span class="fs-6 text-secondary"> / 100</span></div>
+          <div>등급: <strong>{{ sub.grade }}</strong></div>
+        </div>
+        {% if sub.pass_fail|upper == "PASS" %}
+          <span class="badge fs-6 text-bg-success">PASS</span>
+        {% else %}
+          <span class="badge fs-6 text-bg-danger">FAIL</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-header fw-semibold">항목별 결과</div>
+      <ul class="list-group list-group-flush">
+        {% for f in findings %}
+          <li class="list-group-item">
+            <div class="d-flex align-items-center">
+              {% if f.passed %}
+                <span class="text-success fs-5 me-2">✔</span>
+              {% else %}
+                <span class="text-danger fs-5 me-2">✘</span>
+              {% endif %}
+              <span class="fw-semibold">{{ f.label|default:f.check_id }}</span>
+              <span class="ms-auto text-secondary">{{ f.score }} / 100</span>
+            </div>
+            {% if f.penalty_reasons %}
+              <ul class="small text-danger-emphasis mt-1 mb-0">
+                {% for r in f.penalty_reasons %}<li>{{ r }}</li>{% endfor %}
+              </ul>
+            {% endif %}
+          </li>
+        {% empty %}
+          <li class="list-group-item text-secondary">표시할 항목이 없어요.</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <p class="mt-3"><a href="{% url 'submissions:submit' %}">← 다시 제출하기</a></p>
+
+  {% elif failed %}
+    <div class="alert alert-danger">
+      <h2 class="h5">처리 실패</h2>
+      <p class="mb-1">{{ stage_hint }}</p>
+      {% if sub.last_error %}<p class="small text-secondary mb-0">사유: {{ sub.last_error }}</p>{% endif %}
+    </div>
+    <a href="{% url 'submissions:submit' %}">← 다시 제출하기</a>
+
+  {% else %}
+    <div class="card shadow-sm">
+      <div class="card-body d-flex align-items-center gap-3">
+        <div class="spinner-border text-primary" role="status"><span class="visually-hidden">로딩</span></div>
+        <div>
+          <div id="stage" class="fw-semibold">{{ stage_label }}</div>
+          <div id="hint" class="text-secondary">{{ stage_hint }}</div>
+          <div id="queue" class="text-secondary small">{% if queue_position %}대기열 {{ queue_position }}번째{% endif %}</div>
+        </div>
+      </div>
+    </div>
+    <p class="text-secondary small mt-2">이 화면은 자동으로 갱신돼요. 창을 닫지 말고 기다려 주세요.</p>
+
+    <script>
+      (function () {
+        var url = "{% url 'submissions:status_json' pk=sub.id %}";
+        function poll() {
+          fetch(url, {headers: {"X-Requested-With": "fetch"}})
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              document.getElementById("stage").textContent = d.stage_label;
+              document.getElementById("hint").textContent = d.stage_hint || "";
+              var q = document.getElementById("queue");
+              q.textContent = d.queue_position ? ("대기열 " + d.queue_position + "번째") : "";
+              if (d.done) { window.location.reload(); return; }  // done OR failed
+              setTimeout(poll, 2000);
+            })
+            .catch(function () { setTimeout(poll, 3000); });
+        }
+        setTimeout(poll, 1500);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}
