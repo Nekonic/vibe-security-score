@@ -759,7 +759,7 @@ def _sqli_builtin_oracle(
         return _low_conf("sqli", label, weight, f"SQLi 프로브 예외: {exc}")
 
 
-# Probe 5b: transport_security (A05/A02) — runtime response hardening.
+# Probe 5b: transport_security (A02) — runtime response hardening.
 _SEC_HEADERS = ("content-security-policy", "x-frame-options",
                 "strict-transport-security", "x-content-type-options")
 _COOKIE_ATTRS = ("secure", "httponly", "samesite")
@@ -806,7 +806,7 @@ def probe_transport_security(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckRes
         return _low_conf("transport_security", label, weight, f"전송 보안 프로브 예외: {exc}")
 
 
-# Probe 6: rate_limiting (A04) — repeated wrong logins must be throttled/locked.
+# Probe 6: rate_limiting (A06) — repeated wrong logins must be throttled/locked.
 _LOCKOUT_SIGNS = ("too many", "rate limit", "locked", "잠금", "너무 많", "일시 차단", "차단되었")
 
 
@@ -869,7 +869,7 @@ def probe_weak_password_policy(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
         return _low_conf("weak_password_policy", label, weight, f"비밀번호 정책 프로브 예외: {exc}")
 
 
-# Probe 8: verbose_errors (A05) — malformed input must not leak stack traces/debugger.
+# Probe 8: verbose_errors (A10) — malformed input must not leak stack traces/debugger.
 _DEBUG_SIGNS = (
     "traceback (most recent call last)", "werkzeug debugger", "werkzeug.debug",
     "/__debugger__", "this is the werkzeug", "sqlalchemy", "file \"/app",
@@ -909,7 +909,7 @@ def probe_verbose_errors(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
         return _low_conf("verbose_errors", label, weight, f"오류 처리 프로브 예외: {exc}")
 
 
-# Probe 9: session_forgery (A02) — LIVE PoC for a known/weak SECRET_KEY.
+# Probe 9: session_forgery (A04) — LIVE PoC for a known/weak SECRET_KEY.
 # Report-only (weight 0): it proves the weak_default_secret critical by forging a
 # Flask session cookie signed with a guessed default secret and reaching /admin as
 # the first (admin) user. Needs flask importable on the grader host; else skipped.

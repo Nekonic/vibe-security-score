@@ -234,18 +234,18 @@ orchestrator:
 static:
   checks:
 
-    # -- A02 Cryptographic Failures --
+    # -- A04 Cryptographic Failures --
     hardcoded_secret:
       weight: 4
       penalty_per_finding: 100      # one hardcoded secret zeroes this check
       allow_env_reference: true     # os.environ[...] / getenv => not counted here
 
-    # -- A05 Security Misconfiguration --
+    # -- A02 Security Misconfiguration --
     debug_true:
       weight: 3
       penalty_per_finding: 100
 
-    # -- A02 Cryptographic Failures --
+    # -- A04 Cryptographic Failures --
     password_hashing:
       weight: 6
       score_strong: 100
@@ -253,19 +253,19 @@ static:
       score_plaintext: 0
       score_unknown: 30             # no clear auth found (was 60 — no free pass)
 
-    # -- A03 Injection --
+    # -- A05 Injection --
     sql_parameterization:
       weight: 6
       penalty_per_raw_query: 40
       score_orm_or_parameterized: 100
 
-    # -- A03 Injection --
+    # -- A05 Injection --
     xss_template:
       weight: 5
       penalty_per_finding: 35
       score_clean: 100
 
-    # -- A03 Injection (XSS defense-in-depth: Content-Security-Policy) --
+    # -- A05 Injection (XSS defense-in-depth: Content-Security-Policy) --
     # Scored in the XSS rubric category. autoescape alone (framework default) is
     # table-stakes; a CSP that constrains script sources must be demonstrated.
     csp:
@@ -273,14 +273,14 @@ static:
       score_present: 100
       score_missing: 0
 
-    # -- A02 Cryptographic Failures (session cookie hardening) --
+    # -- A04 Cryptographic Failures (session cookie hardening) --
     cookie_flags:
       weight: 8
       # HttpOnly / Secure / SameSite. No baseline — missing all => 0.
       score_per_flag: 34            # 3 flags => ~100
       baseline: 0
 
-    # -- A05 Security Misconfiguration (response hardening) --
+    # -- A02 Security Misconfiguration (response hardening) --
     security_headers:
       weight: 10
       # CSP / X-Frame-Options / HSTS / X-Content-Type-Options. No baseline.
@@ -294,35 +294,35 @@ static:
       score_protected: 100
       score_missing: 0
 
-    # -- A02 Cryptographic Failures (weak default secret) --
+    # -- A04 Cryptographic Failures (weak default secret) --
     weak_default_secret:
       weight: 9
       # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback => weak.
       score_ok: 100
       score_weak: 0
 
-    # -- A08 Software & Data Integrity Failures --
+    # -- A08 Software or Data Integrity Failures --
     insecure_deserialization:
       weight: 3
       # pickle.loads / yaml.load(unsafe) / eval|exec on request data.
       score_clean: 100
       score_found: 0
 
-    # -- A09 Security Logging & Monitoring Failures --
+    # -- A09 Security Logging & Alerting Failures --
     security_logging:
       weight: 7
       score_full: 100               # configured + logs events
       score_partial: 50
       score_none: 0
 
-    # -- A10 Server-Side Request Forgery --
+    # -- A01 Broken Access Control (SSRF folded in for 2025) --
     ssrf_sink:
       weight: 2
       # Outbound fetch with a user-controlled URL. No sink (common) => safe.
       score_no_sink: 100
       score_sink: 0
 
-  dependencies:                     # A06 Vulnerable & Outdated Components
+  dependencies:                     # A03 Software Supply Chain Failures
     weight: 22                      # total pool; split across cve + typosquatting below
     cve:
       # OSV scan against a LOCAL fixed snapshot for reproducibility.

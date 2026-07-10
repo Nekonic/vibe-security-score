@@ -339,51 +339,6 @@ def check_xss_template(
     )
 
 
-# 8. prompt_intent — participant-controlled lever.
-def _keyword_hit(keyword: str, haystack: str) -> bool:
-    # ASCII alphanumeric keywords use word boundaries so e.g. "sqli" doesn't match
-    # inside "sqlite"; Korean keywords have no boundaries, so plain substring.
-    if keyword and all(ord(ch) < 128 for ch in keyword) and keyword[0].isalnum():
-        return re.search(r"(?<![0-9a-z])" + re.escape(keyword) + r"(?![0-9a-z])", haystack) is not None
-    return keyword in haystack
-
-
-def check_prompt_intent(prompt_text: Optional[str], cfg: dict) -> CheckResult:
-    baseline = float(cfg.get("score_baseline", 50))
-    per_kw = float(cfg.get("score_per_keyword", 12))
-    max_score = float(cfg.get("max_score", 100))
-    keywords = list(cfg.get("security_keywords", []) or [])
-
-    if prompt_text is None:
-        return CheckResult(
-            check_id="prompt_intent",
-            category="static",
-            label="프롬프트 보안 의도",
-            score=baseline,
-            weight=float(cfg.get("weight", 0)),
-            passed=False,
-            penalty_reasons=["prompt.md 없음"],
-            evidence=[],
-        )
-
-    haystack = prompt_text.lower()
-    hits = [kw for kw in keywords if _keyword_hit(str(kw).lower(), haystack)]
-    distinct = list(dict.fromkeys(hits))
-    score = min(max_score, baseline + len(distinct) * per_kw)
-    passed = len(distinct) > 0
-    reasons = [] if passed else ["프롬프트에 보안 요구사항 언급 없음"]
-    return CheckResult(
-        check_id="prompt_intent",
-        category="static",
-        label="프롬프트 보안 의도",
-        score=score,
-        weight=float(cfg.get("weight", 0)),
-        passed=passed,
-        penalty_reasons=reasons,
-        evidence=distinct,
-    )
-
-
 # 6. cookie_flags
 _COOKIE_FLAGS = {
     "SESSION_COOKIE_HTTPONLY": "HttpOnly",

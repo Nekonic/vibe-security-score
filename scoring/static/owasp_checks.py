@@ -53,7 +53,7 @@ def check_csrf_protection(
                evidence=[])
 
 
-# A03 — Content-Security-Policy as XSS defense-in-depth. autoescape is the Jinja
+# A05 — Content-Security-Policy as XSS defense-in-depth. autoescape is the Jinja
 # default (free); a CSP constraining script sources must be actively set. Look in
 # source (response headers / Talisman / flask-seasurf-style) and template meta tags.
 _CSP_MARKERS = re.compile(
@@ -79,7 +79,7 @@ def check_csp(
                evidence=[])
 
 
-# A02 — weak default secret. os.environ.get("SECRET_KEY", "<literal>") fallback,
+# A04 — weak default secret. os.environ.get("SECRET_KEY", "<literal>") fallback,
 # which hardcoded_secret skips because it sees an env reference.
 _WEAK_DEFAULT = re.compile(
     r"""(?:environ\.get|getenv)\s*\(\s*['"][^'"]*(?:SECRET|KEY|PASSWORD)[^'"]*['"]\s*,\s*(?P<def>['"][^'"]*['"])""",
@@ -158,7 +158,7 @@ def check_security_logging(sources: Sequence[Source], cfg: dict) -> CheckResult:
                reasons=["보안 로깅/모니터링 구성이 없음 → 침해 탐지 불가"], evidence=[])
 
 
-# A10 — SSRF sink. Outbound fetch with a non-literal (possibly user) URL.
+# A01 — SSRF sink (folded into Broken Access Control for 2025). Outbound fetch with a non-literal (possibly user) URL.
 _OUTBOUND = re.compile(
     r"""(?:requests\.(?:get|post|put|delete|head|request)|httpx\.(?:get|post)|urllib\.request\.urlopen|urlopen)\s*\(\s*(?P<arg>[^,)\s]+)""",
     re.IGNORECASE,

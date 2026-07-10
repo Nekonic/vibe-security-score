@@ -1,7 +1,6 @@
 """Sandbox container lifecycle for the dynamic phase.
 
-``Sandbox`` is a context manager that stages the app into an ASCII temp path
-(Docker Desktop bind-mounts of the Korean OneDrive path are unreliable), docker
+``Sandbox`` is a context manager that bind-mounts the app dir read-only, docker
 runs the prebuilt image with config resource limits (network STAYS ON), polls
 boot, and tears everything down on exit. All docker calls use argv lists (no
 shell) so Git-Bash path mangling does not apply.
@@ -9,42 +8,22 @@ shell) so Git-Bash path mangling does not apply.
 from __future__ import annotations
 
 import os
-import sys
-import shutil
 import socket
 import subprocess
-import tempfile
 import time
 import uuid
-from typing import List, Optional
+from typing import Optional
 
 import urllib.error
 import urllib.request
 
 from ..config import Config
 
-_STAGE_EXCLUDE = {"__pycache__", ".git", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
-
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
-
-
-def _stage_app_dir(app_dir: str) -> str:
-    """Copy ``app_dir`` into a fresh ASCII temp directory; return that path."""
-    base = os.environ.get("VIBE_SEC_STAGE_DIR")
-    if not base and sys.platform == "darwin":
-        base = "/tmp"
-    stage_root = tempfile.mkdtemp(prefix="vibe_sec_stage_", dir=base)
-    stage_app = os.path.join(stage_root, "app")
-
-    def _ignore(_dir: str, names: List[str]) -> List[str]:
-        return [n for n in names if n in _STAGE_EXCLUDE or n.endswith(".pyc")]
-
-    shutil.copytree(app_dir, stage_app, ignore=_ignore)
-    return stage_root
 
 
 class Sandbox:
@@ -63,10 +42,8 @@ class Sandbox:
         self.host_port = _find_free_port()
         self.base_url = f"http://127.0.0.1:{self.host_port}"
 
-        self._stage_root: Optional[str] = None
         self._started = False
         self.boot_failed = False
-        self._mount_src: Optional[str] = None
 
     def __enter__(self) -> "Sandbox":
         try:
@@ -77,7 +54,6 @@ class Sandbox:
                 raise RuntimeError(
                     f"no app.py/wsgi.py/main.py in {mount_src}"
                 )
-            self._mount_src = mount_src
             self._docker_run(mount_src)
             self._started = True
             if not self._wait_for_boot():

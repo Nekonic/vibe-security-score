@@ -62,14 +62,6 @@ def _read_requirements(app_dir: str) -> str:
     return ""
 
 
-def _read_prompt(app_dir: str, filename: str) -> Optional[str]:
-    path = os.path.join(app_dir, filename)
-    if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            return fh.read()
-    return None
-
-
 def run_static(app_dir: str, config: Config) -> List[CheckResult]:
     sources = _gather_sources(app_dir)
     templates = _gather_templates(app_dir)

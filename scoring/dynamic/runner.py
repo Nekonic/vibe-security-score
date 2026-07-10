@@ -39,7 +39,7 @@ _LABELS = {
 
 
 def _resolved_cve(box: Sandbox, config: Config) -> CheckResult:
-    """Recompute the A06 CVE check against the container's REAL resolved (transitive)
+    """Recompute the A03 CVE check against the container's REAL resolved (transitive)
     package versions from `pip freeze`. In --dev this runs osv-scanner on those
     versions; otherwise the deterministic local snapshot. tool marks it as resolved
     so aggregation prefers it over the requirements-only static result."""
@@ -127,7 +127,7 @@ def run_dynamic(app_dir: str, config: Config) -> Tuple[List[CheckResult], bool, 
                 continue
             checks.append(fn(ctx, dyn_cfg.get(cid, {})))
 
-        # A06: recompute CVE against real resolved (transitive) versions.
+        # A03: recompute CVE against real resolved (transitive) versions.
         checks.append(_resolved_cve(box, config))
 
         return checks, functional_failed, False

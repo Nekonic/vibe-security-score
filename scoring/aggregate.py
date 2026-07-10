@@ -11,7 +11,7 @@ from .owasp import code_for
 
 def _dedupe_cve(checks: List[CheckResult]) -> List[CheckResult]:
     """Prefer the resolved (pip-freeze/transitive) CVE result over the static
-    requirements-only one when both are present, so A06 isn't double-counted."""
+    requirements-only one when both are present, so A03 isn't double-counted."""
     if any(c.check_id == "cve" and "freeze" in c.tool for c in checks):
         return [c for c in checks if not (c.check_id == "cve" and "freeze" not in c.tool)]
     return checks
