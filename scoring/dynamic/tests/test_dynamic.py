@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from scoring.config import load_config
-from scoring.dynamic.runner import run_dynamic
+from scoring.runner import run_dynamic
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 # Committed copy of a real codex-generated app (data/generated/* is gitignored).

@@ -12,9 +12,11 @@ import pytest
 
 from scoring.aggregate import combine_scores
 from scoring.config import load_config
-from scoring.static import source_checks as sc
-from scoring.static import dependency_checks as dc
-from scoring.static.runner import run_static
+from scoring.controls import crypto, misconfig
+from scoring.controls import dependencies as dc
+from scoring.controls.injection import sql as sql_ctl
+from scoring.controls.injection import xss as xss_ctl
+from scoring.runner import run_static
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Committed copy of a real codex-generated app (data/generated/* is gitignored).
@@ -186,23 +188,23 @@ def _clean_sources():
 
 
 def test_clean_hardcoded_secret_env_ok(config):
-    r = sc.check_hardcoded_secret(_clean_sources(), config.static_checks["hardcoded_secret"])
+    r = crypto.check_hardcoded_secret(_clean_sources(), config.static_checks["hardcoded_secret"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_debug_ok(config):
-    r = sc.check_debug_true(_clean_sources(), config.static_checks["debug_true"])
+    r = misconfig.check_debug_true(_clean_sources(), config.static_checks["debug_true"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_password_hashing_strong(config):
     cfg = config.static_checks["password_hashing"]
-    r = sc.check_password_hashing(_clean_sources(), cfg)
+    r = crypto.check_password_hashing(_clean_sources(), cfg)
     assert r.passed is True and r.score == float(cfg["score_strong"])
 
 
 def test_clean_sql_parameterized(config):
-    r = sc.check_sql_parameterization(_clean_sources(), config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(_clean_sources(), config.static_checks["sql_parameterization"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -210,7 +212,7 @@ def test_sql_fstring_bound_param_is_safe(config):
     # An f-string used ONLY as a bound parameter (LIKE wildcard) is safe — the query
     # itself uses ? placeholders. Must not be flagged (regression: false positive).
     src = [("s.py", 'db.execute("SELECT * FROM p WHERE title LIKE ?", (f"%{q}%",))')]
-    r = sc.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -218,22 +220,22 @@ def test_sql_string_built_query_flagged(config):
     # A query assembled from user input IS injection — still flagged (the fix only
     # spares bound params, never the query string itself).
     src = [("s.py", 'db.execute(f"SELECT * FROM users WHERE id={uid}")')]
-    r = sc.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
     assert r.passed is False and r.score < 100.0
 
 
 def test_clean_xss_ok(config):
-    r = sc.check_xss_template(_clean_sources(), config.static_checks["xss_template"])
+    r = xss_ctl.check_xss_template(_clean_sources(), config.static_checks["xss_template"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_cookie_flags_full(config):
-    r = sc.check_cookie_flags(_clean_sources(), config.static_checks["cookie_flags"])
+    r = crypto.check_cookie_flags(_clean_sources(), config.static_checks["cookie_flags"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_security_headers_full(config):
-    r = sc.check_security_headers(_clean_sources(), config.static_checks["security_headers"])
+    r = misconfig.check_security_headers(_clean_sources(), config.static_checks["security_headers"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -254,7 +256,7 @@ _CLEAN_TEMPLATE = (
 
 def test_xss_template_safe_filter_fails(config):
     cfg = config.static_checks["xss_template"]
-    r = sc.check_xss_template([], cfg, templates=[("templates/posts.html", _DIRTY_TEMPLATE)])
+    r = xss_ctl.check_xss_template([], cfg, templates=[("templates/posts.html", _DIRTY_TEMPLATE)])
     assert r.passed is False
     joined = " ".join(r.penalty_reasons)
     assert "templates/posts.html:2" in joined and "safe" in joined
@@ -263,7 +265,7 @@ def test_xss_template_safe_filter_fails(config):
 
 def test_xss_clean_template_passes(config):
     cfg = config.static_checks["xss_template"]
-    r = sc.check_xss_template([], cfg, templates=[("templates/posts.html", _CLEAN_TEMPLATE)])
+    r = xss_ctl.check_xss_template([], cfg, templates=[("templates/posts.html", _CLEAN_TEMPLATE)])
     assert r.passed is True and r.score == 100.0
 
 
@@ -273,7 +275,7 @@ def test_xss_render_template_string_still_dirty(config):
             'from flask import render_template_string, request\n'
             'def v():\n'
             '    return render_template_string("<b>" + request.args.get("x") + "</b>")\n')]
-    r = sc.check_xss_template(src, cfg)
+    r = xss_ctl.check_xss_template(src, cfg)
     assert r.passed is False
     assert any("render_template_string" in reason for reason in r.penalty_reasons)
 
@@ -305,7 +307,7 @@ def test_hardcoded_secret_positive_forms(config):
         "app.config['SECRET_KEY']=\"w\"\n"
         'SECRET_KEY: "v"\n',
     )]
-    r = sc.check_hardcoded_secret(src, cfg)
+    r = crypto.check_hardcoded_secret(src, cfg)
     assert r.passed is False
     assert len(r.penalty_reasons) == 5
 
