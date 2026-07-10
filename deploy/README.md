@@ -21,7 +21,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/
 ```bash
 sudo useradd -r -m -d /opt/vibe-security-score -s /bin/bash vibe
 sudo usermod -aG docker vibe
-sudo -u vibe git clone <REPO_URL> /opt/vibe-security-score
+sudo -u vibe git clone https://github.com/Nekonic/vibe-security-score.git /opt/vibe-security-score
 cd /opt/vibe-security-score
 ```
 
