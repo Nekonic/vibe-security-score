@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block body %}
+<h1>게시판</h1>
+<form method="post" action="/posts">
+  <input name="title" placeholder="제목" required>
+  <textarea name="content" placeholder="내용" required></textarea>
+  <button>작성</button>
+</form>
+{% if q is defined %}<p class="muted">검색: {{ q }}</p>{% endif %}
+{% for p in posts %}
+  <article class="post">
+    <h2>{{ p.title }}</h2>
+    <p>{{ p.content }}</p>
+    <p class="muted">작성자: <a href="/users/{{ p.author_id }}">{{ p.author }}</a></p>
+  </article>
+{% else %}<p>글이 없습니다.</p>{% endfor %}
+{% endblock %}

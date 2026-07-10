@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Board</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:880px;margin:32px auto;padding:0 16px;line-height:1.5}
+    nav{display:flex;gap:12px;margin-bottom:24px} input,textarea{display:block;width:100%;max-width:520px;margin:6px 0 12px;padding:8px}
+    button{padding:8px 12px}.post{border-top:1px solid #ddd;padding:14px 0}.muted{color:#666}
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/posts">글</a><a href="/signup">가입</a><a href="/login">로그인</a><a href="/admin">관리</a>
+    <form action="/search" method="get"><input name="q" placeholder="검색"></form>
+  </nav>
+  {% block body %}{% endblock %}
+</body>
+</html>

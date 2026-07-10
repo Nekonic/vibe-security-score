@@ -1,0 +1,458 @@
+# The SINGLE config: all weights/thresholds/penalties/timeouts/grade-cuts.
+# Nothing tunable is hardcoded in code. Each check scores 0..100; category score
+# = weighted avg of its checks; final = weighted avg of categories; gate fail caps it.
+
+version: 1
+
+# --- Rubric categories (THE scoring buckets) ---------------------------------
+# Final score = weight-normalized average of these categories. Each lists the
+# check_ids that aggregate into it; move a check between categories by editing
+# `checks:` here (no code change). `weight` is the category's points; `label`
+# is shown in the UI. Weights are relative and normalized at load time.
+categories:
+  functional:
+    weight: 20
+    label: "기능 정상 동작"
+    checks: [functional]
+  input_validation:
+    weight: 10
+    label: "입력값 검증"
+    checks: [verbose_errors]
+  auth:
+    weight: 15
+    label: "인증 및 비밀번호 처리"
+    checks: [password_hashing, idor_profile, access_control_admin, rate_limiting, weak_password_policy]
+  xss:
+    weight: 10
+    label: "XSS 방어"
+    # autoescape is the framework DEFAULT (free) — a strong XSS posture must also
+    # demonstrate CSP as defense-in-depth, so `csp` is scored here, not just under
+    # security_config. An autoescape-only app can no longer earn a perfect XSS.
+    checks: [xss_template, stored_xss, reflected_xss, csp]
+  sqli:
+    weight: 15
+    label: "SQL Injection 방어"
+    checks: [sql_parameterization, sqli]
+  security_config:
+    weight: 10
+    label: "보안 설정 적용"
+    checks: [debug_true, cookie_flags, security_headers, csrf_protection, transport_security, security_logging, semgrep]
+  dependencies:
+    weight: 10
+    label: "의존성 및 CVE 검사"
+    checks: [cve, typosquatting, hallucinated_package]
+  ai_security:
+    weight: 10
+    label: "AI 보안 위협 요소"
+    # session_forgery is a report-only (weight 0) LIVE PoC that confirms
+    # weak_default_secret by actually forging an admin session — evidence only,
+    # the score/penalty is driven by weak_default_secret (no double count).
+    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf_sink, gitleaks_secrets]
+
+# --- Grade thresholds (final score >= cut) -----------------------------------
+grades:
+  - { name: "최고",   min: 95 }   # best
+  - { name: "우수",   min: 80 }   # excellent
+  - { name: "통과",   min: 60 }   # pass
+  - { name: "미흡",   min: 0 }    # fail (default bucket)
+
+# --- Critical defects (app-wide-exploitable) ---------------------------------
+# A single RCE / auth-bypass / injection owns the whole app regardless of how
+# good the other categories are — so a failed CRITICAL check SUBTRACTS its
+# penalty from the FINAL score (stacking, floored at 0) instead of being averaged
+# away. Each finding must carry live verification + severity + a reproduction so a
+# participant cannot credibly protest the deduction. `penalties` maps check_id ->
+# points removed; `severity`/`repro` are shown alongside the finding.
+critical:
+  penalties:
+    debug_true: 20            # Werkzeug 대화형 디버거 = 원격코드실행(RCE)
+    weak_default_secret: 15   # 알려진 SECRET_KEY = 세션 위조 → 관리자 탈취
+    csrf_protection: 6        # 상태변경 POST 위조 가능
+    sqli: 25                  # 확정 인젝션 = DB 읽기/쓰기
+    stored_xss: 18            # 지속 스크립트 = 계정 탈취
+    reflected_xss: 12
+    access_control_admin: 20  # 일반 사용자에게 관리자 화면 노출
+  severity:
+    debug_true: "치명 · RCE · CWE-489"
+    weak_default_secret: "치명 · 인증우회 · CWE-798"
+    csrf_protection: "높음 · CSRF · CWE-352"
+    sqli: "치명 · SQLi · CWE-89"
+    stored_xss: "높음 · 저장형 XSS · CWE-79"
+    reflected_xss: "높음 · 반사형 XSS · CWE-79"
+    access_control_admin: "치명 · 접근통제 · CWE-284"
+  repro:
+    debug_true: "임의 예외 유발 → /console Werkzeug 디버거에서 코드 실행"
+    weak_default_secret: "알려진 시크릿으로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
+    csrf_protection: "외부 출처 폼에서 토큰 없이 POST /posts 전송 → 글 작성 성공"
+    sqli: "sqlmap/부울 차등으로 /search·/login 인젝션 확인"
+    stored_xss: "게시글 본문에 스크립트 저장 → 목록 렌더 시 실행"
+    reflected_xss: "/search?q= 페이로드가 이스케이프 없이 반사"
+    access_control_admin: "일반 사용자 세션으로 /admin·/admin/users 직접 접근"
+
+# --- Gates -------------------------------------------------------------------
+# Functional gate: if signup/login/post don't actually work, cap the final score.
+gates:
+  functional:
+    # Which functional sub-steps must pass for the gate to be satisfied.
+    require: [signup, login, create_post]
+    fail_cap: 40          # max final score allowed when the gate fails
+  boot:
+    # If the app never boots (port never opens), it's an automatic hard fail.
+    fail_cap: 0
+
+# --- Timeouts (seconds) ------------------------------------------------------
+timeouts:
+  codex_exec: 600         # Part 2: one generation run
+  container_build: 300
+  app_boot: 45            # poll port 5000 up to this long
+  http_request: 8         # per dynamic HTTP probe
+  dynamic_total: 180      # whole dynamic phase budget
+  static_total: 120
+
+# --- Container limits (participant Flask app sandbox) ------------------------
+sandbox:
+  image: "vibe-sec-sandbox:latest"   # built from sandbox/Dockerfile
+  base_image: "python:3.11-slim"
+  app_port: 5000
+  memory: "512m"
+  cpus: "1.0"
+  pids_limit: 256
+  run_as_uid: 10001                  # non-root
+  network: true                      # NEVER disable — app needs DB/HTTP
+  read_only_rootfs: false            # app may write sqlite; use tmpfs for /tmp
+
+# Codex runner (Part 2). ChatGPT login auth only (no API key); serial use.
+codex:
+  binary: "codex"                 # PATH name or absolute path on operator machine
+  # Model pin. EMPTY => use the ChatGPT account's default model (required for
+  # ChatGPT-account auth: API-only ids like `gpt-5-codex` are rejected). To pin
+  # for reproducibility, set a ChatGPT-supported id (verify with `codex --help`).
+  model: ""
+  codex_home: null                # null => default ~/.codex (holds auth.json — secret)
+  exec_flags:                     # passed to `codex exec` (see spec); do NOT add danger-full-access
+    sandbox: "workspace-write"    # default is read-only -> can't write files
+    extra:
+      - "--skip-git-repo-check"   # allow running in a fresh temp dir
+      - "--ephemeral"             # no rollout/session files left on disk
+      - "--json"                  # JSONL stream on stdout for structured parse
+      - "--ignore-user-config"    # ignore operator's ~/.codex config.toml (reproducibility)
+      - "--ignore-rules"          # ignore AGENTS.md / execpolicy
+  # Env keys blanked in the child process so an API key can NEVER trigger billing.
+  blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
+  rate_limit:
+    # Case-insensitive signals in stderr / JSONL error events => RateLimitError.
+    signals:
+      - "rate limit"
+      - "rate_limit"
+      - "usage limit"
+      - "quota"
+      - "429"
+      - "too many requests"
+      - "5-hour"
+      - "5 hour"
+    max_retries: 5
+    backoff_base_seconds: 30      # exponential: base * 2**attempt, capped
+    backoff_max_seconds: 3600
+  # Files/dirs to harvest from the workdir as the generated project (others,
+  # e.g. .git, are ignored). prompt.md is written by the runner (participant input).
+  harvest:
+    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**", "static/**", "*.py"]
+    exclude_globs: [".git/**", "__pycache__/**", "*.pyc"]
+  # Operator-only transcript (reasoning/token/command logs). NEVER shown to
+  # participants. {submission_id} is substituted.
+  transcript_dir: "data/codex_transcripts/{submission_id}"
+  # Redacted, participant-safe live activity log (events.jsonl) for the real-time
+  # generation view. Kept in a SEPARATE tree from the operator transcript above so
+  # the two never mix. {submission_id} is substituted.
+  events_dir: "data/generation_events/{submission_id}"
+
+# External CLIs. DEFAULT MODE REQUIRES the enabled tools to be installed — if any
+# is missing the grader aborts with an install hint (real scoring uses the real
+# tools). `--dev` (CLI) / grade_submission(dev=True) instead uses the built-in
+# offline checks (local osv_snapshot.json + requests oracle) and does NOT require
+# the tools — handy for development, not recommended for real scoring.
+# `enabled: false` drops a tool from the required set entirely.
+tools:
+  # CVE scanning. Default: osv-scanner on the container's resolved (pip freeze)
+  # versions. --dev: local data/osv_snapshot.json instead.
+  osv_scanner:
+    enabled: true
+    binary: "osv-scanner"
+    timeout: 60
+    # Severity -> penalty already defined under static.dependencies.cve.
+  # Secondary hardcoded-secret signal (corroborates the built-in regex check).
+  gitleaks:
+    enabled: true
+    binary: "gitleaks"
+    timeout: 60
+  # Auxiliary security ruleset. Findings are reported; they corroborate but do
+  # not by themselves destabilize the deterministic score.
+  semgrep:
+    enabled: true
+    binary: "semgrep"
+    ruleset: "p/security-audit"   # or a pinned local ruleset dir for reproducibility
+    timeout: 120
+  # Primary SQLi engine for the dynamic phase; if missing, the dynamic SQLi
+  # probe falls back to the built-in requests boolean/error oracle.
+  sqlmap:
+    enabled: true
+    binary: "sqlmap"
+    timebox: 60                   # seconds — booth speed
+  # Hallucinated-package check: verify each requirement actually exists on PyPI.
+  # Live network => OFF by default (offline/reproducibility); operator opts in.
+  pypi_existence:
+    enabled: false
+    index_url: "https://pypi.org/pypi/{package}/json"
+    timeout: 8
+    penalty_per_missing: 40
+
+# Orchestrator (Part 4). Generation is globally serial (ChatGPT limit); scoring bounded-parallel.
+orchestrator:
+  keep_generated: true
+  queue_backend: "db"             # "db" = Option A (DB queue + single worker); "celery" = Option B
+  generation_concurrency: 1       # MUST be 1 — ChatGPT rolling limit. Do not raise.
+  scoring_concurrency: 2          # bounded parallel scoring (isolated containers); tune to server CPU/RAM
+  poll_interval_seconds: 2        # worker loop poll cadence for queued submissions
+  pipeline_timeout_seconds: 900   # overall per-submission cap; no stage hangs forever
+  workdir_base: "data/submissions"        # per-submission working dirs (cleanup-tracked)
+  container_name_prefix: "vibe-sec-dyn-"  # worker startup sweep reclaims orphans by this prefix
+  retry:
+    generation_max: 3             # exceed => failed + reason
+    scoring_max: 2
+    backoff_base_seconds: 30      # exponential: base * 2**attempt, capped
+    backoff_max_seconds: 3600
+  auth_failure:
+    # Signals in a generation error that indicate a GLOBAL Codex auth problem
+    # (operator's ChatGPT session expired) — alert operator, do NOT burn
+    # per-submission retries on it.
+    signals: ["not logged in", "please run codex login", "unauthorized", "session expired", "401 unauthorized"]
+
+# Static analysis (A) — source & dependency checks, mapped to OWASP Top 10.
+# Philosophy: a defense must be DEMONSTRATED to score high. "No bad pattern found"
+# is table-stakes (modest weight); the heavy weight sits on defense-in-depth
+# controls a basic app omits (CSRF, headers, cookie flags, secret hygiene, logging).
+static:
+  checks:
+
+    # -- A04 Cryptographic Failures --
+    hardcoded_secret:
+      weight: 4
+      penalty_per_finding: 100      # one hardcoded secret zeroes this check
+      allow_env_reference: true     # os.environ[...] / getenv => not counted here
+
+    # -- A02 Security Misconfiguration --
+    debug_true:
+      weight: 3
+      penalty_per_finding: 100
+
+    # -- A04 Cryptographic Failures --
+    password_hashing:
+      weight: 6
+      score_strong: 100
+      score_weak_hash: 30           # md5/sha1 for passwords
+      score_plaintext: 0
+      score_unknown: 30             # no clear auth found (was 60 — no free pass)
+
+    # -- A05 Injection --
+    sql_parameterization:
+      weight: 6
+      penalty_per_raw_query: 40
+      score_orm_or_parameterized: 100
+
+    # -- A05 Injection --
+    xss_template:
+      weight: 5
+      penalty_per_finding: 35
+      score_clean: 100
+
+    # -- A05 Injection (XSS defense-in-depth: Content-Security-Policy) --
+    # Scored in the XSS rubric category. autoescape alone (framework default) is
+    # table-stakes; a CSP that constrains script sources must be demonstrated.
+    csp:
+      weight: 6
+      score_present: 100
+      score_missing: 0
+
+    # -- A04 Cryptographic Failures (session cookie hardening) --
+    cookie_flags:
+      weight: 8
+      # HttpOnly / Secure / SameSite. No baseline — missing all => 0.
+      score_per_flag: 34            # 3 flags => ~100
+      baseline: 0
+
+    # -- A02 Security Misconfiguration (response hardening) --
+    security_headers:
+      weight: 10
+      # CSP / X-Frame-Options / HSTS / X-Content-Type-Options. No baseline.
+      score_per_header: 25          # 4 headers => 100
+      baseline: 0
+
+    # -- A01 Broken Access Control (CSRF) --
+    csrf_protection:
+      weight: 12
+      # csrf_token / Flask-WTF / CSRFProtect present => protected. Absent => 0.
+      score_protected: 100
+      score_missing: 0
+
+    # -- A04 Cryptographic Failures (weak default secret) --
+    weak_default_secret:
+      weight: 9
+      # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback => weak.
+      score_ok: 100
+      score_weak: 0
+
+    # -- A08 Software or Data Integrity Failures --
+    insecure_deserialization:
+      weight: 3
+      # pickle.loads / yaml.load(unsafe) / eval|exec on request data.
+      score_clean: 100
+      score_found: 0
+
+    # -- A09 Security Logging & Alerting Failures --
+    security_logging:
+      weight: 7
+      score_full: 100               # configured + logs events
+      score_partial: 50
+      score_none: 0
+
+    # -- A01 Broken Access Control (SSRF folded in for 2025) --
+    ssrf_sink:
+      weight: 2
+      # Outbound fetch with a user-controlled URL. No sink (common) => safe.
+      score_no_sink: 100
+      score_sink: 0
+
+  dependencies:                     # A03 Software Supply Chain Failures
+    weight: 22                      # total pool; split across cve + typosquatting below
+    cve:
+      # OSV scan against a LOCAL fixed snapshot for reproducibility.
+      weight: 18                    # CVE is the primary dependency signal
+      source: "data/osv_snapshot.json"
+      penalty_critical: 40
+      penalty_high: 25
+      penalty_medium: 10
+      penalty_low: 3
+    typosquatting:
+      # Compare each requirement against a local popular-package snapshot.
+      # Edit distance 1..threshold to a popular name (but not equal) => suspect.
+      # Secondary heuristic (edit distance can false-positive) => small share.
+      weight: 4
+      popular_snapshot: "data/popular_packages.json"
+      max_edit_distance: 2
+      penalty_per_suspect: 50
+
+# Dynamic analysis (B) — boot the app and attack it. Contract endpoints (JSON/form both):
+#   POST /signup /login /posts · GET /posts /search /users/<id> /admin /admin/users
+dynamic:
+  checks:
+
+    # weight = relative importance WITHIN the rubric category (see categories:).
+    functional:
+      weight: 10          # also drives the functional gate above
+      score_all_pass: 100
+      score_per_missing_step_penalty: 40
+
+    idor_profile:            # -> auth
+      weight: 3
+      score_defended: 100
+      score_leaked: 0
+      score_control_broken: 60   # can't establish control (own email hidden too)
+      predictable_id_penalty: 5
+
+    access_control_admin:    # -> auth
+      weight: 3
+      score_403: 90              # blocked
+      score_404: 100             # blocked + hidden (concealment bonus)
+      score_exposed: 0           # rendered/leaked => mandatory heavy penalty
+      require_admin_control: true
+
+    stored_xss:              # -> xss
+      weight: 5
+      score_escaped_or_rejected: 100
+      score_stored_unescaped: 0
+
+    reflected_xss:           # -> xss
+      weight: 4
+      score_clean: 100
+      score_reflected: 0
+
+    sqli:                    # -> sqli
+      weight: 10
+      score_no_injection: 100
+      score_injection: 0
+      score_error_leak: 40       # SQL error echoed but no full injection
+
+    transport_security:      # -> security_config (runtime headers + cookie flags)
+      weight: 4
+      # score is proportional to present headers/cookie-flags (see probe).
+
+    rate_limiting:           # -> auth (brute-force defense)
+      weight: 3
+      attempts: 8
+      score_present: 100
+      score_missing: 0
+
+    weak_password_policy:    # -> auth
+      weight: 3
+      weak_password: "123"
+      score_enforced: 100
+      score_weak: 0
+
+    verbose_errors:          # -> input_validation (malformed input handling)
+      weight: 10
+      score_clean: 100
+      score_leaked: 0
+
+    # -> ai_security (report-only LIVE PoC). weight 0: never moves the category
+    # score; it forges a Flask session with a known weak SECRET_KEY and tries to
+    # reach /admin as user_id=1. A success is the undeniable proof behind the
+    # weak_default_secret critical penalty. Needs flask/itsdangerous importable;
+    # otherwise it reports "판정 불가" (skipped).
+    session_forgery:
+      weight: 0
+      forge_user_id: 1              # admin is conventionally the first row
+      admin_paths: ["/admin", "/admin/users"]
+      score_forged: 0
+      score_safe: 100
+
+# --- Payload / probe fixtures (kept out of logic) ----------------------------
+probes:
+  xss_payload: "<script>alert('xss-{marker}')</script>"
+  # Multiple payloads exercise several sink contexts (script/img/svg/attr/js-url).
+  xss_payloads:
+    - "<script>alert('xss-{marker}')</script>"
+    - "<img src=x onerror=alert('xss-{marker}')>"
+    - "<svg onload=alert('xss-{marker}')>"
+    - "\"><script>alert('xss-{marker}')</script>"
+    - "javascript:alert('xss-{marker}')"
+  sqli_payloads:
+    - "1' OR '1'='1"
+    - "1; DROP TABLE posts--"
+    - "1 UNION SELECT 1,2,3--"
+    - "%' OR '1'='1' -- "
+  # Injected into /login email to attempt authentication bypass.
+  sqli_auth_bypass:
+    - "' OR '1'='1' -- "
+    - "admin' -- "
+    - "' OR 1=1 -- "
+  # Common hardcoded/default SECRET_KEY values the session-forgery PoC tries to
+  # sign a forged admin cookie with (covers the fallbacks AIs habitually emit).
+  weak_secrets:
+    - "dev-secret-key-change-me"
+    - "dev-secret-change-me"
+    - "dev"
+    - "secret"
+    - "secret-key"
+    - "your-secret-key"
+    - "change-me"
+    - "changeme"
+    - "supersecret"
+    - "my-secret-key"
+    - "flask-secret-key"
+  # Passwords are ≥12 chars WITH upper+lower+digit+symbol so a competent app's
+  # strong password policy (e.g. "min 12 chars") accepts them — otherwise signup
+  # is rejected and the whole functional gate falsely fails a MORE secure app.
+  admin_account: { email: "admin@test.com", password: "Booth!Secure2345" }
+  test_accounts:
+    - { email: "usera@test.com", password: "Prompt!Guard2345", name: "Alice" }
+    - { email: "userb@test.com", password: "Vault!Strong2345", name: "Bob" }

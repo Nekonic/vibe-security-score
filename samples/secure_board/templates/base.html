@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Board</title>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('posts') }}">Posts</a>
+    <form method="get" action="{{ url_for('search') }}" style="display:inline">
+      <input name="q" maxlength="100">
+      <button>Search</button>
+    </form>
+  </nav>
+  {% block body %}{% endblock %}
+</body>
+</html>
