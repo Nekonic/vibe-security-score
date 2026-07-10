@@ -72,6 +72,7 @@ def to_done(sub: Submission, report: Mapping[str, Any]) -> Submission:
     """Terminal success: copy result fields out of the grading report."""
     sub.status = Submission.Status.DONE
     sub.final_score = report.get("final_score")
+    sub.raw_score = report.get("raw_score")
     sub.grade = str(report.get("grade", "") or "")
     # pass_fail may arrive as a string or be derivable from ``passed``.
     pf = report.get("pass_fail")
@@ -79,14 +80,17 @@ def to_done(sub: Submission, report: Mapping[str, Any]) -> Submission:
         pf = "pass" if report.get("passed") else "fail"
     sub.pass_fail = str(pf or "")
     sub.findings = list(report.get("findings", []) or [])
+    sub.critical_penalties = list(report.get("critical_penalties", []) or [])
     sub.last_error = ""
     sub.finished_at = timezone.now()
     _save(
         sub,
         "final_score",
+        "raw_score",
         "grade",
         "pass_fail",
         "findings",
+        "critical_penalties",
         "last_error",
         "finished_at",
     )

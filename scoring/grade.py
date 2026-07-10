@@ -21,6 +21,7 @@ def build_report(submission_id: str, result: GradeResult) -> dict:
     return {
         "submission_id": submission_id,
         "final_score": round(float(result.score), 2),
+        "raw_score": round(float(result.raw_score), 2),
         "grade": result.grade,
         "pass_fail": "PASS" if result.passed else "FAIL",
         "passed": bool(result.passed),
@@ -28,6 +29,8 @@ def build_report(submission_id: str, result: GradeResult) -> dict:
         "cap_reason": result.cap_reason,
         "functional_failed": bool(result.functional_failed),
         "boot_failed": bool(result.boot_failed),
+        "critical_penalties": [p.to_dict() for p in result.critical_penalties],
+        "categories": [c.to_dict() for c in result.categories],
         "findings": _flatten_findings(result),
     }
 
@@ -38,13 +41,28 @@ def grade_submission(
     config: Optional[Config] = None,
     *,
     static_only: bool = False,
+    dev: bool = False,
 ) -> dict:
     """Grade one project dir. Dynamic phase runs unless static_only (needs Docker).
+
+    ``dev=True`` runs the real external tools (osv-scanner/gitleaks/semgrep/sqlmap);
+    default False uses the built-in offline checks and warns.
 
     Infrastructure errors from the dynamic phase propagate (not swallowed) so the
     orchestrator can tell an operational failure from an app that failed to boot.
     """
     cfg = config or load_config()
+    if dev:
+        cfg.dev = True
+    if not cfg.dev:
+        from .static.tools import missing_required_tools
+
+        missing = missing_required_tools(cfg)
+        if missing:
+            raise RuntimeError(
+                "필수 외부 도구 미설치: " + ", ".join(missing)
+                + ". 설치하거나 dev=True 로 실행하세요(내장 검사, 권장하지 않음)."
+            )
 
     checks: List[CheckResult] = list(run_static(code_dir, cfg))
     functional_failed = False

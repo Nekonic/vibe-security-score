@@ -193,6 +193,49 @@ def _balanced_arg(text: str, open_idx: int) -> str:
     return "".join(out)
 
 
+def _first_call_arg(arg: str) -> str:
+    """The first positional argument of a call whose balanced source (outer parens
+    included) is ``arg``. For execute()/executescript() that is the SQL query
+    itself — later args are *bound parameters* (e.g. an f-string LIKE value like
+    ``f"%{q}%"``), which are safe and must NOT be mistaken for string-built SQL."""
+    if not arg.startswith("("):
+        return arg
+    inner = arg[1:-1] if arg.endswith(")") else arg[1:]
+    depth = 0
+    i = 0
+    n = len(inner)
+    quote = None  # active string delimiter: ' " ''' or \"""
+    while i < n:
+        ch = inner[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if inner.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+            continue
+        if ch in "'\"":
+            triple = inner[i:i + 3]
+            if triple in ('"""', "'''"):
+                quote = triple
+                i += 3
+                continue
+            quote = ch
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return inner[:i]
+        i += 1
+    return inner
+
+
 def check_sql_parameterization(sources: Sequence[Source], cfg: dict) -> CheckResult:
     penalty = float(cfg.get("penalty_per_raw_query", 40))
     score_ok = float(cfg.get("score_orm_or_parameterized", 100))
@@ -204,7 +247,8 @@ def check_sql_parameterization(sources: Sequence[Source], cfg: dict) -> CheckRes
             open_idx = text.index("(", m.end() - 1)
             arg = _balanced_arg(text, open_idx)
             lineno = text.count("\n", 0, m.start()) + 1
-            if _is_string_built_sql(arg):
+            # Only the query (first arg) can carry injection; bound params are safe.
+            if _is_string_built_sql(_first_call_arg(arg)):
                 reasons.append(f"{path}:{lineno} 문자열 조합 SQL을 execute()에 전달")
                 evidence.append(f"{path}:{lineno}: {arg.strip()[:160]}")
 

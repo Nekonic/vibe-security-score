@@ -29,12 +29,21 @@ class Submission(models.Model):
     )
 
     final_score = models.FloatField(null=True, blank=True)
+    # Weighted category score BEFORE critical penalties (transparency).
+    raw_score = models.FloatField(null=True, blank=True)
     grade = models.CharField(max_length=32, blank=True, default="")
     pass_fail = models.CharField(max_length=16, blank=True, default="")
     findings = models.JSONField(default=list, blank=True)
+    # App-wide-exploitable defects deducted from the final score, each with a
+    # severity + reproduction + live evidence (shown to justify the deduction).
+    critical_penalties = models.JSONField(default=list, blank=True)
 
     generation_retries = models.IntegerField(default=0)
     scoring_retries = models.IntegerField(default=0)
+    # Operator re-run: score the EXISTING generated code again (skip Codex) — e.g.
+    # after a scoring-config change. Set by the admin re-run button; the worker
+    # consumes it, skipping generation when the generated dir still exists.
+    regrade_only = models.BooleanField(default=False)
 
     last_error = models.TextField(blank=True, default="")
     # Generation workdir, tracked so cleanup can remove it.
@@ -48,6 +57,8 @@ class Submission(models.Model):
 
     class Meta:
         ordering = ["submitted_at"]
+        verbose_name = "제출"
+        verbose_name_plural = "제출"
         indexes = [
             models.Index(fields=["status", "submitted_at"]),
         ]

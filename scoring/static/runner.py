@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 from ..config import Config
 from ..models import CheckResult
 from . import source_checks as sc
+from . import owasp_checks as oc
 from . import dependency_checks as dc
 from . import tools as tools_mod
 
@@ -85,24 +86,31 @@ def run_static(app_dir: str, config: Config) -> List[CheckResult]:
     results.append(sc.check_cookie_flags(sources, checks_cfg.get("cookie_flags", {})))
     results.append(sc.check_security_headers(sources, checks_cfg.get("security_headers", {})))
 
-    prompt_cfg = checks_cfg.get("prompt_intent", {})
-    prompt_text = _read_prompt(app_dir, prompt_cfg.get("file", "prompt.md"))
-    results.append(sc.check_prompt_intent(prompt_text, prompt_cfg))
+    # OWASP defense-in-depth controls (must be demonstrated, not merely absent-of-bug).
+    results.append(oc.check_csrf_protection(sources, checks_cfg.get("csrf_protection", {}), templates))
+    results.append(oc.check_csp(sources, checks_cfg.get("csp", {}), templates))
+    results.append(oc.check_weak_default_secret(sources, checks_cfg.get("weak_default_secret", {})))
+    results.append(oc.check_insecure_deserialization(sources, checks_cfg.get("insecure_deserialization", {})))
+    results.append(oc.check_security_logging(sources, checks_cfg.get("security_logging", {})))
+    results.append(oc.check_ssrf_sink(sources, checks_cfg.get("ssrf_sink", {})))
 
-    # The single dependencies.weight is split evenly across cve + typosquatting.
+    # dependencies.weight is split across cve + typosquatting by their explicit
+    # sub-weights (typosquatting is a smaller share; edit distance can false-flag).
     req_text = _read_requirements(app_dir)
     requirements = dc.parse_requirements(req_text)
 
     dep_weight = float(dep_cfg.get("weight", 0))
-    split_cfg = dict(dep_cfg)
-    split_cfg["weight"] = dep_weight / 2.0
+    cve_cfg = dict(dep_cfg)
+    cve_cfg["weight"] = float((dep_cfg.get("cve") or {}).get("weight", dep_weight / 2.0))
+    typo_cfg = dict(dep_cfg)
+    typo_cfg["weight"] = float((dep_cfg.get("typosquatting") or {}).get("weight", dep_weight / 2.0))
 
     # CVE: OSV-Scanner primary (if installed+enabled) with local-snapshot fallback.
     req_path = _requirements_path(app_dir)
     results.append(
-        tools_mod.check_cve_with_osv(requirements, split_cfg, req_path, config)
+        tools_mod.check_cve_with_osv(requirements, cve_cfg, req_path, config)
     )
-    results.append(dc.check_typosquatting(requirements, split_cfg))
+    results.append(dc.check_typosquatting(requirements, typo_cfg))
 
     # Optional external tools: gitleaks + semgrep report-only (weight 0), pypi opt-in.
     results.append(tools_mod.check_gitleaks(app_dir, config))

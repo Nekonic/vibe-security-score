@@ -52,7 +52,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = "grader.urls"
+ROOT_URLCONF = "core.urls"
 
 TEMPLATES = [
     {
@@ -69,8 +69,8 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "grader.wsgi.application"
-ASGI_APPLICATION = "grader.asgi.application"
+WSGI_APPLICATION = "core.wsgi.application"
+ASGI_APPLICATION = "core.asgi.application"
 
 # Default: sqlite (dev/test). For prod set DJANGO_DB_* to Postgres (better for
 # threaded/parallel scoring writes).
@@ -100,10 +100,23 @@ else:
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    # Operator passwords must be long (public deployment) — bump the minimum.
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+     "OPTIONS": {"min_length": 12}},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+
+# --- Access control (public deployment) --------------------------------------
+# No public signup: operators create accounts (createsuperuser / Django admin) and
+# hand them out. Pages are viewable (for the booth screen), but SUBMITTING (which
+# costs a Codex call) requires login — the submit form only shows to logged-in
+# accounts. Session lasts 10 hours (a booth day) from login, not tied to browser.
+LOGIN_URL = "login"
+LOGIN_REDIRECT_URL = "submissions:submit"
+LOGOUT_REDIRECT_URL = "submissions:submit"
+SESSION_COOKIE_AGE = 60 * 60 * 10
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 LANGUAGE_CODE = "ko-kr"
 TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", "Asia/Seoul")

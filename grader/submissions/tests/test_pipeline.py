@@ -85,6 +85,51 @@ class PipelineTestBase(TransactionTestCase):
         orch.shutdown(wait=True)
 
 
+class RegradeTests(PipelineTestBase):
+    def test_regrade_only_skips_generation_and_scores_existing_code(self):
+        cfg = _test_config(self.workdir_base)
+        gen = FakeGenerate(self.workdir_base, duration=0.02)
+        grade = FakeGrade(duration=0.02)
+        orch = Orchestrator(cfg, generate_fn=gen, grade_fn=grade)
+
+        code = self.tmp / "generated_regrade"
+        code.mkdir()
+        (code / "app.py").write_text("# existing generated app\n", encoding="utf-8")
+        sub = Submission.objects.create(
+            participant="p", prompt="x",
+            status=Submission.Status.QUEUED, regrade_only=True, workdir=str(code),
+        )
+
+        self._drain(orch)
+
+        self.assertEqual(len(gen.intervals), 0, "Codex generation must be skipped on re-grade")
+        self.assertIn(str(sub.pk), grade.calls, "existing code should be re-scored")
+        sub.refresh_from_db()
+        self.assertFalse(sub.regrade_only, "flag is consumed after one re-grade")
+        self.assertEqual(sub.status, Submission.Status.DONE)
+
+    def test_regrade_without_code_fails_and_never_generates(self):
+        # Re-grade must NEVER fall back to Codex: if the code dir is gone, the
+        # submission FAILS instead of regenerating.
+        cfg = _test_config(self.workdir_base)
+        gen = FakeGenerate(self.workdir_base, duration=0.02)
+        grade = FakeGrade(duration=0.02)
+        orch = Orchestrator(cfg, generate_fn=gen, grade_fn=grade)
+
+        sub = Submission.objects.create(
+            participant="p", prompt="x", status=Submission.Status.QUEUED,
+            regrade_only=True, workdir="/gone/data/generated/999",
+        )
+
+        self._drain(orch)
+
+        self.assertEqual(len(gen.intervals), 0, "must NOT call Codex on a code-less re-grade")
+        self.assertEqual(grade.calls, [], "nothing to score")
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Submission.Status.FAILED)
+        self.assertIn("코드가 없", sub.last_error)
+
+
 class SerialGenerationTests(PipelineTestBase):
     def test_a_serial_generation_no_overlap(self) -> None:
         """(a) Enqueue 5; assert NO two generation intervals overlap."""

@@ -17,10 +17,43 @@ from . import dependency_checks as dc
 
 _SKIP_REASON = "검사 생략(도구 미설치)"
 _SKIP_DISABLED = "검사 생략(도구 비활성화)"
+_SKIP_DEV = "검사 생략(--dev: 내장 검사 사용, 외부 도구 미실행)"
+
+# External tools required in the DEFAULT (non-dev) mode. --dev uses the built-in
+# checks instead and does NOT require these.
+_REQUIRED_TOOLS = ("osv_scanner", "gitleaks", "semgrep", "sqlmap")
 
 
 def _tool_cfg(config, name: str) -> dict:
     return (config.get(f"tools.{name}", {}) or {})
+
+
+def missing_required_tools(config) -> List[str]:
+    """Enabled external tools whose binary is not installed. Empty in --dev
+    (built-in checks are used and no tool is required)."""
+    if getattr(config, "dev", False):
+        return []
+    missing: List[str] = []
+    for name in _REQUIRED_TOOLS:
+        tcfg = _tool_cfg(config, name)
+        if bool(tcfg.get("enabled", False)) and not resolve_binary(tcfg.get("binary", name)):
+            missing.append(str(tcfg.get("binary", name)))
+    return missing
+
+
+def _gate(config, name: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return (bin_path, skip_reason). Default: use the installed external tool
+    (a preflight check aborts earlier if it is missing). --dev: don't use the tool
+    at all — the caller falls back to the built-in check."""
+    tcfg = _tool_cfg(config, name)
+    if not bool(tcfg.get("enabled", False)):
+        return None, _SKIP_DISABLED
+    if getattr(config, "dev", False):
+        return None, _SKIP_DEV
+    bin_path = resolve_binary(tcfg.get("binary", name))
+    if bin_path:
+        return bin_path, None
+    return None, _SKIP_REASON  # normally unreachable (preflight blocks this)
 
 
 def resolve_binary(binary: str) -> Optional[str]:
@@ -89,11 +122,20 @@ def _map_severity(raw: str) -> str:
     return _SEV_ALIASES.get(str(raw or "").lower(), "medium")
 
 
+_SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
 def _parse_osv_output(data: object) -> List[Tuple[str, str, str, str]]:
-    """Extract (pkg, version, cve_id, severity) tuples from osv-scanner JSON."""
-    findings: List[Tuple[str, str, str, str]] = []
+    """Extract (pkg, version, cve_id, severity) tuples from osv-scanner JSON.
+
+    De-duplicated by (package, advisory id): osv-scanner can list the same
+    advisory more than once (multiple lockfile entries, or a GHSA + its CVE
+    alias), and double-penalising one CVE is unfair/indefensible. Keeps the
+    highest severity seen for each (package, id)."""
+    seen: Dict[Tuple[str, str], Tuple[str, str, str, str]] = {}
+    order: List[Tuple[str, str]] = []
     if not isinstance(data, dict):
-        return findings
+        return []
     for result in data.get("results", []) or []:
         for pkg in (result.get("packages", []) or []):
             pinfo = pkg.get("package", {}) or {}
@@ -102,8 +144,14 @@ def _parse_osv_output(data: object) -> List[Tuple[str, str, str, str]]:
             for vuln in (pkg.get("vulnerabilities", []) or []):
                 cve_id = vuln.get("id", "UNKNOWN")
                 sev = _extract_osv_severity(vuln, pkg)
-                findings.append((name, version, cve_id, sev))
-    return findings
+                key = (name.lower(), cve_id)
+                prev = seen.get(key)
+                if prev is None:
+                    seen[key] = (name, version, cve_id, sev)
+                    order.append(key)
+                elif _SEV_RANK.get(sev, 1) > _SEV_RANK.get(prev[3], 1):
+                    seen[key] = (name, version, cve_id, sev)  # keep worst severity
+    return [seen[k] for k in order]
 
 
 def _extract_osv_severity(vuln: dict, pkg: dict) -> str:
@@ -144,10 +192,9 @@ def check_cve_with_osv(
     tool="osv-scanner" when the CLI produced the result; "" for the fallback
     (guaranteeing an offline score identical to the deterministic built-in)."""
     tcfg = _tool_cfg(config, "osv_scanner")
-    enabled = bool(tcfg.get("enabled", False))
-    bin_path = resolve_binary(tcfg.get("binary", "osv-scanner")) if enabled else None
+    bin_path, _skip = _gate(config, "osv_scanner")
 
-    if enabled and bin_path and requirements_path and os.path.isfile(requirements_path):
+    if bin_path and requirements_path and os.path.isfile(requirements_path):
         cmd = _stub_command(bin_path) + [
             "--format", "json",
             "--lockfile", f"requirements.txt:{requirements_path}",
@@ -157,6 +204,7 @@ def check_cve_with_osv(
         if result is not None:
             return result
 
+    # Default / fallback: deterministic local snapshot (offline, reproducible).
     return dc.check_cve(requirements, dep_cfg)
 
 
@@ -199,11 +247,9 @@ def _osv_result_from_data(data: object, dep_cfg: dict) -> Optional[CheckResult]:
 def check_gitleaks(app_dir: str, config) -> CheckResult:
     tcfg = _tool_cfg(config, "gitleaks")
     label = "시크릿 스캔(gitleaks)"
-    if not bool(tcfg.get("enabled", False)):
-        return _skipped_check("gitleaks_secrets", label, "gitleaks", _SKIP_DISABLED)
-    bin_path = resolve_binary(tcfg.get("binary", "gitleaks"))
-    if not bin_path:
-        return _skipped_check("gitleaks_secrets", label, "gitleaks", _SKIP_REASON)
+    bin_path, skip = _gate(config, "gitleaks")
+    if bin_path is None:
+        return _skipped_check("gitleaks_secrets", label, "gitleaks", skip or _SKIP_REASON)
 
     cmd = _stub_command(bin_path) + [
         "detect", "--no-git", "--report-format", "json",
@@ -249,11 +295,9 @@ def _parse_gitleaks(data: object) -> Tuple[List[str], List[str]]:
 def check_semgrep(app_dir: str, config) -> CheckResult:
     tcfg = _tool_cfg(config, "semgrep")
     label = "정적 룰셋(semgrep)"
-    if not bool(tcfg.get("enabled", False)):
-        return _skipped_check("semgrep", label, "semgrep", _SKIP_DISABLED)
-    bin_path = resolve_binary(tcfg.get("binary", "semgrep"))
-    if not bin_path:
-        return _skipped_check("semgrep", label, "semgrep", _SKIP_REASON)
+    bin_path, skip = _gate(config, "semgrep")
+    if bin_path is None:
+        return _skipped_check("semgrep", label, "semgrep", skip or _SKIP_REASON)
 
     ruleset = tcfg.get("ruleset", "p/security-audit")
     cmd = _stub_command(bin_path) + ["--config", ruleset, "--json", "--quiet", app_dir]
@@ -300,6 +344,8 @@ def check_pypi_existence(requirements: List[Tuple[str, str]], config) -> CheckRe
     label = "존재하지 않는 패키지"
     if not bool(tcfg.get("enabled", False)):
         return _skipped_check("hallucinated_package", label, "pypi", _SKIP_DISABLED)
+    if getattr(config, "dev", False):
+        return _skipped_check("hallucinated_package", label, "pypi", _SKIP_DEV)
 
     index_url = tcfg.get("index_url", "https://pypi.org/pypi/{package}/json")
     timeout = float(tcfg.get("timeout", 8))

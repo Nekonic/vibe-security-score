@@ -8,19 +8,31 @@ import sys
 from .aggregate import combine_scores
 from .config import load_config
 from .dynamic.runner import run_dynamic
+from .static import tools as tools_mod
 from .static.runner import run_static
 
 
-def _load(config_path: str | None):
-    return load_config(config_path) if config_path else load_config()
+def _load(config_path: str | None, dev: bool = False):
+    config = load_config(config_path) if config_path else load_config()
+    config.dev = bool(dev)
+    if not dev:
+        missing = tools_mod.missing_required_tools(config)
+        if missing:
+            print(
+                f"[error] 필수 외부 도구가 설치되어 있지 않습니다: {', '.join(missing)}. "
+                "설치 후 다시 실행하거나, 내장 검사로 돌리려면 --dev 를 사용하세요(권장하지 않음).",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+    return config
 
 
 def _print_report(report: dict) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
-def _cmd_static(app_dir: str, config_path: str | None) -> int:
-    config = _load(config_path)
+def _cmd_static(app_dir: str, config_path: str | None, dev: bool = False) -> int:
+    config = _load(config_path, dev)
     check_results = run_static(app_dir, config)
     grade = combine_scores(check_results, config, functional_failed=False, boot_failed=False)
 
@@ -35,8 +47,8 @@ def _cmd_static(app_dir: str, config_path: str | None) -> int:
     return 0
 
 
-def _cmd_dynamic(app_dir: str, config_path: str | None) -> int:
-    config = _load(config_path)
+def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> int:
+    config = _load(config_path, dev)
     checks, functional_failed, boot_failed = run_dynamic(app_dir, config)
     grade = combine_scores(
         checks, config, functional_failed=functional_failed, boot_failed=boot_failed
@@ -56,8 +68,8 @@ def _cmd_dynamic(app_dir: str, config_path: str | None) -> int:
     return 0
 
 
-def _cmd_grade(app_dir: str, config_path: str | None) -> int:
-    config = _load(config_path)
+def _cmd_grade(app_dir: str, config_path: str | None, dev: bool = False) -> int:
+    config = _load(config_path, dev)
     static_checks = run_static(app_dir, config)
     dynamic_checks, functional_failed, boot_failed = run_dynamic(app_dir, config)
     all_checks = static_checks + dynamic_checks
@@ -67,11 +79,18 @@ def _cmd_grade(app_dir: str, config_path: str | None) -> int:
     )
 
     print(f"=== {app_dir} ===")
-    print(f"최종 점수: {round(grade.score, 2)}  등급: {grade.grade}"
+    print(f"최종 점수: {round(grade.score, 2)} / 100  등급: {grade.grade}"
           + (f"  (상한 적용: {grade.cap_reason})" if grade.capped else ""))
+    if grade.critical_penalties:
+        deducted = round(grade.raw_score - grade.score, 2)
+        print(f"기본 점수 {round(grade.raw_score, 2)} − 치명 감점 {deducted} = {round(grade.score, 2)}")
+        for p in grade.critical_penalties:
+            print(f"  −{p.penalty:<5} {p.check_id:<22} {p.severity}")
     print(f"boot_failed={boot_failed}  functional_failed={functional_failed}")
     for cat in grade.categories:
-        print(f"\n[{cat.name}] 점수 {round(cat.score, 2)} (가중치 {round(cat.weight, 3)})")
+        max_points = round(cat.weight * 100.0, 1)      # category's share of 100
+        earned = round(cat.score / 100.0 * max_points, 1)
+        print(f"\n[{cat.name}] {earned} / {max_points}점  (내부 {round(cat.score, 1)}/100)")
         for c in cat.checks:
             mark = "✔" if c.passed else "✘"
             print(f"  {mark} {c.check_id:<22} {round(c.score, 1):>6}  {c.label}")
@@ -104,14 +123,17 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=helptext)
         p.add_argument("app_dir", help="Path to the participant app directory")
         p.add_argument("--config", default=None, help="Path to scoring.yaml (default: config/scoring.yaml)")
+        p.add_argument("--dev", action="store_true",
+                       help="Run REAL external tools (osv-scanner/gitleaks/semgrep/sqlmap). "
+                            "Default: off — warn and use built-in offline checks.")
 
     args = parser.parse_args(argv)
     if args.command == "static":
-        return _cmd_static(args.app_dir, args.config)
+        return _cmd_static(args.app_dir, args.config, args.dev)
     if args.command == "dynamic":
-        return _cmd_dynamic(args.app_dir, args.config)
+        return _cmd_dynamic(args.app_dir, args.config, args.dev)
     if args.command == "grade":
-        return _cmd_grade(args.app_dir, args.config)
+        return _cmd_grade(args.app_dir, args.config, args.dev)
     parser.error("unknown command")
     return 2
 

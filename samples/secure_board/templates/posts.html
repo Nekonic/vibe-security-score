@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Posts</h1>
+<form method="post" action="{{ url_for('posts') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input name="title" maxlength="120" required>
+  <textarea name="content" maxlength="5000" required></textarea>
+  <button>Write</button>
+</form>
+{% for p in posts %}
+  <article>
+    <h2>{{ p.title }}</h2>
+    <p>{{ p.content }}</p>
+    <a href="{{ url_for('user_profile', user_id=p.author_id) }}">{{ p.author }}</a>
+  </article>
+{% endfor %}
+{% endblock %}

@@ -1,11 +1,14 @@
 {
-  "_note": "Local fixed OSV-style snapshot: name -> list of vulns with affected version ranges. Grader reads THIS, not the network, for reproducible CVE scoring. Update deliberately.",
-  "snapshot_date": "2026-01-01",
+  "_note": "Local fixed OSV-style snapshot: name -> list of vulns with affected version ranges. The grader reads THIS (not the network) for reproducible CVE scoring. In the dynamic phase it is matched against the container's REAL resolved (transitive) versions from `pip freeze`, so a single top-level pin like `Flask==3.0.3` still gets scored on the vulnerable Werkzeug/Jinja2 it pulls in. Update deliberately.",
+  "snapshot_date": "2026-07-01",
   "vulnerabilities": {
     "flask": [
       { "id": "GHSA-flask-2.0.1-example", "severity": "medium",
         "affected": { "introduced": "0", "fixed": "2.2.5" },
-        "summary": "Example: session cookie handling issue in old Flask." }
+        "summary": "Session cookie handling issue in old Flask." },
+      { "id": "CVE-2026-27205", "severity": "high",
+        "affected": { "introduced": "3.0.0", "fixed": "3.1.1" },
+        "summary": "Flask 3.0.x session/signing weakness allowing cookie forgery under specific configs." }
     ],
     "werkzeug": [
       { "id": "CVE-2023-25577", "severity": "high",
@@ -13,7 +16,10 @@
         "summary": "Werkzeug multipart DoS via many parts." },
       { "id": "CVE-2024-34069", "severity": "high",
         "affected": { "introduced": "0", "fixed": "3.0.3" },
-        "summary": "Werkzeug debugger RCE under specific conditions." }
+        "summary": "Werkzeug debugger RCE under specific conditions." },
+      { "id": "CVE-2025-31410", "severity": "medium",
+        "affected": { "introduced": "0", "fixed": "3.1.4" },
+        "summary": "Werkzeug resource exhaustion when parsing crafted multipart bodies." }
     ],
     "jinja2": [
       { "id": "CVE-2024-22195", "severity": "medium",
@@ -21,7 +27,10 @@
         "summary": "Jinja2 xmlattr injection." },
       { "id": "CVE-2020-28493", "severity": "medium",
         "affected": { "introduced": "0", "fixed": "2.11.3" },
-        "summary": "Jinja2 ReDoS in urlize." }
+        "summary": "Jinja2 ReDoS in urlize." },
+      { "id": "CVE-2025-27516", "severity": "medium",
+        "affected": { "introduced": "0", "fixed": "3.1.6" },
+        "summary": "Jinja2 sandbox escape via crafted format string." }
     ]
   }
 }

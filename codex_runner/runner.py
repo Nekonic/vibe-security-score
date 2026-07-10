@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from scoring.config import Config, load_config
 
@@ -132,13 +134,27 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 pass
 
 
+def _stream_reader(stream, tag: str, q: "queue.Queue") -> None:
+    """Push (tag, line) for each line, then (tag, None) at EOF. Runs in a thread
+    so stdout/stderr are drained concurrently (no pipe-buffer deadlock)."""
+    try:
+        for line in stream:
+            q.put((tag, line))
+    finally:
+        q.put((tag, None))
+
+
 def _run_codex(
     argv: Sequence[str],
     prompt: str,
     workdir: pathlib.Path,
     env: Dict[str, str],
     timeout: float,
+    event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Tuple[int, str, str, float]:
+    """Run codex, STREAMING stdout line-by-line so ``event_sink`` sees each JSONL
+    event live (for the real-time UI). Still returns the full stdout/stderr for the
+    transcript. stderr is drained in a thread; the wall-clock timeout kills the tree."""
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -151,6 +167,7 @@ def _run_codex(
             text=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,  # line-buffered so events arrive promptly
             **_popen_kwargs(),
         )
     except FileNotFoundError as exc:
@@ -162,21 +179,68 @@ def _run_codex(
             )
         ) from exc
 
+    # Feed the prompt then close stdin (codex exec reads the prompt from stdin).
     try:
-        stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _kill_tree(proc)
+        if proc.stdin is not None:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+    q: "queue.Queue" = queue.Queue()
+    threading.Thread(target=_stream_reader, args=(proc.stdout, "out", q), daemon=True).start()
+    threading.Thread(target=_stream_reader, args=(proc.stderr, "err", q), daemon=True).start()
+
+    stdout_parts: List[str] = []
+    stderr_parts: List[str] = []
+    eofs = 0
+    deadline = start + timeout
+    while eofs < 2:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_tree(proc)
+            elapsed = time.monotonic() - start
+            raise GenerationTimeoutError(
+                detail=f"codex exec exceeded {timeout}s (elapsed {elapsed:.1f}s)"
+            )
         try:
-            proc.communicate(timeout=10)
-        except Exception:
-            pass
-        elapsed = time.monotonic() - start
-        raise GenerationTimeoutError(
-            detail=f"codex exec exceeded {timeout}s (elapsed {elapsed:.1f}s)"
-        ) from exc
+            tag, line = q.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            continue
+        if line is None:
+            eofs += 1
+            continue
+        if tag == "out":
+            stdout_parts.append(line)
+            if event_sink is not None:
+                obj = _parse_line(line)
+                if obj is not None:
+                    try:
+                        event_sink(obj)
+                    except Exception:
+                        pass  # a bad sink must never break generation
+        else:
+            stderr_parts.append(line)
+
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
 
     elapsed = time.monotonic() - start
-    return proc.returncode, stdout or "", stderr or "", elapsed
+    return (proc.returncode if proc.returncode is not None else -1,
+            "".join(stdout_parts), "".join(stderr_parts), elapsed)
+
+
+def _parse_line(line: str) -> Optional[Dict[str, Any]]:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _parse_jsonl(stdout: str) -> List[Dict[str, Any]]:
@@ -300,8 +364,12 @@ def generate(
     *,
     config: Optional[Config] = None,
     keep_workdir: bool = False,
+    event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> pathlib.Path:
-    """Generate a Flask project for ``prompt`` and return the harvested dir."""
+    """Generate a Flask project for ``prompt`` and return the harvested dir.
+
+    ``event_sink`` (optional) receives each codex JSONL event live as it streams,
+    powering the real-time generation view. It must never raise (errors ignored)."""
     if config is None:
         config = load_config()
 
@@ -321,7 +389,7 @@ def generate(
     try:
         try:
             returncode, stdout, stderr, elapsed = _run_codex(
-                argv, prompt, workdir, env, timeout
+                argv, prompt, workdir, env, timeout, event_sink=event_sink
             )
         except GenerationTimeoutError as exc:
             _write_transcript(

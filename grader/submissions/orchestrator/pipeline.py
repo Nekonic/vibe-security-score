@@ -56,7 +56,7 @@ def _default_grade_fn() -> Callable[..., dict]:
 @dataclass
 class OrchestratorConfig:
     """Typed view over config/scoring.yaml ``orchestrator:``."""
-
+    keep_generated: bool = False
     queue_backend: str = "db"
     generation_concurrency: int = 1
     scoring_concurrency: int = 2
@@ -82,6 +82,7 @@ class OrchestratorConfig:
             config = load_config()
         g = config.get  # dotted getter
         return cls(
+            keep_generated=bool(g("orchestrator.keep_generated", False)),
             queue_backend=g("orchestrator.queue_backend", "db"),
             generation_concurrency=int(g("orchestrator.generation_concurrency", 1)),
             scoring_concurrency=int(g("orchestrator.scoring_concurrency", 2)),
@@ -141,23 +142,24 @@ class Orchestrator:
 
     def _cleanup(self, sub: Submission, workdir: Optional[Path]) -> None:
         """Remove the workdir + any leftover container (best-effort; never raises)."""
-        try:
-            if workdir and Path(workdir).exists():
-                shutil.rmtree(workdir, ignore_errors=True)
-        except Exception:  # pragma: no cover - defensive
-            logger.warning("workdir cleanup failed for #%s", sub.pk, exc_info=True)
-        container = f"{self.config.container_name_prefix}{sub.pk}"
-        try:
-            subprocess.run(
-                ["docker", "rm", "-f", container],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-                check=False,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError, OSError):
-            # Docker not installed / not running in this env — fine.
-            pass
+        if not self.config.keep_generated:
+            try:
+                if workdir and Path(workdir).exists():
+                    shutil.rmtree(workdir, ignore_errors=True)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("workdir cleanup failed for #%s", sub.pk, exc_info=True)
+            container = f"{self.config.container_name_prefix}{sub.pk}"
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+            except (FileNotFoundError, subprocess.SubprocessError, OSError):
+                # Docker not installed / not running in this env — fine.
+                pass
 
     def process_generation(self, sub: Submission) -> Optional[Path]:
         """Serial generation (under the global lock). Returns the workdir Path,
@@ -165,9 +167,17 @@ class Orchestrator:
         with _GENERATION_LOCK:
             attempt = sub.generation_retries
             state.to_generating(sub)
+            # Live activity sink: redacted codex events streamed to events.jsonl so
+            # the participant can watch generation in real time (read-only).
+            try:
+                from codex_runner.activity import open_sink
+                event_sink, _ = open_sink(self._scoring_config, str(sub.pk))
+            except Exception:  # never let the live view break generation
+                event_sink = None
             try:
                 workdir = self._generate_fn(
-                    str(sub.pk), sub.prompt, config=self._scoring_config
+                    str(sub.pk), sub.prompt, config=self._scoring_config,
+                    event_sink=event_sink,
                 )
             except Exception as err:  # noqa: BLE001 - classify below
                 return self._handle_generation_error(sub, err, attempt)
@@ -296,6 +306,18 @@ class Orchestrator:
         """Serial generation then queued scoring for one submission. Returns the
         scoring Future or None. Fault-isolated: any error fails only this one."""
         try:
+            # Operator re-grade: score the existing generated code, NEVER Codex.
+            if sub.regrade_only:
+                sub.regrade_only = False
+                sub.save(update_fields=["regrade_only"])
+                wd = Path(sub.workdir) if sub.workdir else None
+                if wd is not None and wd.is_dir():
+                    # Leave QUEUED synchronously so the poll loop won't re-claim it.
+                    state.to_scoring(sub)
+                    return self.submit_scoring(sub, wd)
+                # Code is gone: FAIL — a re-grade must never fall back to Codex.
+                state.to_failed(sub, "재채점할 생성 코드가 없습니다")
+                return None
             workdir = self.process_generation(sub)
             if workdir is None:
                 # re-queued (rate limit / retry) or already failed — nothing more.

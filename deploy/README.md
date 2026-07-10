@@ -37,6 +37,22 @@ sudo -u vibe uv sync --extra prod --no-dev
 sudo -u vibe docker build -t vibe-sec-sandbox:latest sandbox/
 ```
 
+## 3.5 채점 외부 도구 (필수)
+
+기본 채점 모드는 `osv-scanner`·`gitleaks`·`semgrep`·`sqlmap`을 **요구**한다(하나라도 없으면
+채점이 중단됨). 워커는 systemd로 돌아 기본 PATH만 보므로 **`/usr/local/bin`에 설치**한다.
+
+```bash
+sudo apt install -y golang-go pipx
+sudo env GOBIN=/usr/local/bin go install github.com/google/osv-scanner/cmd/osv-scanner@latest
+sudo env GOBIN=/usr/local/bin go install github.com/gitleaks/gitleaks/v8@latest
+sudo pipx install --global semgrep && sudo pipx install --global sqlmap
+# 확인 (워커와 같은 PATH에서 잡혀야 함)
+for t in osv-scanner gitleaks semgrep sqlmap; do command -v "$t" || echo "MISSING: $t"; done
+```
+> 도구를 설치하지 않을 거라면 `config/scoring.yaml`의 `tools.*.enabled`를 끄거나 `--dev`
+> 내장 검사로만 돌려야 하지만, **실채점에는 권장하지 않는다**.
+
 ## 4. PostgreSQL
 
 ```bash
@@ -101,7 +117,7 @@ sudo certbot --nginx -d grader.example.com          # 80 -> 443 자동 구성
 curl -I https://grader.example.com/                 # 200
 journalctl -u vibe-grader-worker -f                 # 워커 로그
 ```
-`/admin`에서 제출을 넣고 상태가 queued → generating → scoring → done 으로 흐르는지,
+웹 UI(`/`)에서 제출을 넣고 상태가 queued → generating → scoring → done 으로 흐르는지,
 컨테이너가 남지 않는지(`docker ps -a`) 확인.
 
 ## 운영
@@ -119,4 +135,6 @@ journalctl -u vibe-grader-worker -f                 # 워커 로그
   sudo systemctl restart vibe-grader-web vibe-grader-worker
   ```
 - **Codex 세션 만료**: 워커가 감지해 `journalctl`에 `OPERATOR ALERT` 로그를 남긴다.
-  `codex login`으로 재로그인 후 실패 제출을 `/admin`에서 재실행.
+  `codex login`으로 재로그인한 뒤, 해당 제출을 **다시 제출**한다. (결과 페이지의 **재채점**은
+  기존 생성 코드를 다시 채점할 뿐 Codex를 재호출하지 않으므로, 생성 자체가 실패해 코드가 없는
+  제출은 재채점으로 복구되지 않는다.)

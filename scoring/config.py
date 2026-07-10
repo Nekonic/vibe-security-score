@@ -14,6 +14,10 @@ _DEFAULT_CONFIG_PATH = os.path.normpath(
 class Config:
     def __init__(self, raw: Dict[str, Any]):
         self.raw = raw
+        # Dev mode: run REAL external CLI tools (osv-scanner/gitleaks/semgrep/sqlmap).
+        # Default False => tools are NOT executed (warn + use built-in offline checks);
+        # enable with the CLI `--dev` flag or grade_submission(dev=True).
+        self.dev = bool(raw.get("dev", False))
         self._grades = self._parse_grades(raw.get("grades", []))
         self.category_weights = self._normalize_category_weights(
             raw.get("categories", {})
@@ -51,6 +55,22 @@ class Config:
             if score >= minimum:
                 return name
         return self._grades[-1][1] if self._grades else ""
+
+    @property
+    def category_labels(self) -> Dict[str, str]:
+        """category id -> human label for reporting/UI."""
+        cats = self.raw.get("categories", {}) or {}
+        return {name: str(spec.get("label", name)) for name, spec in cats.items()}
+
+    @property
+    def category_map(self) -> Dict[str, str]:
+        """check_id -> category id, built from categories[*].checks. Lets the
+        operator re-bucket any check purely via config."""
+        out: Dict[str, str] = {}
+        for name, spec in (self.raw.get("categories", {}) or {}).items():
+            for cid in (spec.get("checks", []) or []):
+                out[str(cid)] = name
+        return out
 
     @property
     def static_checks(self) -> Dict[str, Any]:

@@ -26,7 +26,7 @@ class SubmissionAdmin(admin.ModelAdmin):
     search_fields = ("participant", "prompt")
     date_hierarchy = "submitted_at"
     ordering = ("-submitted_at",)
-    actions = ("retry_failed",)
+    actions = ("regrade",)
     readonly_fields = (
         "submitted_at",
         "final_score",
@@ -103,20 +103,21 @@ class SubmissionAdmin(admin.ModelAdmin):
             ),
         )
 
-    @admin.action(description="실패 제출 재실행 (큐로 되돌리기)")
-    def retry_failed(self, request, queryset):
-        requeued = 0
-        for sub in queryset.filter(status=Submission.Status.FAILED):
+    @admin.action(description="재채점")
+    def regrade(self, request, queryset):
+        # Re-score existing generated code. NEVER calls Codex — the worker fails a
+        # submission whose code is gone rather than regenerating it.
+        n = 0
+        for sub in queryset.filter(
+            status__in=(Submission.Status.DONE, Submission.Status.FAILED)
+        ):
+            sub.regrade_only = True
             sub.last_error = ""
             sub.finished_at = None
-            sub.save(update_fields=["last_error", "finished_at"])
+            sub.save(update_fields=["regrade_only", "last_error", "finished_at"])
             state.back_to_queued(sub)
-            requeued += 1
-        skipped = queryset.count() - requeued
-        msg = f"{requeued}건을 큐로 되돌렸어요."
-        if skipped:
-            msg += f" ({skipped}건은 failed 상태가 아니라 건너뜀)"
-        self.message_user(request, msg)
+            n += 1
+        self.message_user(request, f"{n}건 재채점")
 
     def changelist_view(self, request, extra_context=None):
         counts = {

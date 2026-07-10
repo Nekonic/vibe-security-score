@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Admin</h1>
+<p>Users: {{ stats.users }}</p>
+<p>Posts: {{ stats.posts }}</p>
+<a href="{{ url_for('admin_users') }}">Users</a>
+{% endblock %}

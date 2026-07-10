@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block body %}
+<h1>{{ user.username }}</h1>
+<p>{{ user.email }}</p>
+<h2>작성 글</h2>
+{% for p in posts %}<article class="post"><h3>{{ p.title }}</h3><p>{{ p.content }}</p></article>{% else %}<p>글이 없습니다.</p>{% endfor %}
+{% endblock %}

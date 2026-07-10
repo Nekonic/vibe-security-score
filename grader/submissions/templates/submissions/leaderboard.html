@@ -1,49 +1,33 @@
 {% extends "submissions/base.html" %}
 {% block title %}순위 · One Prompt Secure Coding Challenge{% endblock %}
 {% block body %}
-  <div class="d-flex justify-content-between align-items-baseline mb-3">
-    <h1 class="h4 mb-0">🏆 순위</h1>
-    <a href="{% url 'submissions:submit' %}" class="btn btn-primary btn-sm">제출하러 가기</a>
-  </div>
-
-  <div class="card shadow-sm">
-    <div class="table-responsive">
-      <table class="table table-hover align-middle mb-0">
-        <thead>
-          <tr>
-            <th scope="col" class="text-center" style="width:4rem;">순위</th>
-            <th scope="col">참가자</th>
-            <th scope="col" class="text-end">점수</th>
-            <th scope="col" class="text-center">등급</th>
-            <th scope="col" class="text-center">결과</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for sub in rows %}
+  <h1 class="h4 mb-3">순위</h1>
+  {% if rows %}
+    <div class="card shadow-sm">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle mb-0">
+          <thead>
             <tr>
-              <td class="text-center fw-bold">
-                {% if forloop.counter == 1 %}🥇
-                {% elif forloop.counter == 2 %}🥈
-                {% elif forloop.counter == 3 %}🥉
-                {% else %}{{ forloop.counter }}{% endif %}
-              </td>
-              <td>{{ sub.participant }}</td>
-              <td class="text-end fw-semibold">{{ sub.final_score }}</td>
-              <td class="text-center">{{ sub.grade }}</td>
-              <td class="text-center">
-                {% if sub.pass_fail|upper == "PASS" %}
-                  <span class="badge text-bg-success">PASS</span>
-                {% else %}
-                  <span class="badge text-bg-secondary">FAIL</span>
-                {% endif %}
-              </td>
+              <th style="width:3rem">#</th>
+              <th>닉네임</th>
+              <th class="text-end">점수</th>
+              <th class="text-end">등급</th>
             </tr>
-          {% empty %}
-            <tr><td colspan="5" class="text-center text-secondary py-4">아직 완료된 제출이 없어요.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for sub in rows %}
+              <tr>
+                <td>{{ forloop.counter }}</td>
+                <td><a href="{% url 'submissions:result' pk=sub.pk %}">{{ sub.participant }}</a></td>
+                <td class="text-end fw-semibold">{{ sub.final_score }}</td>
+                <td class="text-end">{{ sub.grade }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
-  <p class="text-secondary small mt-2">참가자별 최고 점수 기준입니다.</p>
+  {% else %}
+    <div class="card shadow-sm"><div class="card-body text-secondary">아직 완료된 제출이 없어요.</div></div>
+  {% endif %}
 {% endblock %}

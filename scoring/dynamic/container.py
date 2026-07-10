@@ -9,6 +9,7 @@ shell) so Git-Bash path mangling does not apply.
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import socket
 import subprocess
@@ -33,7 +34,10 @@ def _find_free_port() -> int:
 
 def _stage_app_dir(app_dir: str) -> str:
     """Copy ``app_dir`` into a fresh ASCII temp directory; return that path."""
-    stage_root = tempfile.mkdtemp(prefix="vibe_sec_stage_")
+    base = os.environ.get("VIBE_SEC_STAGE_DIR")
+    if not base and sys.platform == "darwin":
+        base = "/tmp"
+    stage_root = tempfile.mkdtemp(prefix="vibe_sec_stage_", dir=base)
     stage_app = os.path.join(stage_root, "app")
 
     def _ignore(_dir: str, names: List[str]) -> List[str]:
@@ -62,12 +66,19 @@ class Sandbox:
         self._stage_root: Optional[str] = None
         self._started = False
         self.boot_failed = False
+        self._mount_src: Optional[str] = None
 
     def __enter__(self) -> "Sandbox":
         try:
-            self._stage_root = _stage_app_dir(self.app_dir)
-            stage_app = os.path.join(self._stage_root, "app")
-            self._docker_run(stage_app)
+            mount_src = os.path.abspath(self.app_dir)
+            # 마운트 소스 검증: 진입점 파일이 실제로 있는지 확인 (없으면 즉시 boot 실패 처리)
+            if not any(os.path.isfile(os.path.join(mount_src, f))
+                       for f in ("app.py", "wsgi.py", "main.py")):
+                raise RuntimeError(
+                    f"no app.py/wsgi.py/main.py in {mount_src}"
+                )
+            self._mount_src = mount_src
+            self._docker_run(mount_src)
             self._started = True
             if not self._wait_for_boot():
                 self.boot_failed = True
@@ -79,17 +90,19 @@ class Sandbox:
         self._teardown()
         return False  # never swallow exceptions
 
-    def _docker_run(self, stage_app: str) -> None:
+    def _docker_run(self, mount_src: str) -> None:
         argv = [
             "docker", "run", "-d",
             "--name", self.container_name,
             "-p", f"{self.host_port}:{self.app_port}",
             "-e", "APP_DIR=/app",
-            "-v", f"{stage_app}:/app:ro",
+            "-e", "DATABASE=/work/app.db",
+            "-v", f"{mount_src}:/app:ro",
+            "--tmpfs", f"/work:rw,size=128m,uid={self.run_as_uid}",
+            "--tmpfs", f"/tmp:rw,size=64m,uid={self.run_as_uid}",
             "--memory", self.memory,
             "--cpus", self.cpus,
             "--pids-limit", str(self.pids_limit),
-            "--user", str(self.run_as_uid),
             # NETWORK STAYS ON — never --network none.
             self.image,
         ]
@@ -127,6 +140,22 @@ class Sandbox:
         except Exception:
             return False
 
+    def pip_freeze(self) -> str:
+        """Resolved (transitive) package versions actually installed in the running
+        container — `name==version` per line. Empty string if unavailable. This is
+        what makes the AI's dependency *choice* (incl. transitive deps) scorable."""
+        for py in ("python", "python3"):
+            try:
+                proc = subprocess.run(
+                    ["docker", "exec", self.container_name, py, "-m", "pip", "freeze"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout
+            except Exception:
+                continue
+        return ""
+
     def logs(self, tail: int = 40) -> str:
         try:
             proc = subprocess.run(
@@ -138,15 +167,11 @@ class Sandbox:
             return ""
 
     def _teardown(self) -> None:
-        if self._started:
-            try:
-                subprocess.run(
-                    ["docker", "rm", "-f", self.container_name],
-                    capture_output=True, text=True, timeout=30,
-                )
-            except Exception:
-                pass
-            self._started = False
-        if self._stage_root and os.path.isdir(self._stage_root):
-            shutil.rmtree(self._stage_root, ignore_errors=True)
-            self._stage_root = None
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", self.container_name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            pass
+        self._started = False

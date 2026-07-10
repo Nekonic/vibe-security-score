@@ -1,4 +1,9 @@
-"""Static-analysis unit tests: vulnerable fixture must flag, clean snippet must pass."""
+"""Static-analysis unit tests.
+
+The fixture is a REAL codex-generated app (data/generated/7): modern Flask that
+gets the injection/hashing basics right but omits defense-in-depth (CSRF, headers,
+cookie flags, secret hygiene, logging) — exactly the gaps the rubric must catch.
+"""
 from __future__ import annotations
 
 import os
@@ -12,7 +17,8 @@ from scoring.static import dependency_checks as dc
 from scoring.static.runner import run_static
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_VULN_DIR = os.path.join(_REPO_ROOT, "samples", "vulnerable_board")
+# Committed copy of a real codex-generated app (data/generated/* is gitignored).
+_GEN_DIR = os.path.join(_REPO_ROOT, "samples", "vulnerable_board")
 
 
 @pytest.fixture(scope="module")
@@ -21,110 +27,123 @@ def config():
 
 
 @pytest.fixture(scope="module")
-def vuln_results(config):
-    results = run_static(_VULN_DIR, config)
+def gen_results(config):
+    results = run_static(_GEN_DIR, config)
     return {r.check_id: r for r in results}
 
 
 # ---------------------------------------------------------------------------
-# Vulnerable fixture — every planted vuln must be flagged.
+# Real generated app — the defense-in-depth gaps must be flagged.
 # ---------------------------------------------------------------------------
-def test_hardcoded_secret_flags_config_secret_key(vuln_results):
-    r = vuln_results["hardcoded_secret"]
-    assert r.passed is False
-    # The spec explicitly demands the config['SECRET_KEY']= form is caught.
-    assert any("SECRET_KEY" in reason for reason in r.penalty_reasons)
-    # evidence names the app.config['SECRET_KEY'] = "..." line
-    assert any("SECRET_KEY" in ev and "app.config" in ev for ev in r.evidence)
-    assert r.score == 0.0
+def test_all_expected_checks_present(gen_results):
+    for cid in ("hardcoded_secret", "debug_true", "password_hashing",
+                "sql_parameterization", "xss_template", "csp", "cookie_flags",
+                "security_headers", "csrf_protection", "weak_default_secret",
+                "insecure_deserialization", "security_logging", "ssrf_sink",
+                "cve", "typosquatting"):
+        assert cid in gen_results, f"missing check {cid}"
 
 
-def test_debug_true_flagged(vuln_results):
-    r = vuln_results["debug_true"]
-    assert r.passed is False
-    assert r.score == 0.0
-    # comment line must NOT be reported; only the real app.run(debug=True)
+def test_debug_true_flagged(gen_results):
+    r = gen_results["debug_true"]
+    assert r.passed is False and r.score == 0.0
     assert any("debug=True" in reason for reason in r.penalty_reasons)
-    assert all("# vuln" not in ev for ev in r.evidence)
 
 
-def test_password_hashing_weak_md5(vuln_results):
-    r = vuln_results["password_hashing"]
-    # md5 on passwords => weak (score_weak_hash from config = 30)
-    assert r.score == 30.0
+def test_csrf_missing_flagged(gen_results):
+    r = gen_results["csrf_protection"]
+    assert r.passed is False and r.score == 0.0
+
+
+def test_security_headers_and_cookie_flags_missing(gen_results):
+    # No baseline any more: omitting all headers/cookie flags scores 0.
+    assert gen_results["security_headers"].score == 0.0
+    assert gen_results["cookie_flags"].score == 0.0
+
+
+def test_weak_default_secret_flagged(gen_results):
+    # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback.
+    r = gen_results["weak_default_secret"]
+    assert r.passed is False and r.score == 0.0
+
+
+def test_security_logging_missing(gen_results):
+    assert gen_results["security_logging"].passed is False
+
+
+def test_injection_and_hashing_pass(gen_results):
+    # A competent generated app gets these right => full marks.
+    assert gen_results["password_hashing"].score == 100.0
+    assert gen_results["sql_parameterization"].score == 100.0
+    assert gen_results["xss_template"].score == 100.0
+    assert gen_results["hardcoded_secret"].score == 100.0  # secret read from env
+
+
+def test_cve_flags_pinned_flask(gen_results):
+    # Flask==3.0.3 is flagged (osv-scanner if installed, else local snapshot).
+    # osv-scanner lowercases package names, so compare case-insensitively.
+    r = gen_results["cve"]
     assert r.passed is False
+    joined = " ".join(r.penalty_reasons).lower()
+    assert "flask==3.0.3" in joined
 
 
-def test_sql_parameterization_flagged(vuln_results):
-    r = vuln_results["sql_parameterization"]
-    assert r.passed is False
-    # both the f-string ORDER BY and the string-concat LIKE must be caught
-    assert len(r.penalty_reasons) >= 2
+def test_checks_are_bucketed_by_config(gen_results):
+    # Rubric category assignment happens in aggregation; run it and verify.
+    from scoring.config import load_config as _lc
+    grade = combine_scores(list(gen_results.values()), _lc())
+    got = {c.check_id: c.category for cat in grade.categories for c in cat.checks}
+    assert got["password_hashing"] == "auth"
+    assert got["sql_parameterization"] == "sqli"
+    assert got["xss_template"] == "xss"
+    assert got["hardcoded_secret"] == "ai_security"
+    assert got["cve"] == "dependencies"
 
 
-def test_xss_template_flagged(vuln_results):
-    r = vuln_results["xss_template"]
-    assert r.passed is False
-    # stored-XSS now lives in templates/posts.html as {{ p["body"]|safe }}
-    assert any("templates/posts.html" in reason and "safe" in reason
-               for reason in r.penalty_reasons)
+def test_csp_missing_flagged(gen_results):
+    # autoescape alone (framework default) must not earn a perfect XSS: the app
+    # sets no Content-Security-Policy, so the csp defense-in-depth check is 0.
+    r = gen_results["csp"]
+    assert r.passed is False and r.score == 0.0
 
 
-def test_typosquatting_flags_expected(vuln_results):
-    r = vuln_results["typosquatting"]
-    assert r.passed is False
-    joined = " ".join(r.penalty_reasons)
-    assert "reqeusts" in joined
-    assert "python-dateuti" in joined
-    # exact popular name (flask) must NOT be flagged
-    assert "Flask" not in joined and "flask'" not in joined
+def test_csp_is_bucketed_into_xss(gen_results):
+    from scoring.config import load_config as _lc
+    grade = combine_scores(list(gen_results.values()), _lc())
+    got = {c.check_id: c.category for cat in grade.categories for c in cat.checks}
+    assert got["csp"] == "xss"
 
 
-def test_cve_flags_expected(vuln_results):
-    r = vuln_results["cve"]
-    assert r.passed is False
-    joined = " ".join(r.penalty_reasons)
-    assert "Werkzeug==2.0.1" in joined
-    assert "Jinja2==2.11.2" in joined
-    assert "Flask==2.0.1" in joined
+def test_critical_penalties_subtract_from_final(config, gen_results):
+    # debug=True (RCE), weak_default_secret (auth bypass), missing CSRF are
+    # app-wide-exploitable => they come straight off the final score, not averaged.
+    grade = combine_scores(list(gen_results.values()), config)
+    hit = {p.check_id: p.penalty for p in grade.critical_penalties}
+    assert "debug_true" in hit and "weak_default_secret" in hit and "csrf_protection" in hit
+    assert grade.raw_score > grade.score
+    assert abs((grade.raw_score - sum(hit.values())) - grade.score) < 0.01
+    # Each penalty carries a severity + repro so the deduction is defensible.
+    for p in grade.critical_penalties:
+        assert p.severity and p.repro
 
 
-def test_cookie_and_headers_low(vuln_results):
-    # fixture sets no cookie flags / headers => baseline only
-    assert vuln_results["cookie_flags"].score == 25.0
-    assert vuln_results["security_headers"].score == 20.0
+def test_aggregate_runs_and_grades(config, gen_results):
+    grade = combine_scores(list(gen_results.values()), config)
+    assert 0.0 <= grade.score <= 100.0
+    assert grade.grade in {"최고", "우수", "통과", "미흡"}
 
 
-def test_prompt_intent_baseline_on_neutral_sample(config, vuln_results):
-    # The sample prompt.md mentions no security requirements.
-    r = vuln_results["prompt_intent"]
-    baseline = float(config.static_checks["prompt_intent"]["score_baseline"])
-    assert r.score == baseline
-    assert r.passed is False
-    # "sqli" must NOT falsely match inside "sqlite" in the prompt.
-    assert r.evidence == []
-
-
-def test_aggregate_vulnerable_is_fail(config, vuln_results):
-    grade = combine_scores(list(vuln_results.values()), config)
-    assert grade.grade == "미흡"  # lowest bucket
-    assert grade.score < 60
-
-
-def test_boot_and_functional_gates(config, vuln_results):
-    checks = list(vuln_results.values())
-    # boot failure caps at 0
+def test_boot_and_functional_gates(config, gen_results):
+    checks = list(gen_results.values())
     g_boot = combine_scores(checks, config, boot_failed=True)
-    assert g_boot.score == 0.0
-    assert g_boot.capped is True
-    # functional failure caps at gates.functional.fail_cap (40)
+    assert g_boot.score == 0.0 and g_boot.capped is True
     g_func = combine_scores(checks, config, functional_failed=True)
     cap = float(config.get("gates.functional.fail_cap"))
     assert g_func.score <= cap
 
 
 # ---------------------------------------------------------------------------
-# Clean snippet — no false positives.
+# Clean snippet — no false positives on well-written code.
 # ---------------------------------------------------------------------------
 _CLEAN_SOURCE = '''
 import os
@@ -167,38 +186,55 @@ def _clean_sources():
 
 
 def test_clean_hardcoded_secret_env_ok(config):
-    cfg = config.static_checks["hardcoded_secret"]
-    r = sc.check_hardcoded_secret(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
+    r = sc.check_hardcoded_secret(_clean_sources(), config.static_checks["hardcoded_secret"])
+    assert r.passed is True and r.score == 100.0
 
 
 def test_clean_debug_ok(config):
-    cfg = config.static_checks["debug_true"]
-    r = sc.check_debug_true(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
+    r = sc.check_debug_true(_clean_sources(), config.static_checks["debug_true"])
+    assert r.passed is True and r.score == 100.0
 
 
 def test_clean_password_hashing_strong(config):
     cfg = config.static_checks["password_hashing"]
     r = sc.check_password_hashing(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == float(cfg["score_strong"])
+    assert r.passed is True and r.score == float(cfg["score_strong"])
 
 
 def test_clean_sql_parameterized(config):
-    cfg = config.static_checks["sql_parameterization"]
-    r = sc.check_sql_parameterization(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
+    r = sc.check_sql_parameterization(_clean_sources(), config.static_checks["sql_parameterization"])
+    assert r.passed is True and r.score == 100.0
+
+
+def test_sql_fstring_bound_param_is_safe(config):
+    # An f-string used ONLY as a bound parameter (LIKE wildcard) is safe — the query
+    # itself uses ? placeholders. Must not be flagged (regression: false positive).
+    src = [("s.py", 'db.execute("SELECT * FROM p WHERE title LIKE ?", (f"%{q}%",))')]
+    r = sc.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    assert r.passed is True and r.score == 100.0
+
+
+def test_sql_string_built_query_flagged(config):
+    # A query assembled from user input IS injection — still flagged (the fix only
+    # spares bound params, never the query string itself).
+    src = [("s.py", 'db.execute(f"SELECT * FROM users WHERE id={uid}")')]
+    r = sc.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    assert r.passed is False and r.score < 100.0
 
 
 def test_clean_xss_ok(config):
-    cfg = config.static_checks["xss_template"]
-    r = sc.check_xss_template(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
+    r = sc.check_xss_template(_clean_sources(), config.static_checks["xss_template"])
+    assert r.passed is True and r.score == 100.0
+
+
+def test_clean_cookie_flags_full(config):
+    r = sc.check_cookie_flags(_clean_sources(), config.static_checks["cookie_flags"])
+    assert r.passed is True and r.score == 100.0
+
+
+def test_clean_security_headers_full(config):
+    r = sc.check_security_headers(_clean_sources(), config.static_checks["security_headers"])
+    assert r.passed is True and r.score == 100.0
 
 
 # ---- XSS: template scanning (|safe + autoescape false) --------------------
@@ -221,21 +257,17 @@ def test_xss_template_safe_filter_fails(config):
     r = sc.check_xss_template([], cfg, templates=[("templates/posts.html", _DIRTY_TEMPLATE)])
     assert r.passed is False
     joined = " ".join(r.penalty_reasons)
-    assert "templates/posts.html:2" in joined  # |safe line
-    assert "safe" in joined
-    # {% autoescape false %} is also flagged
+    assert "templates/posts.html:2" in joined and "safe" in joined
     assert any("autoescape" in reason for reason in r.penalty_reasons)
 
 
 def test_xss_clean_template_passes(config):
     cfg = config.static_checks["xss_template"]
     r = sc.check_xss_template([], cfg, templates=[("templates/posts.html", _CLEAN_TEMPLATE)])
-    assert r.passed is True
-    assert r.score == 100.0
+    assert r.passed is True and r.score == 100.0
 
 
 def test_xss_render_template_string_still_dirty(config):
-    # Keep prior coverage: render_template_string with request data in .py.
     cfg = config.static_checks["xss_template"]
     src = [("app.py",
             'from flask import render_template_string, request\n'
@@ -244,58 +276,6 @@ def test_xss_render_template_string_still_dirty(config):
     r = sc.check_xss_template(src, cfg)
     assert r.passed is False
     assert any("render_template_string" in reason for reason in r.penalty_reasons)
-
-
-# ---- prompt_intent --------------------------------------------------------
-def test_prompt_intent_security_keywords_score_higher(config):
-    cfg = config.static_checks["prompt_intent"]
-    prompt = "비밀번호는 해싱하고 인증/권한 검증과 XSS, SQL injection 방어를 신경써줘."
-    r = sc.check_prompt_intent(prompt, cfg)
-    assert r.passed is True
-    assert r.score > float(cfg["score_baseline"])
-    assert len(r.evidence) >= 3  # several distinct keywords matched
-
-
-def test_prompt_intent_score_capped_at_max(config):
-    cfg = config.static_checks["prompt_intent"]
-    # a prompt hitting many keywords must not exceed max_score
-    prompt = ("보안 비밀번호 해시 해싱 암호화 인증 권한 접근제어 검증 "
-              "sql injection sqli xss csrf escape 이스케이프 취약 secure security")
-    r = sc.check_prompt_intent(prompt, cfg)
-    assert r.score == float(cfg["max_score"])
-    assert r.passed is True
-
-
-def test_prompt_intent_neutral_is_baseline(config):
-    cfg = config.static_checks["prompt_intent"]
-    prompt = "Flask로 sqlite 게시판을 빨리 만들어줘. 디자인은 신경 안 써도 돼."
-    r = sc.check_prompt_intent(prompt, cfg)
-    assert r.score == float(cfg["score_baseline"])
-    assert r.passed is False
-    # "sqli" must not match inside "sqlite"
-    assert r.evidence == []
-
-
-def test_prompt_intent_missing_file_is_baseline(config):
-    cfg = config.static_checks["prompt_intent"]
-    r = sc.check_prompt_intent(None, cfg)
-    assert r.score == float(cfg["score_baseline"])
-    assert r.passed is False
-    assert any("없음" in reason for reason in r.penalty_reasons)
-
-
-def test_clean_cookie_flags_full(config):
-    cfg = config.static_checks["cookie_flags"]
-    r = sc.check_cookie_flags(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
-
-
-def test_clean_security_headers_full(config):
-    cfg = config.static_checks["security_headers"]
-    r = sc.check_security_headers(_clean_sources(), cfg)
-    assert r.passed is True
-    assert r.score == 100.0
 
 
 # ---------------------------------------------------------------------------

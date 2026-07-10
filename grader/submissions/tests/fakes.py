@@ -29,7 +29,7 @@ class FakeGenerate:
         self.intervals: List[Interval] = []
         self._lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
         start = time.monotonic()
         time.sleep(self.duration)
         wd = self.workdir_base / f"sub-{submission_id}"
@@ -99,12 +99,12 @@ class RaiseOnceThenSucceedGenerate(FakeGenerate):
         self._raised = False
         self._raise_lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
         with self._raise_lock:
             if not self._raised:
                 self._raised = True
                 raise self._exc
-        return super().__call__(submission_id, prompt, config=config)
+        return super().__call__(submission_id, prompt, config=config, event_sink=event_sink)
 
 
 class FailForSubmissionGenerate(FakeGenerate):
@@ -115,10 +115,10 @@ class FailForSubmissionGenerate(FakeGenerate):
         self._fail_id = str(fail_id)
         self._exc = exc
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
         if str(submission_id) == self._fail_id:
             raise self._exc
-        return super().__call__(submission_id, prompt, config=config)
+        return super().__call__(submission_id, prompt, config=config, event_sink=event_sink)
 
 
 class CountingGenerate(FakeGenerate):
@@ -130,7 +130,7 @@ class CountingGenerate(FakeGenerate):
         self.count = 0
         self._count_lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
         with self._count_lock:
             self.count += 1
         raise self._exc

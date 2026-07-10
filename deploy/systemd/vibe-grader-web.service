@@ -9,7 +9,7 @@ User=vibe
 Group=vibe
 WorkingDirectory=/opt/vibe-security-score
 EnvironmentFile=/etc/vibe-grader.env
-ExecStart=/opt/vibe-security-score/.venv/bin/gunicorn -c deploy/gunicorn.conf.py grader.wsgi:application
+ExecStart=/opt/vibe-security-score/.venv/bin/gunicorn -c deploy/gunicorn.conf.py core.wsgi:application
 Restart=always
 RestartSec=3
 
