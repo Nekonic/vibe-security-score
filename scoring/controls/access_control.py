@@ -4,7 +4,10 @@ sink static checks, plus the IDOR and admin access-control probes.
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Sequence
+
+import requests
 
 from ..models import CheckResult
 from ..shared.http import (
@@ -19,6 +22,12 @@ _CSRF_MARKERS = re.compile(
     r"""csrf_token|CSRFProtect|flask_wtf|WTF_CSRF|csrf\.protect|X-CSRF|csrf_protect""",
     re.IGNORECASE,
 )
+# SameSite=Lax/Strict cookies aren't sent on cross-site POSTs, so they block the
+# classic CSRF (attacker-page form → victim app) even without an explicit token.
+_SAMESITE_CSRF = re.compile(
+    r"""SESSION_COOKIE_SAMESITE["'\]\s]*[=:]\s*["'](?:Lax|Strict)["']""",
+    re.IGNORECASE,
+)
 
 
 def check_csrf_protection(
@@ -26,13 +35,13 @@ def check_csrf_protection(
     templates: Optional[Sequence[Source]] = None,
 ) -> CheckResult:
     haystack = _joined(sources) + "\n" + _joined(templates or [])
-    hit = _CSRF_MARKERS.search(haystack)
+    hit = _CSRF_MARKERS.search(haystack) or _SAMESITE_CSRF.search(haystack)
     if hit:
         return _mk("csrf_protection", "CSRF 보호", float(cfg.get("score_protected", 100)),
                    cfg, passed=True, reasons=[], evidence=[hit.group(0)])
     return _mk("csrf_protection", "CSRF 보호", float(cfg.get("score_missing", 0)),
                cfg, passed=False,
-               reasons=["폼/요청에 CSRF 토큰·Flask-WTF 등 CSRF 방어가 없음 → 상태변경 요청 위조 가능"],
+               reasons=["CSRF 토큰·Flask-WTF도, SameSite=Lax/Strict 쿠키도 없음 → 상태변경 요청 위조 가능"],
                evidence=[])
 
 
@@ -222,6 +231,68 @@ def probe_access_control_admin(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
         return _low_conf("access_control_admin", label, weight, f"접근 통제 프로브 예외: {exc}")
 
 
+# privilege_escalation (dynamic) — mass assignment: does /signup trust a
+# client-supplied is_admin/role field?
+_PRIVESC_FIELDS = {"is_admin": True, "admin": True, "role": "admin", "is_staff": True}
+
+
+def _signup_login(ctx: ProbeContext, extra: Dict[str, Any]) -> Optional[requests.Session]:
+    sess = requests.Session()
+    tag = uuid.uuid4().hex[:10]
+    creds = {"username": f"pe_{tag}", "email": f"pe_{tag}@test.com",
+             "name": f"pe_{tag}", "password": "Booth!Secure2345"}
+    su = ctx.post(sess, "/signup", {**creds, **extra})
+    if su is None or su.status_code not in (200, 201, 409):
+        return None
+    ctx.post(sess, "/login", {"username": creds["username"], "email": creds["email"],
+                              "password": creds["password"]})
+    return sess
+
+
+def _reaches_admin(ctx: ProbeContext, sess: requests.Session) -> Optional[str]:
+    for path in ("/admin", "/admin/users"):
+        r = ctx.get(sess, path)
+        if r is not None and r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r)):
+            return path
+    return None
+
+
+def probe_privilege_escalation(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+    """PoC: sign up while sending is_admin/role in the body. If that account reaches
+    the admin area while a plain-signup control does not, the app trusted a
+    client-set privilege field (mass assignment)."""
+    weight = float(cfg.get("weight", 3))
+    label = "권한 상승(mass-assignment)"
+    try:
+        extra = dict(cfg.get("admin_fields") or _PRIVESC_FIELDS)
+        attacker = _signup_login(ctx, extra)
+        control = _signup_login(ctx, {})
+        if attacker is None or control is None:
+            return _low_conf("privilege_escalation", label, weight, "가입/로그인 실패로 권한상승 판정 불가")
+
+        if _reaches_admin(ctx, control) is not None:
+            # Admin area is open to ANY signup — that is access_control_admin's finding.
+            return _low_conf("privilege_escalation", label, weight,
+                             "관리자 페이지가 일반 가입자에게도 열려 mass-assignment로 분리 판정 불가")
+
+        atk_path = _reaches_admin(ctx, attacker)
+        if atk_path is not None:
+            return CheckResult(
+                check_id="privilege_escalation", category="dynamic", label=label,
+                score=float(cfg.get("score_escalated", 0)), weight=weight, passed=False,
+                penalty_reasons=[f"가입 요청의 {sorted(extra)} 필드를 신뢰 → 관리자 권한 탈취({atk_path})"],
+                evidence=[_snip(f"is_admin 포함 가입 → GET {atk_path} 관리자 콘텐츠 노출 / 대조군(일반 가입)은 차단")],
+            )
+        return CheckResult(
+            check_id="privilege_escalation", category="dynamic", label=label,
+            score=float(cfg.get("score_defended", 100)), weight=weight, passed=True,
+            penalty_reasons=[],
+            evidence=[_snip("is_admin 주입 가입도 관리자 접근 불가 → mass-assignment 방어됨")],
+        )
+    except Exception as exc:  # pragma: no cover
+        return _low_conf("privilege_escalation", label, weight, f"권한상승 프로브 예외: {exc}")
+
+
 CONTROLS = [
     Control("csrf_protection", "CSRF 보호", "static",
             lambda sctx, cfg: check_csrf_protection(sctx.sources, cfg, sctx.templates)),
@@ -229,4 +300,5 @@ CONTROLS = [
             lambda sctx, cfg: check_ssrf_sink(sctx.sources, cfg)),
     Control("idor_profile", "IDOR(타인 프로필 조회)", "dynamic", probe_idor_profile),
     Control("access_control_admin", "접근 통제(관리자 페이지)", "dynamic", probe_access_control_admin),
+    Control("privilege_escalation", "권한 상승(mass-assignment)", "dynamic", probe_privilege_escalation),
 ]

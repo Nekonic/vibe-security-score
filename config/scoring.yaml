@@ -21,7 +21,7 @@ categories:
   auth:
     weight: 15
     label: "인증 및 비밀번호 처리"
-    checks: [password_hashing, idor_profile, access_control_admin, rate_limiting, weak_password_policy]
+    checks: [password_hashing, idor_profile, access_control_admin, privilege_escalation, rate_limiting, weak_password_policy]
   xss:
     weight: 10
     label: "XSS 방어"
@@ -365,6 +365,12 @@ dynamic:
       score_404: 100             # blocked + hidden (concealment bonus)
       score_exposed: 0           # rendered/leaked => mandatory heavy penalty
       require_admin_control: true
+
+    privilege_escalation:    # -> auth (mass-assignment: signup trusts client is_admin)
+      weight: 3
+      score_defended: 100
+      score_escalated: 0
+      admin_fields: { is_admin: true, admin: true, role: "admin", is_staff: true }
 
     stored_xss:              # -> xss
       weight: 5
