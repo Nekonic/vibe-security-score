@@ -7,6 +7,7 @@ OWASP_BY_CHECK = {
     # A01 Broken Access Control (SSRF folded in for 2025)
     "idor_profile": "A01",
     "access_control_admin": "A01",
+    "privilege_escalation": "A01",
     "csrf_protection": "A01",
     "ssrf_sink": "A01",
     # A02 Security Misconfiguration

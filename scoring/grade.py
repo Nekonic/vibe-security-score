@@ -6,7 +6,7 @@ from typing import List, Optional
 from .aggregate import combine_scores
 from .config import Config, load_config
 from .models import CheckResult, GradeResult
-from .static.runner import run_static
+from .runner import run_static
 
 
 def _flatten_findings(result: GradeResult) -> List[dict]:
@@ -55,7 +55,7 @@ def grade_submission(
     if dev:
         cfg.dev = True
     if not cfg.dev:
-        from .static.tools import missing_required_tools
+        from .shared.external_tools import missing_required_tools
 
         missing = missing_required_tools(cfg)
         if missing:
@@ -70,7 +70,7 @@ def grade_submission(
 
     if not static_only:
         # Lazy import: keeps dynamic deps (requests/docker) off static-only hosts.
-        from .dynamic.runner import run_dynamic
+        from .runner import run_dynamic
 
         dyn_checks, functional_failed, boot_failed = run_dynamic(code_dir, cfg)
         checks.extend(dyn_checks)

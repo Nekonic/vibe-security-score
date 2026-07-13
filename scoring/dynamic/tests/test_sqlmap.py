@@ -13,7 +13,7 @@ import stat
 import sys
 import textwrap
 
-from scoring.dynamic import sqlmap as sqlmap_tool
+from scoring.shared import sqlmap as sqlmap_tool
 
 
 # Canned sqlmap "injectable" transcript fragment.

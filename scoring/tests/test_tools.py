@@ -11,8 +11,8 @@ import os
 import pytest
 
 from scoring.config import Config, load_config
-from scoring.static import tools as tools_mod
-from scoring.static.dependency_checks import parse_requirements
+from scoring.controls import crypto, dependencies, sast
+from scoring.controls.dependencies import parse_requirements
 
 _HERE = os.path.dirname(__file__)
 _STUBS = os.path.join(_HERE, "stubs")
@@ -42,7 +42,7 @@ def _config_with_tool(base: Config, tool: str, **overrides) -> Config:
 # ---------------------------------------------------------------------------
 def test_gitleaks_skipped_when_binary_missing(base_config):
     cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary="definitely-not-here-xyz")
-    r = tools_mod.check_gitleaks(_APP_DIR, cfg)
+    r = crypto.check_gitleaks(_APP_DIR, cfg)
     assert r.skipped is True
     assert r.weight == 0.0
     assert r.tool == "gitleaks"
@@ -51,7 +51,7 @@ def test_gitleaks_skipped_when_binary_missing(base_config):
 
 def test_semgrep_skipped_when_disabled(base_config):
     cfg = _config_with_tool(base_config, "semgrep", enabled=False)
-    r = tools_mod.check_semgrep(_APP_DIR, cfg)
+    r = sast.check_semgrep(_APP_DIR, cfg)
     assert r.skipped is True
     assert r.weight == 0.0
     assert r.tool == "semgrep"
@@ -60,7 +60,7 @@ def test_semgrep_skipped_when_disabled(base_config):
 def test_pypi_disabled_by_default_no_network(base_config):
     # default config has pypi_existence.enabled == false
     reqs = parse_requirements("flask==2.0.1\n")
-    r = tools_mod.check_pypi_existence(reqs, base_config)
+    r = dependencies.check_pypi_existence(reqs, base_config)
     assert r.skipped is True
     assert r.tool == "pypi"
     assert r.weight == 0.0
@@ -74,7 +74,7 @@ def test_osv_falls_back_to_local_snapshot_offline(base_config):
     dep_cfg["weight"] = float(dep_cfg.get("weight", 0)) / 2.0
     reqs = parse_requirements(open(os.path.join(_APP_DIR, "requirements.txt"), encoding="utf-8").read())
     req_path = os.path.join(_APP_DIR, "requirements.txt")
-    r = tools_mod.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
+    r = dependencies.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
     assert r.check_id == "cve"
     assert r.tool == ""              # fallback path, not the CLI
     # Sample pins Flask==3.0.3 (one HIGH, -25) and Werkzeug==3.0.3 (one MEDIUM, -10)
@@ -94,7 +94,7 @@ def test_osv_stub_applies_critical_penalty(base_config):
 
     req_path = os.path.join(_APP_DIR, "requirements.txt")
     reqs = parse_requirements(open(req_path, encoding="utf-8").read())
-    r = tools_mod.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
+    r = dependencies.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
 
     assert r.tool == "osv-scanner"   # CLI path was used
     assert r.check_id == "cve"
@@ -106,7 +106,7 @@ def test_osv_stub_applies_critical_penalty(base_config):
 
 def test_gitleaks_stub_surfaces_secret(base_config):
     cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary=_stub("gitleaks_stub.py"))
-    r = tools_mod.check_gitleaks(_APP_DIR, cfg)
+    r = crypto.check_gitleaks(_APP_DIR, cfg)
     assert r.skipped is False
     assert r.weight == 0.0           # report-only, never moves the score
     assert r.tool == "gitleaks"
@@ -118,7 +118,7 @@ def test_gitleaks_stub_surfaces_secret(base_config):
 
 def test_semgrep_stub_surfaces_finding(base_config):
     cfg = _config_with_tool(base_config, "semgrep", enabled=True, binary=_stub("semgrep_stub.py"))
-    r = tools_mod.check_semgrep(_APP_DIR, cfg)
+    r = sast.check_semgrep(_APP_DIR, cfg)
     assert r.skipped is False
     assert r.weight == 0.0
     assert r.tool == "semgrep"
@@ -136,5 +136,5 @@ def test_osv_stub_does_not_change_report_only_semantics(base_config):
     dep_cfg["weight"] = 5.0
     req_path = os.path.join(_APP_DIR, "requirements.txt")
     reqs = parse_requirements(open(req_path, encoding="utf-8").read())
-    r = tools_mod.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
+    r = dependencies.check_cve_with_osv(reqs, dep_cfg, req_path, cfg)
     assert r.weight == 5.0

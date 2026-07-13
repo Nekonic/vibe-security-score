@@ -7,16 +7,15 @@ import sys
 
 from .aggregate import combine_scores
 from .config import load_config
-from .dynamic.runner import run_dynamic
-from .static import tools as tools_mod
-from .static.runner import run_static
+from .shared.external_tools import missing_required_tools
+from .runner import run_dynamic, run_static
 
 
 def _load(config_path: str | None, dev: bool = False):
     config = load_config(config_path) if config_path else load_config()
     config.dev = bool(dev)
     if not dev:
-        missing = tools_mod.missing_required_tools(config)
+        missing = missing_required_tools(config)
         if missing:
             print(
                 f"[error] 필수 외부 도구가 설치되어 있지 않습니다: {', '.join(missing)}. "
