@@ -86,6 +86,7 @@ def result(request, pk: int):
         "queue_position": sub.queue_position(),
         "done": done,
         "failed": sub.status == Submission.Status.FAILED,
+        "boot_log": sub.boot_log if done else "",
         "findings": rubric.visible_findings(sub) if done else [],
         "category_groups": rubric.category_groups(sub) if done else [],
         "critical_penalties": (sub.critical_penalties or []) if done else [],
@@ -140,6 +141,10 @@ def rerun(request, pk: int):
 
 def status_json(request, pk: int):
     sub = get_object_or_404(Submission, pk=pk)
+    progress = None
+    if sub.status == Submission.Status.SCORING:
+        from scoring import progress as _sp
+        progress = _sp.read(_scoring_config(), str(sub.pk))
     return JsonResponse(
         {
             "id": sub.pk,
@@ -150,6 +155,7 @@ def status_json(request, pk: int):
             "final_score": sub.final_score,
             "grade": sub.grade,
             "pass_fail": sub.pass_fail,
+            "progress": progress,  # {pct,label,phase,done,total} during SCORING, else null
             "done": sub.is_terminal,  # done OR failed -> stop polling / reload
         }
     )

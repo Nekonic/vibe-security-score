@@ -54,10 +54,16 @@ def _binary_argv(config: Config) -> List[str]:
     return [resolved]
 
 
-def _build_argv(config: Config) -> List[str]:
+def _build_argv(
+    config: Config,
+    model_override: Optional[str] = None,
+    reasoning_override: Optional[str] = None,
+) -> List[str]:
     sandbox = config.get("codex.exec_flags.sandbox", "workspace-write")
     extra = config.get("codex.exec_flags.extra", []) or []
-    model = config.get("codex.model", "") or ""
+    # Admin (GraderSettings) wins when set; else fall back to config.
+    model = model_override if model_override else (config.get("codex.model", "") or "")
+    effort = reasoning_override if reasoning_override else (config.get("codex.reasoning_effort", "") or "")
     argv = [
         *_binary_argv(config),
         "exec",
@@ -68,12 +74,16 @@ def _build_argv(config: Config) -> List[str]:
     # Omit --model when empty: ChatGPT-account auth rejects API-only ids like gpt-5-codex.
     if model:
         argv += ["--model", str(model)]
+    # Reasoning effort has no dedicated exec flag; set it via the config override
+    # (same key as ~/.codex/config.toml's model_reasoning_effort). Omit => model default.
+    if effort:
+        argv += ["-c", f"model_reasoning_effort={effort}"]
     argv += ["-"]  # prompt via stdin
     return argv
 
 
 def _scrubbed_env(config: Config) -> Dict[str, str]:
-    # Blank the API-key vars so an API key can never trigger paid billing (ChatGPT login only).
+    # Blank the API-key vars so generation uses the ChatGPT login only.
     env = dict(os.environ)
     for key in config.get("codex.blank_env", []) or []:
         env.pop(str(key), None)
@@ -243,10 +253,36 @@ def _parse_jsonl(stdout: str) -> List[Dict[str, Any]]:
     return [obj for obj in map(_parse_line, stdout.splitlines()) if obj is not None]
 
 
+def _looks_like_error_event(ev: Dict[str, Any]) -> bool:
+    """A codex JSONL event that carries a failure — as opposed to an agent message
+    or generated file/command output (which, for a SECURITY app, legitimately
+    contains phrases like 'rate limit' and must NOT trip rate-limit detection)."""
+    t = str(ev.get("type", "")).lower()
+    if "error" in t or "fail" in t:
+        return True
+    if ev.get("error"):
+        return True
+    item = ev.get("item")
+    if isinstance(item, dict) and str(item.get("status", "")).lower() in ("failed", "error"):
+        return True
+    return False
+
+
 def _hit_rate_limit(stdout: str, stderr: str, signals: Sequence[str]) -> Optional[str]:
+    """Match rate-limit signals ONLY in error channels: stderr, JSONL error events,
+    and non-JSONL stdout noise (crash/usage text). The generated app's code and the
+    agent's summary are EXCLUDED — otherwise a board app that implements 'rate
+    limiting' would be misread as a rate-limited generation and re-queued forever."""
     if not signals:
         return None
-    haystack = (stdout + "\n" + stderr).lower()
+    parts: List[str] = [stderr or ""]
+    for line in (stdout or "").splitlines():
+        obj = _parse_line(line)
+        if obj is None:
+            parts.append(line)  # unparseable stdout = likely raw error/usage text
+        elif _looks_like_error_event(obj):
+            parts.append(json.dumps(obj, ensure_ascii=False))
+    haystack = "\n".join(parts).lower()
     for sig in signals:
         if sig and sig in haystack:
             return sig
@@ -350,15 +386,19 @@ def generate(
     config: Optional[Config] = None,
     keep_workdir: bool = False,
     event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> pathlib.Path:
     """Generate a Flask project for ``prompt`` and return the harvested dir.
 
+    ``model`` / ``reasoning_effort`` (optional) override ``codex.model`` /
+    ``codex.reasoning_effort`` for this run (admin settings).
     ``event_sink`` (optional) receives each codex JSONL event live as it streams,
     powering the real-time generation view. It must never raise (errors ignored)."""
     if config is None:
         config = load_config()
 
-    argv = _build_argv(config)
+    argv = _build_argv(config, model_override=model, reasoning_override=reasoning_effort)
     env = _scrubbed_env(config)
     timeout = float(config.get("timeouts.codex_exec", 600))
     signals = _rate_limit_signals(config)

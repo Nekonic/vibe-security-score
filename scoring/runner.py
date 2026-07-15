@@ -62,7 +62,7 @@ def _read_requirements(app_dir: str) -> str:
     return ""
 
 
-def run_static(app_dir: str, config: Config) -> List[CheckResult]:
+def run_static(app_dir: str, config: Config, on_check=None) -> List[CheckResult]:
     sctx = StaticContext(
         sources=_gather_sources(app_dir),
         templates=_gather_templates(app_dir),
@@ -72,34 +72,52 @@ def run_static(app_dir: str, config: Config) -> List[CheckResult]:
         config=config,
     )
     checks_cfg = config.static_checks
-    return [c.fn(sctx, checks_cfg.get(c.id, {})) for c in registry.by_phase("static")]
+    results: List[CheckResult] = []
+    for c in registry.by_phase("static"):
+        results.append(c.fn(sctx, checks_cfg.get(c.id, {})))
+        if on_check:
+            on_check(c.label)  # progress tick
+    return results
 
 
 # --- dynamic ----------------------------------------------------------------
 def _boot_failed_checks(config: Config, reason: str) -> List[CheckResult]:
     dyn = config.get("dynamic.checks", {}) or {}
+    # skipped=True (NOT passed=False): the app never booted, so NOTHING was actually
+    # tested. Marking these "failed" would (a) falsely accuse the app of SQLi/XSS/
+    # IDOR/etc. on the result page and (b) trigger every dynamic critical penalty for
+    # untested defects. skipped => excluded from aggregation AND critical penalties;
+    # the boot-fail gate cap (gates.boot.fail_cap) is what actually bounds the score.
     return [
         CheckResult(
             check_id=c.id, category="dynamic", label=c.label,
             score=0.0, weight=float((dyn.get(c.id, {}) or {}).get("weight", 0)),
             passed=False,
+            skipped=True,
             penalty_reasons=[f"앱 부팅 실패로 동적 검사 불가: {reason}"],
         )
         for c in registry.by_phase("dynamic")
     ]
 
 
-def run_dynamic(app_dir: str, config: Config):
+def run_dynamic(app_dir: str, config: Config, on_check=None):
+    """Returns (checks, functional_failed, boot_failed, boot_log). boot_log is the
+    container's log tail on boot failure (empty otherwise) so the operator sees WHY."""
     dyn_cfg = config.get("dynamic.checks", {}) or {}
     require = list(config.get("gates.functional.require", ["signup", "login", "create_post"]))
     deadline = time.monotonic() + float(config.get("timeouts.dynamic_total", 180))
 
     with Sandbox(app_dir, config) as box:
         if box.boot_failed:
-            reason = (box.logs(tail=20) or "부팅 로그 없음").strip()[:200]
-            return _boot_failed_checks(config, reason or "포트가 열리지 않음"), False, True
+            boot_log = (box.logs(tail=60) or "부팅 로그 없음").strip()
+            short = (boot_log.splitlines()[-1] if boot_log else "포트가 열리지 않음")[:200]
+            return _boot_failed_checks(config, short), False, True, boot_log
 
         ctx = DynamicContext(box.base_url, config)
+        # Feed hardcoded SECRET_KEY literals to session_forgery so it forges with the
+        # app's ACTUAL key (a live PoC proving a hardcoded secret is exploitable).
+        from .checks.A04_cryptographic_failures import extract_hardcoded_secrets
+        ctx.source_secrets = extract_hardcoded_secrets(_gather_sources(app_dir))
         dynamic_checks = registry.by_phase("dynamic")
         # functional runs first (drives the gate + seeds sessions); rest follow.
         functional = next(c for c in dynamic_checks if c.id == "functional")
@@ -108,15 +126,21 @@ def run_dynamic(app_dir: str, config: Config):
         func_result = functional.fn(ctx, {**dyn_cfg.get(functional.id, {}), "require": require})
         functional_failed = not func_result.passed
         checks: List[CheckResult] = [func_result]
+        if on_check:
+            on_check(functional.label)
 
         for c in rest:
             if time.monotonic() >= deadline:
                 weight = float((dyn_cfg.get(c.id, {}) or {}).get("weight", 0))
                 checks.append(_scored_zero(c.id, c.label, weight, "동적 검사 전체 시간 예산 초과"))
-                continue
-            checks.append(c.fn(ctx, dyn_cfg.get(c.id, {})))
+            else:
+                checks.append(c.fn(ctx, dyn_cfg.get(c.id, {})))
+            if on_check:
+                on_check(c.label)
 
         # A03: recompute CVE against real resolved (transitive) versions.
         checks.append(dependencies.dynamic_cve(box, config))
+        if on_check:
+            on_check("의존성 CVE 재검사")
 
-        return checks, functional_failed, False
+        return checks, functional_failed, False, ""

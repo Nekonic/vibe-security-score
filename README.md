@@ -8,7 +8,7 @@ ChatGPT(Codex CLI) 계정으로 Flask 게시판 앱을 생성하고, 그 코드�
 flowchart LR
     U[참가자 로그인] -->|프롬프트| S["제출 (/)"]
     S --> Q[제출 큐]
-    Q -->|직렬| G[Codex 생성]
+    Q -->|"병렬 (최대 5)"| G[Codex 생성]
     G -->|병렬| SC["채점 · 정적 + 동적(Docker)"]
     SC --> R["결과 · 점수·등급·감점 사유"]
 ```
@@ -20,7 +20,7 @@ flowchart LR
 | 1. 웹 UI | `grader/submissions/` | 프롬프트 제출, 진행 폴링, 결과 화면, 운영자 대시보드 |
 | 2. Codex 실행기 | `codex_runner/` | `codex exec`로 코드 생성 |
 | 3. 채점 엔진 | `scoring/` | 정적(소스/의존성) + 동적(컨테이너 실공격) → 점수 |
-| 4. 오케스트레이터 | `grader/submissions/orchestrator/` | 제출 큐, 직렬 생성 / 병렬 채점 |
+| 4. 오케스트레이터 | `grader/submissions/orchestrator/` | 제출 큐, 병렬 생성(최대 5) / 병렬 채점 |
 
 - 채점기 = **Django**, 참가자 생성 앱 = **Flask**(채점 대상), 참가자 앱 실행 =
   **`python:3.11-slim` 격리 컨테이너**(비루트·자원제한·네트워크 유지).
@@ -73,16 +73,16 @@ uv run python manage.py run_worker   # (별도 프로세스) 제출 처리: 생�
 
 ## 접근 제어 (공개 배포)
 
-회원가입 없음. 페이지·진행/결과는 로그인 없이 열람 가능(부스 스크린용)하지만 **제출(=Codex
-호출·과금)은 로그인 필수** — 익명 POST는 로그인으로 리다이렉트된다. 계정은 운영자가 만든다.
-세션은 **10시간** 유지, 비밀번호 최소 12자.
+회원가입 없음. 페이지·진행/결과는 로그인 없이 열람 가능(부스 스크린용)하지만 **제출은 로그인
+필수** — 익명 POST는 로그인으로 리다이렉트된다. 계정은 운영자가 만든다. 세션은 **10시간** 유지.
+비밀번호 정책은 없다(운영자가 원하면 `AUTH_PASSWORD_VALIDATORS`로 추가).
 
 ```bash
 cd grader
 uv run python manage.py createsuperuser              # 운영자(staff): 관리·재채점 가능
 # 일반 제출 계정: /admin/ → Operators → 추가, 또는:
 uv run python manage.py shell -c "from django.contrib.auth import get_user_model as G; \
-G().objects.create_user(username='booth1', password='<매우-복잡한-비밀번호>')"
+G().objects.create_user(username='booth1', password='<비밀번호>')"
 ```
 
 - **운영자(staff)**: 우측 상단 `이름 · 운영자` + `관리`(/admin/), 결과 페이지에 **재채점** 버튼
@@ -124,10 +124,10 @@ uv run python -m codex_runner.smoke
 ## 설정 · 운영 주의
 
 - `config/scoring.yaml` — 가중치·임계값·감점·게이트 캡·등급 컷·컨테이너 제한·Codex 플래그·외부
-  도구·오케스트레이터 동시성/재시도. `config/default_prompt.md` — 고정 시스템 프롬프트(앱 스펙).
-  `data/` — 재현성용 고정 스냅샷(인기 패키지, OSV CVE).
-- **Codex 인증·과금**: 코드 생성은 API 키가 아니라 `codex login`한 **운영자 ChatGPT 세션(OAuth)**
-  만 사용(`OPENAI_API_KEY`/`CODEX_API_KEY`는 비움, fallback 없음). 생성은 5시간 롤링 한도를 공유해
-  **직렬 처리**되며, 한도 초과 제출은 버려지지 않고 대기 후 재시도된다.
-- **프로덕션(Ubuntu)**: gunicorn + systemd + nginx + **PostgreSQL**(병렬 채점 쓰기). 전체 절차는
+  도구·오케스트레이터 동시성(`generation_concurrency`/`scoring_concurrency`)·재시도.
+  `config/default_prompt.md` — 고정 시스템 프롬프트(앱 스펙). `data/` — 재현성용 고정 스냅샷.
+- **Codex 인증·모델**: 코드 생성은 `codex login`한 **운영자 ChatGPT 세션(OAuth)** 만 사용
+  (`OPENAI_API_KEY`/`CODEX_API_KEY`는 비움). 생성 모델은 config 기본값을 쓰되 **admin `채점기 설정`
+  에서 런타임 변경** 가능. 생성은 `generation_concurrency`(기본 5)까지 병렬 처리된다.
+- **프로덕션(Ubuntu)**: gunicorn + systemd + nginx + **PostgreSQL**(병렬 쓰기). 전체 절차는
   [deploy/README.md](deploy/README.md).

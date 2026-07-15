@@ -22,7 +22,13 @@ _RENDER_STR = re.compile(r"""render_template_string\s*\(""")
 _SAFE_FILTER = re.compile(r"""\|\s*safe""")
 _AUTOESCAPE_OFF = re.compile(r"""autoescape\s*=\s*False""", re.IGNORECASE)
 _REQUEST_DATA = re.compile(r"""request\.|\bg\.|session\[""")
-_TPL_SAFE = re.compile(r"""\{\{[^}]*\|\s*safe[^}]*\}\}""")
+# {{ x | safe }} disables autoescape. Exclude the common SAFE helpers (url_for,
+# csrf_token, config/url values) so marking those safe isn't a false positive; a
+# stored value like {{ post.content | safe }} is still flagged.
+_TPL_SAFE = re.compile(
+    r"""\{\{(?![^}]*(?:url_for|csrf|url_encode|tojson|config\.|\bg\.))[^}]*\|\s*safe[^}]*\}\}""",
+    re.IGNORECASE,
+)
 _TPL_AUTOESCAPE_OFF = re.compile(r"""\{%\s*autoescape\s+false\s*%\}""", re.IGNORECASE)
 
 

@@ -197,6 +197,8 @@ def check_typosquatting(requirements: List[Tuple[str, str]], dep_cfg: dict) -> C
         norm = _normalize_pkg(name)
         if norm in popular:
             continue
+        if len(norm) < 4:
+            continue  # short names collide by chance; distance-1 there is noise
         best_name = None
         best_dist = None
         for pop in popular:

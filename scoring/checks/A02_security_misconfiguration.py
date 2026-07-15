@@ -52,7 +52,13 @@ _HEADERS = {
     "Strict-Transport-Security": re.compile(r"""Strict-Transport-Security|strict_transport_security|\bhsts\b""", re.IGNORECASE),
     "X-Content-Type-Options": re.compile(r"""X-Content-Type-Options|content_type_options""", re.IGNORECASE),
 }
-_HEADER_MECHANISM = re.compile(r"""after_request|Talisman""", re.IGNORECASE)
+# A mechanism that actually emits the header: an after_request hook, Talisman, or
+# setting it directly on a response (resp.headers['X-Frame-Options'] = ..., or
+# add_header). Without this, a bare header NAME in the source isn't proof it's sent.
+_HEADER_MECHANISM = re.compile(
+    r"""after_request|Talisman|\.headers\s*\[|\.headers\.setdefault|add_header|set_header""",
+    re.IGNORECASE,
+)
 
 
 def check_security_headers(sources: Sequence[Source], cfg: dict) -> CheckResult:

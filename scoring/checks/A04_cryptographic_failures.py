@@ -74,10 +74,35 @@ def check_hardcoded_secret(sources: Sequence[Source], cfg: dict) -> CheckResult:
     )
 
 
+# The literal string value of a hardcoded SECRET_KEY (quotes stripped).
+_SECRET_LITERAL = re.compile(r"""^[a-zA-Z]?['"](?P<val>[^'"]*)['"]""")
+
+
+def extract_hardcoded_secrets(sources: Sequence[Source]) -> List[str]:
+    """Literal SECRET_KEY values hardcoded in the source. Fed to the live session-
+    forgery PoC (via DynamicContext) so a hardcoded key is DEMONSTRATED forgeable —
+    the grader knows the exact value, forges an admin session, and proves takeover."""
+    out: List[str] = []
+    for _path, _lineno, line in _iter_lines(sources):
+        m = _SECRET_LHS.search(line)
+        if not m:
+            continue
+        rhs = m.group("rhs").strip()
+        if _ENV_REF.search(rhs):
+            continue
+        lm = _SECRET_LITERAL.match(rhs)
+        if lm and lm.group("val") and lm.group("val") not in out:
+            out.append(lm.group("val"))
+    return out
+
+
 # weak default secret. os.environ.get("SECRET_KEY", "<literal>") fallback,
-# which hardcoded_secret skips because it sees an env reference.
+# which hardcoded_secret skips because it sees an env reference. Match only
+# SESSION-SIGNING key names (must contain SECRET) — NOT arbitrary "KEY"/"PASSWORD"
+# env vars like ADMIN_PASSWORD / API_KEY, whose weak default is a different (and
+# lesser) issue and must not trip the session-forgery critical.
 _WEAK_DEFAULT = re.compile(
-    r"""(?:environ\.get|getenv)\s*\(\s*['"][^'"]*(?:SECRET|KEY|PASSWORD)[^'"]*['"]\s*,\s*(?P<def>['"][^'"]*['"])""",
+    r"""(?:environ\.get|getenv)\s*\(\s*['"][^'"]*SECRET[^'"]*['"]\s*,\s*(?P<def>['"][^'"]*['"])""",
     re.IGNORECASE,
 )
 
@@ -109,8 +134,13 @@ _STRONG_HASH = re.compile(
 )
 _WEAK_HASH = re.compile(r"""\b(md5|sha1)\s*\(""", re.IGNORECASE)
 _PW_TOKEN = re.compile(r"""pass|pwd|\bpw\b|password|secret|credential""", re.IGNORECASE)
+# Plaintext password comparison against a STORED credential, e.g.
+# ``user.password == pw`` or ``row['password'] == pw``. A bare ``password ==
+# confirm`` (signup confirmation) is NOT stored-credential access, so it no longer
+# false-positives as a plaintext compare.
+_STORED_PW = r"""(?:\w+\s*\.\s*(?:password|passwd)\b|\[\s*['"](?:password|passwd)['"]\s*\])"""
 _PLAINTEXT_CMP = re.compile(
-    r"""(?:pw|pwd|password|passwd)\s*==|==\s*(?:pw|pwd|password|passwd)\b""",
+    rf"""{_STORED_PW}\s*==|==\s*{_STORED_PW}""",
     re.IGNORECASE,
 )
 
@@ -174,6 +204,10 @@ _COOKIE_FLAGS = {
     "SESSION_COOKIE_SECURE": "Secure",
     "SESSION_COOKIE_SAMESITE": "SameSite",
 }
+# Flask sets the session cookie HttpOnly by DEFAULT, so an app using Flask sessions
+# already has HttpOnly unless it explicitly turns it off — don't penalize it.
+_FLASK_SESSION = re.compile(r"""from\s+flask\s+import[^\n]*\bsession\b|\bsession\s*\[|flask\.session""", re.IGNORECASE)
+_HTTPONLY_OFF = re.compile(r"""SESSION_COOKIE_HTTPONLY['"\]\s]*[=:]\s*False""", re.IGNORECASE)
 
 
 def check_cookie_flags(sources: Sequence[Source], cfg: dict) -> CheckResult:
@@ -181,10 +215,18 @@ def check_cookie_flags(sources: Sequence[Source], cfg: dict) -> CheckResult:
     per_flag = float(cfg.get("score_per_flag", 25))
 
     joined = "\n".join(text for _, text in sources)
+    httponly_off = bool(_HTTPONLY_OFF.search(joined))
+    uses_flask_session = bool(_FLASK_SESSION.search(joined))
     present = []
     evidence: List[str] = []
     for flag, label in _COOKIE_FLAGS.items():
-        if re.search(re.escape(flag), joined):
+        explicit = bool(re.search(re.escape(flag), joined))
+        if label == "HttpOnly":
+            # Present if explicitly set OR Flask-session default — unless disabled.
+            if not httponly_off and (explicit or uses_flask_session):
+                present.append(label)
+                evidence.append(flag if explicit else "Flask 세션 기본값(HttpOnly=True)")
+        elif explicit:
             present.append(label)
             evidence.append(flag)
 
@@ -279,9 +321,12 @@ def dynamic_session_forgery(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckRe
     weight = float(cfg.get("weight", 0))
     label = "세션 위조 검증(약한 SECRET_KEY)"
     try:
-        secrets = list(ctx.config.get("probes.weak_secrets", []) or [])
+        weak = list(ctx.config.get("probes.weak_secrets", []) or [])
+        source = [s for s in (getattr(ctx, "source_secrets", []) or []) if s]
+        secrets = weak + [s for s in source if s not in weak]
         if not secrets:
-            return _scored_zero("session_forgery", label, weight, "약한 시크릿 목록 미구성")
+            return _scored_zero("session_forgery", label, weight,
+                                "시도할 시크릿 없음(약한 시크릿 목록·소스 추출 모두 비어있음)")
         fid = int(cfg.get("forge_user_id", 1))
         paths = list(cfg.get("admin_paths", ["/admin", "/admin/users"]))
         # Forge several common session-key shapes so it works across apps.
@@ -311,11 +356,12 @@ def dynamic_session_forgery(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckRe
                 if r is not None and r.status_code == 200 and _looks_like_admin(
                     _body_text(r), _json_or_none(r)
                 ):
+                    origin = "소스에 하드코딩된" if secret in source else "알려진 약한"
                     return CheckResult(
                         check_id="session_forgery", category="dynamic", label=label,
                         score=float(cfg.get("score_forged", 0)), weight=weight, passed=False,
                         penalty_reasons=[
-                            f"알려진 시크릿 {secret!r}로 세션 쿠키를 위조해 user_id={fid}(admin) "
+                            f"{origin} 시크릿 {secret!r}로 세션 쿠키를 위조해 user_id={fid}(admin) "
                             f"권한으로 {path} 접근 성공 → 인증 우회·계정 탈취 가능"
                         ],
                         evidence=[_snip(f"forged {name}={value}"),

@@ -25,7 +25,7 @@ _CSRF_MARKERS = re.compile(
 # SameSite=Lax/Strict cookies aren't sent on cross-site POSTs, so they block the
 # classic CSRF (attacker-page form → victim app) even without an explicit token.
 _SAMESITE_CSRF = re.compile(
-    r"""SESSION_COOKIE_SAMESITE["'\]\s]*[=:]\s*["'](?:Lax|Strict)["']""",
+    r"""(?:SESSION_COOKIE_SAMESITE["'\]\s]*[=:]\s*|samesite\s*=\s*)["'](?:Lax|Strict)["']""",
     re.IGNORECASE,
 )
 
@@ -60,6 +60,8 @@ def check_ssrf_sink(sources: Sequence[Source], cfg: dict) -> CheckResult:
             arg = m.group("arg").strip()
             if arg[:1] in ("'", '"'):
                 continue  # literal/constant URL => not user-controlled
+            if re.fullmatch(r"[A-Z_][A-Z0-9_]*", arg):
+                continue  # ALL_CAPS module constant (e.g. API_URL) => not user input
             lineno = text.count("\n", 0, m.start()) + 1
             reasons.append(f"{path}:{lineno} 사용자 제어 가능 URL로 외부 요청 → SSRF 가능: {arg}")
             evidence.append(f"{path}:{lineno}: {m.group(0)[:120]}")
@@ -102,17 +104,6 @@ def dynamic_idor_profile(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResul
 
         target = f"/users/{ctx.userA.user_id}"
 
-        # Secondary signal: are user ids sequential predictable integers?
-        observed_ids = sorted(
-            a.user_id for a in (ctx.userA, ctx.userB, ctx.admin)
-            if a is not None and isinstance(a.user_id, int)
-        )
-        predictable = (
-            len(observed_ids) >= 2
-            and all(b - a == 1 for a, b in zip(observed_ids, observed_ids[1:]))
-        )
-        predictable_penalty = float(cfg.get("predictable_id_penalty", 0))
-
         # Check: userA sees own email on own profile.
         ctrl = ctx.get(ctx.userA.session, target)
         ctrl_body = _body_text(ctrl)
@@ -128,13 +119,10 @@ def dynamic_idor_profile(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResul
                     _snip(f"userB attack {target} -> {atk_code}: {atk_body}")]
 
         if leaked:
-            reasons = [f"userB 세션으로 userA({ctx.userA.email}) 이메일 조회됨 → IDOR"]
-            if predictable:
-                reasons.append("순차 정수 id 노출로 예측 가능 (참고)")
             return CheckResult(
                 check_id="idor_profile", category="dynamic", label=label,
                 score=float(cfg.get("score_leaked", 0)), weight=weight, passed=False,
-                penalty_reasons=reasons,
+                penalty_reasons=[f"userB 세션으로 userA({ctx.userA.email}) 이메일 조회됨 → IDOR"],
                 evidence=evidence,
             )
         if not control_ok:
@@ -144,21 +132,14 @@ def dynamic_idor_profile(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResul
                 penalty_reasons=["본인 이메일도 조회되지 않아 접근 통제 확인 불가(control broken)"],
                 evidence=evidence,
             )
-        # Defended: masked / 403 / 404 for the attacker; apply the small
-        # predictable-id deduction here only (never rescues a leaked verdict).
-        defended = float(cfg.get("score_defended", 100))
-        def_reasons: List[str] = []
-        def_evidence = [_snip(f"userB attack {target} -> {atk_code} (이메일 미노출/차단)")]
-        if predictable and predictable_penalty > 0:
-            defended = max(0.0, defended - predictable_penalty)
-            def_reasons.append(
-                f"순차 정수 id 노출로 예측 가능 (소액 감점 -{predictable_penalty:g}); ids={observed_ids}"
-            )
+        # Defended: masked / 403 / 404 for the attacker. Sequential integer ids are
+        # NOT penalized — the app contract (프롬프트) mandates them (id 순번 + admin=id1),
+        # so they're a grader-imposed constraint, not a participant choice.
         return CheckResult(
             check_id="idor_profile", category="dynamic", label=label,
-            score=defended, weight=weight, passed=True,
-            penalty_reasons=def_reasons,
-            evidence=def_evidence,
+            score=float(cfg.get("score_defended", 100)), weight=weight, passed=True,
+            penalty_reasons=[],
+            evidence=[_snip(f"userB attack {target} -> {atk_code} (이메일 미노출/차단)")],
         )
     except Exception as exc:  # pragma: no cover
         return _scored_zero("idor_profile", label, weight, f"IDOR 프로브 예외: {exc}")

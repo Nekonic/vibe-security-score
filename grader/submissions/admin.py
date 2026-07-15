@@ -2,11 +2,12 @@
 Lifecycle changes go through ``submissions.state``, never inline."""
 from __future__ import annotations
 
+from django import forms
 from django.contrib import admin
 from django.db.models import Count
 from django.utils.html import format_html, format_html_join
 
-from .models import Submission
+from .models import GraderSettings, Submission
 from . import state
 
 
@@ -130,3 +131,61 @@ class SubmissionAdmin(admin.ModelAdmin):
         extra_context["status_summary"] = summary
         extra_context["queued_total"] = counts.get(Submission.Status.QUEUED, 0)
         return super().changelist_view(request, extra_context=extra_context)
+
+
+@admin.register(GraderSettings)
+class GraderSettingsAdmin(admin.ModelAdmin):
+    """Single-row settings page: the worker reads ``codex_model`` per generation."""
+
+    def has_add_permission(self, request) -> bool:
+        # Singleton: no "add" — always edit the one row (created on first access).
+        return not GraderSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None) -> bool:
+        return False
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        # Render codex_model as a dropdown populated LIVE from the Codex CLI's own
+        # model catalog (`codex debug models`), so an operator can only pick a real,
+        # currently-supported slug — never mistype a guessed/internet model name.
+        if db_field.name == "codex_model":
+            from codex_runner.models import available_models
+
+            choices = [("", "(config 기본값 / ChatGPT 계정 기본 모델)")]
+            slugs = set()
+            for m in available_models():
+                slugs.add(m["slug"])
+                choices.append((m["slug"], f'{m["display_name"]} — {m["slug"]}'))
+            # Preserve a previously-saved value even if the catalog can't be read
+            # right now (CLI missing) or the slug was retired, so it still shows.
+            current = GraderSettings.load().codex_model
+            if current and current not in slugs:
+                choices.append((current, f"{current} (현재 설정값 · 카탈로그에 없음)"))
+            return forms.ChoiceField(
+                choices=choices, required=False, label="Codex 모델",
+                help_text="codex debug models 카탈로그에서 선택. 비우면 config/계정 기본 모델 사용.",
+            )
+        if db_field.name == "codex_reasoning_effort":
+            from codex_runner.models import available_reasoning_efforts
+
+            choices = [("", "(모델 기본값)")]
+            efforts = set()
+            for e in available_reasoning_efforts():
+                efforts.add(e["effort"])
+                label = f'{e["effort"]}' + (f' — {e["description"]}' if e["description"] else "")
+                choices.append((e["effort"], label))
+            current = GraderSettings.load().codex_reasoning_effort
+            if current and current not in efforts:
+                choices.append((current, f"{current} (현재 설정값 · 카탈로그에 없음)"))
+            return forms.ChoiceField(
+                choices=choices, required=False, label="추론 강도",
+                help_text="codex debug models 카탈로그 기반. 비우면 모델 기본 추론 강도 사용.",
+            )
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
+
+    def changelist_view(self, request, extra_context=None):
+        from django.shortcuts import redirect
+        from django.urls import reverse
+
+        obj = GraderSettings.load()
+        return redirect(reverse("admin:submissions_gradersettings_change", args=[obj.pk]))

@@ -88,10 +88,11 @@ _SQL_ERROR_SIGNS = (
 
 
 def _has_sql_error(resp: Optional[requests.Response]) -> bool:
+    # A bare HTTP 500 is NOT proof of a SQL error/stacktrace leak — a hardened app
+    # returns a generic 500 with no detail. Require an actual SQL/trace signature in
+    # the body (matches A10 verbose_errors), so a clean 500 isn't a false positive.
     if resp is None:
         return False
-    if resp.status_code == 500:
-        return True
     low = _body_text(resp).lower()
     return any(sign in low for sign in _SQL_ERROR_SIGNS)
 

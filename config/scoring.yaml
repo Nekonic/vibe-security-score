@@ -67,26 +67,32 @@ critical:
   penalties:
     debug_true: 20            # Werkzeug 대화형 디버거 = 원격코드실행(RCE)
     weak_default_secret: 15   # 알려진 SECRET_KEY = 세션 위조 → 관리자 탈취
+    hardcoded_secret: 15      # 소스에 박힌 SECRET_KEY = 세션 위조(라이브 PoC 확인 시에만 치명)
     csrf_protection: 6        # 상태변경 POST 위조 가능
     sqli: 25                  # 확정 인젝션 = DB 읽기/쓰기
     stored_xss: 18            # 지속 스크립트 = 계정 탈취
     reflected_xss: 12
+    idor_profile: 12          # 타인 PII(email) 무단 조회 (IDOR)
     access_control_admin: 20  # 일반 사용자에게 관리자 화면 노출
   severity:
     debug_true: "치명 · RCE · CWE-489"
     weak_default_secret: "치명 · 인증우회 · CWE-798"
+    hardcoded_secret: "치명 · 인증우회 · CWE-798"
     csrf_protection: "높음 · CSRF · CWE-352"
     sqli: "치명 · SQLi · CWE-89"
     stored_xss: "높음 · 저장형 XSS · CWE-79"
     reflected_xss: "높음 · 반사형 XSS · CWE-79"
+    idor_profile: "높음 · IDOR/PII 노출 · CWE-639"
     access_control_admin: "치명 · 접근통제 · CWE-284"
   repro:
     debug_true: "임의 예외 유발 → /console Werkzeug 디버거에서 코드 실행"
     weak_default_secret: "알려진 시크릿으로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
+    hardcoded_secret: "소스에 박힌 SECRET_KEY로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
     csrf_protection: "외부 출처 폼에서 토큰 없이 POST /posts 전송 → 글 작성 성공"
     sqli: "sqlmap/부울 차등으로 /search·/login 인젝션 확인"
     stored_xss: "게시글 본문에 스크립트 저장 → 목록 렌더 시 실행"
     reflected_xss: "/search?q= 페이로드가 이스케이프 없이 반사"
+    idor_profile: "userB 세션으로 GET /users/<타인 id> → 타인 email 노출"
     access_control_admin: "일반 사용자 세션으로 /admin·/admin/users 직접 접근"
 
 # --- Gates -------------------------------------------------------------------
@@ -136,13 +142,19 @@ poc:
   idle_timeout_seconds: 600                 # reap sessions idle longer than this
   run_timeout_seconds: 20                   # per attack-container run wall-clock cap
 
-# Codex runner (Part 2). ChatGPT login auth only (no API key); serial use.
+# Codex runner (Part 2). ChatGPT login auth only (no API key).
 codex:
   binary: "codex"                 # PATH name or absolute path on operator machine
-  # Model pin. EMPTY => use the ChatGPT account's default model (required for
-  # ChatGPT-account auth: API-only ids like `gpt-5-codex` are rejected). To pin
-  # for reproducibility, set a ChatGPT-supported id (verify with `codex --help`).
+  # Default model. EMPTY => use the ChatGPT account's default model (always valid).
+  # Prefer picking a model at runtime from the admin page (채점기 설정) — that dropdown
+  # is populated LIVE from the CLI's own catalog (`codex debug models`), so the value
+  # is guaranteed to be a real, supported slug. The admin value wins when set; leave
+  # this empty to avoid pinning a slug here that a CLI update could retire.
   model: ""
+  # Reasoning effort. EMPTY => the model's own default level. Overridable at runtime
+  # from the admin page; that dropdown is populated LIVE from the CLI catalog
+  # (levels common to all selectable models). Passed as `-c model_reasoning_effort=…`.
+  reasoning_effort: ""
   codex_home: null                # null => default ~/.codex (holds auth.json — secret)
   exec_flags:                     # passed to `codex exec` (see spec); do NOT add danger-full-access
     sandbox: "workspace-write"    # default is read-only -> can't write files
@@ -152,7 +164,7 @@ codex:
       - "--json"                  # JSONL stream on stdout for structured parse
       - "--ignore-user-config"    # ignore operator's ~/.codex config.toml (reproducibility)
       - "--ignore-rules"          # ignore AGENTS.md / execpolicy
-  # Env keys blanked in the child process so an API key can NEVER trigger billing.
+  # Blank these env keys in the child process so generation uses the ChatGPT login only.
   blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
   rate_limit:
     # Case-insensitive signals in stderr / JSONL error events => RateLimitError.
@@ -221,11 +233,13 @@ tools:
     timeout: 8
     penalty_per_missing: 40
 
-# Orchestrator (Part 4). Generation is globally serial (ChatGPT limit); scoring bounded-parallel.
+# Orchestrator (Part 4). Generation and scoring are both bounded-parallel.
 orchestrator:
   keep_generated: true
   queue_backend: "db"             # DB table as the queue + single worker
-  generation_concurrency: 1       # MUST be 1 — ChatGPT rolling limit. Do not raise.
+  generation_concurrency: 5       # generation thread-pool size = HARD max concurrent Codex
+                                  # sessions. Admin (채점기 설정 · codex_max_sessions) throttles
+                                  # the live value within this ceiling (restart to change the ceiling).
   scoring_concurrency: 2          # bounded parallel scoring (isolated containers); tune to server CPU/RAM
   poll_interval_seconds: 2        # worker loop poll cadence for queued submissions
   pipeline_timeout_seconds: 900   # overall per-submission cap; no stage hangs forever
@@ -349,11 +363,12 @@ static:
       penalty_low: 3
     typosquatting:
       # Compare each requirement against a local popular-package snapshot.
-      # Edit distance 1..threshold to a popular name (but not equal) => suspect.
-      # Secondary heuristic (edit distance can false-positive) => small share.
+      # Edit distance 1 to a popular name (but not equal) => suspect. Distance 2 was
+      # too loose (legit packages within 2 edits of a popular one false-positived);
+      # a single-char change is the high-signal typosquat.
       weight: 4
       popular_snapshot: "data/popular_packages.json"
-      max_edit_distance: 2
+      max_edit_distance: 1
       penalty_per_suspect: 50
 
 # Dynamic analysis (B) — boot the app and attack it. Contract endpoints (JSON/form both):
@@ -372,7 +387,8 @@ dynamic:
       score_defended: 100
       score_leaked: 0
       score_control_broken: 60   # can't establish control (own email hidden too)
-      predictable_id_penalty: 5
+      # NOTE: no predictable-id penalty — the contract forces sequential ids +
+      # admin=id1, so penalizing them would be a false positive (grader-imposed).
 
     access_control_admin:    # -> auth
       weight: 3

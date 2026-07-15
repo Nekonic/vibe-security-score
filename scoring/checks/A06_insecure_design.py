@@ -23,8 +23,12 @@ def dynamic_rate_limiting(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResu
             return _scored_zero("rate_limiting", label, weight, "테스트 계정 없음으로 판정 불가")
         attempts = int(cfg.get("attempts", 8))
         blocked = False
+        # One shared session across attempts so a limiter that keys on the session
+        # (as well as IP- or account-based ones) is detected — a fresh session per
+        # try would miss session-scoped throttling and falsely report "no limiting".
+        sess = requests.Session()
         for _ in range(attempts):
-            r = ctx.post(requests.Session(), "/login",
+            r = ctx.post(sess, "/login",
                          _login_payload(ctx.userA, "wrong-" + uuid.uuid4().hex[:6]))
             if r is None:
                 continue

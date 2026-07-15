@@ -1,10 +1,10 @@
 """The grading pipeline: queued -> generating -> scoring -> done (or failed).
 
-Generation is globally serial (one worker loop under a module-global lock,
-because of the shared ChatGPT rolling limit); scoring is bounded-parallel in a
-thread pool. Per-submission processing is fault-isolated and cleans up its
-workdir/container in ``finally``. ``generate_fn``/``grade_fn`` are injectable
-(tests use fakes; defaults are the real codex_runner/scoring)."""
+Generation and scoring are each bounded-parallel in their own thread pool
+(``generation_concurrency`` / ``scoring_concurrency``). Per-submission processing
+is fault-isolated and cleans up its workdir/container in ``finally``.
+``generate_fn``/``grade_fn`` are injectable (tests use fakes; defaults are the
+real codex_runner/scoring)."""
 from __future__ import annotations
 
 import logging
@@ -23,10 +23,6 @@ from ..models import Submission
 from .. import state
 
 logger = logging.getLogger("submissions.orchestrator")
-
-# Enforces generation-concurrency == 1 (the single worker loop is the primary
-# guarantee; this is belt-and-suspenders).
-_GENERATION_LOCK = threading.Lock()
 
 # Operator alert flag for Codex auth expiry; run_worker/tests can inspect it.
 _AUTH_ALERT = threading.Event()
@@ -120,6 +116,10 @@ class Orchestrator:
         self._grade_fn = grade_fn or _default_grade_fn()
         self._scoring_config = scoring_config
         self._sleep = sleep_fn
+        self._generation_pool = ThreadPoolExecutor(
+            max_workers=max(1, config.generation_concurrency),
+            thread_name_prefix="generation",
+        )
         self._scoring_pool = ThreadPoolExecutor(
             max_workers=max(1, config.scoring_concurrency),
             thread_name_prefix="scoring",
@@ -134,6 +134,9 @@ class Orchestrator:
             fut.result(timeout=timeout)
 
     def shutdown(self, wait: bool = True) -> None:
+        # Generation first: each generation job submits its scoring job before it
+        # returns, so draining generation guarantees all scoring is queued.
+        self._generation_pool.shutdown(wait=wait)
         self._scoring_pool.shutdown(wait=wait)
 
     def _is_auth_failure(self, err: BaseException) -> bool:
@@ -162,30 +165,34 @@ class Orchestrator:
                 pass
 
     def process_generation(self, sub: Submission) -> Optional[Path]:
-        """Serial generation (under the global lock). Returns the workdir Path,
-        or None if re-queued (rate limit) / failed — caller skips scoring."""
-        with _GENERATION_LOCK:
-            attempt = sub.generation_retries
-            state.to_generating(sub)
-            # Live activity sink: redacted codex events streamed to events.jsonl so
-            # the participant can watch generation in real time (read-only).
-            try:
-                from codex_runner.activity import open_sink
-                event_sink, _ = open_sink(self._scoring_config, str(sub.pk))
-            except Exception:  # never let the live view break generation
-                event_sink = None
-            try:
-                workdir = self._generate_fn(
-                    str(sub.pk), sub.prompt, config=self._scoring_config,
-                    event_sink=event_sink,
-                )
-            except Exception as err:  # noqa: BLE001 - classify below
-                return self._handle_generation_error(sub, err, attempt)
+        """Bounded-parallel generation (one generation-pool thread). Returns the
+        workdir Path, or None if re-queued (rate limit) / failed — caller skips
+        scoring."""
+        attempt = sub.generation_retries
+        state.to_generating(sub)
+        # Live activity sink: redacted codex events streamed to events.jsonl so
+        # the participant can watch generation in real time (read-only).
+        try:
+            from codex_runner.activity import open_sink
+            event_sink, _ = open_sink(self._scoring_config, str(sub.pk))
+        except Exception:  # never let the live view break generation
+            event_sink = None
+        try:
+            from ..models import GraderSettings
+            settings = GraderSettings.load()
+            workdir = self._generate_fn(
+                str(sub.pk), sub.prompt, config=self._scoring_config,
+                event_sink=event_sink,
+                model=settings.codex_model or None,
+                reasoning_effort=settings.codex_reasoning_effort or None,
+            )
+        except Exception as err:  # noqa: BLE001 - classify below
+            return self._handle_generation_error(sub, err, attempt)
 
-            sub.workdir = str(workdir)
-            state.save_fields(sub, "workdir")
-            state.mark_generation_finished(sub)
-            return Path(workdir)
+        sub.workdir = str(workdir)
+        state.save_fields(sub, "workdir")
+        state.mark_generation_finished(sub)
+        return Path(workdir)
 
     def _handle_generation_error(
         self, sub: Submission, err: Exception, attempt: int
@@ -302,9 +309,20 @@ class Orchestrator:
                     sub.pk, elapsed,
                 )
 
+    def submit_generation(self, sub: Submission) -> Future:
+        """Run one submission's generation in the generation pool (bounded to
+        ``generation_concurrency``). Returns the generation Future."""
+        return self._generation_pool.submit(self._generation_job, sub)
+
+    def _generation_job(self, sub: Submission) -> None:
+        try:
+            self.process_one(sub)
+        finally:
+            close_old_connections()  # this ran in a pool thread
+
     def process_one(self, sub: Submission) -> Optional[Future]:
-        """Serial generation then queued scoring for one submission. Returns the
-        scoring Future or None. Fault-isolated: any error fails only this one."""
+        """Generation then queued scoring for one submission. Returns the scoring
+        Future or None. Fault-isolated: any error fails only this one."""
         try:
             # Operator re-grade: score the existing generated code, NEVER Codex.
             if sub.regrade_only:

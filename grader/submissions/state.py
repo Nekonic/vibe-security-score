@@ -87,6 +87,7 @@ def to_done(sub: Submission, report: Mapping[str, Any]) -> Submission:
     sub.pass_fail = str(pf or "")
     sub.findings = list(report.get("findings", []) or [])
     sub.critical_penalties = list(report.get("critical_penalties", []) or [])
+    sub.boot_log = str(report.get("boot_log", "") or "")
     sub.last_error = ""
     sub.finished_at = timezone.now()
     _save(
@@ -97,6 +98,7 @@ def to_done(sub: Submission, report: Mapping[str, Any]) -> Submission:
         "pass_fail",
         "findings",
         "critical_penalties",
+        "boot_log",
         "last_error",
         "finished_at",
     )

@@ -106,6 +106,10 @@ class DynamicContext:
         self.xss_payloads = [str(p) for p in (probes.get("xss_payloads") or [self.xss_payload])]
         self.sqli_payloads = list(probes.get("sqli_payloads", []) or [])
         self.sqli_auth_bypass = list(probes.get("sqli_auth_bypass", []) or [])
+        # SECRET_KEY literals extracted from the app source (set by run_dynamic).
+        # session_forgery forges with these too, so a HARDCODED key is proven
+        # forgeable (the grader knows its exact value), not just statically flagged.
+        self.source_secrets: list = []
         self.dev = bool(getattr(config, "dev", False))  # gate real CLI tools (sqlmap)
         self.sqlmap_cfg = dict(config.get("tools.sqlmap", {}) or {})
         # Endpoints that hand out a CSRF token (JSON body / form / <meta>), tried in
@@ -114,6 +118,17 @@ class DynamicContext:
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+    @staticmethod
+    def _desecure(sess: requests.Session) -> None:
+        """The graded app runs over plain HTTP in the sandbox. A hardened app that
+        sets SESSION_COOKIE_SECURE=True would otherwise have its session cookie
+        withheld over HTTP → login wouldn't persist → the whole dynamic suite would
+        falsely fail a CORRECTLY-hardened app. Clear the Secure flag on stored
+        cookies so the grader still exchanges them over HTTP (no false penalty)."""
+        for c in sess.cookies:
+            if getattr(c, "secure", False):
+                c.secure = False
 
     @staticmethod
     def _remember_csrf(sess: requests.Session, resp: Optional[requests.Response]) -> None:
@@ -138,6 +153,7 @@ class DynamicContext:
             r = sess.get(self._url(path), timeout=self.http_timeout, **kw)
         except requests.RequestException:
             return None
+        self._desecure(sess)  # keep Secure cookies usable over the sandbox's HTTP
         self._remember_csrf(sess, r)  # seed token from form pages / meta tags
         return r
 
@@ -149,23 +165,34 @@ class DynamicContext:
             self.get(sess, p)
 
     def post(self, sess: requests.Session, path: str, data: Dict[str, Any]) -> Optional[requests.Response]:
-        return csrf.post_with_csrf(
+        r = csrf.post_with_csrf(
             self._bound_post(sess), self._url(path), data,
             get_token=lambda: self._csrf_for(sess),
             set_token=lambda t: setattr(sess, "_csrf_token", t),
             reseed=lambda: self._seed_csrf(sess, path),
         )
+        self._desecure(sess)  # keep Secure cookies usable over the sandbox's HTTP
+        return r
 
 
 # Admin-page recognition, shared by the access-control and session-forgery probes.
-# Markers are only trusted on a 200 response (callers gate on status), so an
-# access-denied page that also says "관리자..." never false-positives.
-_ADMIN_MARKERS = ("admin dashboard", "운영자", "관리자", "사용자 목록",
-                  "admin users", "admin/users", "is_admin", "post_count")
+# Content markers that indicate actual admin data. Nav-link strings like
+# "admin/users" are deliberately EXCLUDED — they appear in a shared navbar visible
+# to everyone and would false-positive; the probes already hit the admin PATHS.
+_ADMIN_MARKERS = ("admin dashboard", "관리자 대시보드", "운영자", "관리자", "사용자 목록",
+                  "is_admin", "post_count")
+# A soft access-denied page rendered with HTTP 200 (common) can contain "관리자"
+# ("관리자 권한이 필요합니다"); these phrases mean the viewer is NOT an admin, so a
+# match here vetoes the admin verdict (kills the denial-page false positive).
+_ADMIN_DENY = ("권한이 없", "권한이 필요", "접근 권한", "접근이 거부", "로그인이 필요",
+               "login required", "please log in", "forbidden", "unauthorized",
+               "access denied", "not authorized")
 
 
 def _looks_like_admin(body: str, j: Any) -> bool:
     low = (body or "").lower()
+    if any(d.lower() in low for d in _ADMIN_DENY):
+        return False  # explicit denial/login page — not real admin content
     if any(m.lower() in low for m in _ADMIN_MARKERS):
         return True
     if isinstance(j, dict) and isinstance(j.get("users"), list) and j["users"]:

@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def dynamic_results():
     config = load_config()
-    checks, functional_failed, boot_failed = run_dynamic(_APP_DIR, config)
+    checks, functional_failed, boot_failed, _boot_log = run_dynamic(_APP_DIR, config)
     by_id = {c.check_id: c for c in checks}
     return by_id, functional_failed, boot_failed
 

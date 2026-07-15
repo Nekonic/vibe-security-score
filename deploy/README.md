@@ -2,7 +2,7 @@
 
 채점기는 **네이티브(systemd)**로 돌리고 참가자 앱만 Docker 컨테이너로 띄운다 — 채점기 프로세스가
 호스트 Docker 데몬에 접근할 수 있어야 한다(Docker-in-Docker 불필요). systemd 프로세스 2개:
-`vibe-grader-web`(gunicorn, 참가자 UI + `/admin`), `vibe-grader-worker`(제출 파이프라인: 직렬
+`vibe-grader-web`(gunicorn, 참가자 UI + `/admin`), `vibe-grader-worker`(제출 파이프라인: 병렬
 생성 → 병렬 채점, 시작 시 고아 자원 정리).
 
 ```mermaid
@@ -92,13 +92,14 @@ sudo -u vibe --preserve-env uv run python manage.py createsuperuser
 
 ## 7. Codex 로그인 (코드 생성 인증)
 
-`vibe` 사용자로, 환경 파일의 `CODEX_HOME` 아래에 로그인한다(과금 방지: API 키 아님).
+`vibe` 사용자로, 환경 파일의 `CODEX_HOME` 아래에 ChatGPT 계정으로 로그인한다(API 키 아님).
 
 ```bash
 sudo -u vibe CODEX_HOME=/opt/vibe-security-score/.codex codex login   # 헤드리스면 codex login --device-auth
 sudo -u vibe CODEX_HOME=/opt/vibe-security-score/.codex codex --version
 ```
-그런 다음 `config/scoring.yaml`의 `codex.model` / 플래그가 설치된 CLI와 맞는지 확인.
+그런 다음 `config/scoring.yaml`의 `codex.model` / 플래그가 설치된 CLI와 맞는지 확인. 생성 모델은
+배포 후 `/admin`의 **채점기 설정**에서 바꿀 수 있다(config 재배포·재시작 불필요).
 
 ## 8. systemd 서비스
 

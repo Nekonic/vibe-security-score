@@ -24,7 +24,7 @@ flowchart LR
 
 | 엔티티 | 필수 필드 | 채점상 의미 |
 |---|---|---|
-| **user** | `id`(순차 정수 PK), `username`(고유), `email`, `password_hash`, `is_admin` | `email` = **개인정보(PII) 기준**. IDOR 검사는 "타인의 email이 보이는가"로 판정. `id` 순차성은 IDOR 예측가능성 감점에. `is_admin`으로 관리자 구분. |
+| **user** | `id`(순차 정수 PK), `username`(고유), `email`, `password_hash`, `is_admin` | `email` = **개인정보(PII) 기준**. IDOR 검사는 "타인의 email이 보이는가"로만 판정(순차 id 자체는 계약이 강제하므로 감점하지 않음). `is_admin`으로 관리자 구분. |
 | **post** | `id`, `title`, `content`, `author_id`(→user) | 글 작성/검색/저장형 XSS/SQLi 프로브의 대상. **본문 필드명은 `content`.** |
 
 - **`email`은 반드시 존재하고 프로필에서 소유자에게만 노출**되어야 IDOR을 테스트할 수 있다.

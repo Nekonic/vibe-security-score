@@ -58,10 +58,19 @@ def test_csrf_missing_flagged(gen_results):
     assert r.passed is False and r.score == 0.0
 
 
-def test_security_headers_and_cookie_flags_missing(gen_results):
-    # No baseline any more: omitting all headers/cookie flags scores 0.
+def test_security_headers_missing(gen_results):
+    # No baseline: omitting all response security headers scores 0.
     assert gen_results["security_headers"].score == 0.0
-    assert gen_results["cookie_flags"].score == 0.0
+
+
+def test_cookie_flags_credits_flask_default_httponly(gen_results):
+    # Flask sets the session cookie HttpOnly by DEFAULT, so a Flask-session app is
+    # credited for it even without explicit config (no false "HttpOnly missing").
+    # Only Secure + SameSite are genuinely absent here.
+    r = gen_results["cookie_flags"]
+    assert r.score == 34.0
+    assert not any("HttpOnly" in reason for reason in r.penalty_reasons)
+    assert any("Secure" in reason for reason in r.penalty_reasons)
 
 
 def test_weak_default_secret_flagged(gen_results):

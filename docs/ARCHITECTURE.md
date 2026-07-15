@@ -8,7 +8,7 @@ flowchart LR
     P[참가자] -->|프롬프트| UI["웹 UI · Django (grader/)"]
     UI -->|enqueue| Q[("제출 큐 · DB")]
     Q --> W[워커 run_worker]
-    W -->|"① 직렬 생성"| CX["Codex 러너 · codex exec"]
+    W -->|"① 병렬 생성 (최대 5)"| CX["Codex 러너 · codex exec"]
     CX --> GEN[("data/generated/ID")]
     W -->|"② 병렬 채점"| SC["채점 엔진 (scoring/)"]
     GEN --> SC
@@ -66,8 +66,9 @@ stateDiagram-v2
 
 **2. Codex 러너 (`codex_runner/`)** — `runner.generate`가 `codex exec`(비대화형)를 구동, 프롬프트는
 **stdin**으로 전달. `app.py`/`requirements.txt`/`templates/`를 `data/generated/ID/`로 하베스트하고
-`prompt.md`를 기록. **ChatGPT 인증만** — `OPENAI_API_KEY`/`CODEX_API_KEY`를 비워 API 키 fallback
-없음. 직렬 사용(5시간 롤링 한도), 실행별 타임아웃이 프로세스 트리를 종료. JSONL 스트림을 실시간
+`prompt.md`를 기록. **ChatGPT 인증만** — `OPENAI_API_KEY`/`CODEX_API_KEY`를 비워 ChatGPT 로그인만
+사용. 모델은 config 기본값을 쓰되 **admin(`채점기 설정`)에서 런타임 변경** 가능. 실행별 타임아웃이
+프로세스 트리를 종료. JSONL 스트림을 실시간
 으로 읽어 `activity.py`가 **레닥션**(임시·호스트 경로, 명령 출력 제거)해 `events.jsonl`로 남긴다
 (결과 페이지가 읽기 전용 tail). 원본 `transcript.json`은 운영자 전용.
 
@@ -105,8 +106,9 @@ stateDiagram-v2
   `DynamicContext`. 정적은 `fn(sctx, cfg)`, 동적은 `fn(ctx, cfg)`; 러너가 phase로 분기하고
   `functional`은 게이트 판정을 `CheckResult.passed`에 실어 균일하게 흐른다.
 
-**4. 오케스트레이터 (`grader/submissions/orchestrator/`)** — 워커 하나(`run_worker`): **직렬 생성**
-(전역 락 — 공유 ChatGPT 한도) → **제한된 병렬 채점**(`scoring_concurrency`). `process_one`이
+**4. 오케스트레이터 (`grader/submissions/orchestrator/`)** — 워커 하나(`run_worker`): **제한된 병렬
+생성**(`generation_concurrency`, 기본 5) → **제한된 병렬 채점**(`scoring_concurrency`) — 각자 스레드
+풀. `process_one`이
 **재채점 vs 생성**을 분기: `regrade_only` 제출은 기존 `workdir`를 재채점하며 **Codex를 호출하지
 않는다**(코드가 없으면 실패). 재시도/백오프; rate-limit은 실패가 아니라 재큐잉; 인증 실패는 전역
 운영자 알림. 시작 시 1회 고아 자원 스윕.

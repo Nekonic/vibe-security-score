@@ -98,20 +98,15 @@ else:
         }
     }
 
-AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    # Operator passwords must be long (public deployment) — bump the minimum.
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-     "OPTIONS": {"min_length": 12}},
-    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
-]
+# No password strength requirements — operators run this on their own terms and
+# customize as they like. Add Django's validators back here if you want a minimum.
+AUTH_PASSWORD_VALIDATORS: list = []
 
 # --- Access control (public deployment) --------------------------------------
 # No public signup: operators create accounts (createsuperuser / Django admin) and
-# hand them out. Pages are viewable (for the booth screen), but SUBMITTING (which
-# costs a Codex call) requires login — the submit form only shows to logged-in
-# accounts. Session lasts 10 hours (a booth day) from login, not tied to browser.
+# hand them out. Pages are viewable (for the booth screen), but SUBMITTING requires
+# login — the submit form only shows to logged-in accounts. Session lasts 10 hours
+# (a booth day) from login, not tied to browser.
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "submissions:submit"
 LOGOUT_REDIRECT_URL = "submissions:submit"

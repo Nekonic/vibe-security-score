@@ -1,7 +1,7 @@
 """Pipeline tests — hermetic, no Docker/Codex (fakes injected).
 
 Maps to the spec's verification points:
-  (a) serial generation        -> test_a_serial_generation_no_overlap
+  (a) bounded parallel generation -> test_a_bounded_parallel_generation
   (b) bounded parallel scoring  -> test_b_bounded_parallel_scoring
   (c) fault isolation           -> test_c_fault_isolation
   (d) rate_limited path         -> test_d_rate_limited_then_done
@@ -16,9 +16,13 @@ import threading
 import time
 from pathlib import Path
 
+from unittest import mock
+
+from django.core.management import call_command
 from django.test import TransactionTestCase
 
-from submissions.models import Submission
+from submissions import state
+from submissions.models import GraderSettings, Submission
 from submissions.orchestrator import pipeline
 from submissions.orchestrator.pipeline import Orchestrator, OrchestratorConfig
 from submissions.orchestrator.queue_backend import get_queue_backend
@@ -64,6 +68,11 @@ class PipelineTestBase(TransactionTestCase):
         self.workdir_base = self.tmp / "submissions"
         self.workdir_base.mkdir(parents=True, exist_ok=True)
         self.backend = get_queue_backend("db")
+        # Seed the singleton settings row (migration seeds it in real runs, but
+        # TransactionTestCase flushes between tests) so per-generation load() reads
+        # instead of racing a create under parallel generation.
+        from submissions.models import GraderSettings
+        GraderSettings.objects.get_or_create(pk=1)
         pipeline.clear_auth_alert()
 
     def tearDown(self) -> None:
@@ -71,9 +80,10 @@ class PipelineTestBase(TransactionTestCase):
         pipeline.clear_auth_alert()
 
     def _drain(self, orch: Orchestrator) -> None:
-        """Single-worker drain: serially process every queued submission, then
-        wait for all scoring futures. Mirrors run_worker without the sleep loop.
-        Re-queued (rate-limited) submissions are picked up again."""
+        """Serial drain for tests that don't assert on generation concurrency:
+        process every queued submission in-line, then wait for all scoring futures.
+        Re-queued (rate-limited) submissions are picked up again. (Generation
+        parallelism itself is covered by test_a_bounded_parallel_generation.)"""
         # Bound the loop so a bug can't hang the suite.
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
@@ -130,21 +140,35 @@ class RegradeTests(PipelineTestBase):
         self.assertIn("코드가 없", sub.last_error)
 
 
-class SerialGenerationTests(PipelineTestBase):
-    def test_a_serial_generation_no_overlap(self) -> None:
-        """(a) Enqueue 5; assert NO two generation intervals overlap."""
-        cfg = _test_config(self.workdir_base, scoring_concurrency=3)
-        gen = FakeGenerate(self.workdir_base, duration=0.05)
+class ParallelGenerationTests(PipelineTestBase):
+    def test_a_bounded_parallel_generation(self) -> None:
+        """(a) Generation runs in parallel but peak concurrency stays within
+        generation_concurrency (and >1, i.e. it actually overlaps)."""
+        cfg = _test_config(
+            self.workdir_base, generation_concurrency=3, scoring_concurrency=3
+        )
+        gen = FakeGenerate(self.workdir_base, duration=0.1)
         grade = FakeGrade(duration=0.02)
         orch = Orchestrator(cfg, generate_fn=gen, grade_fn=grade)
-        for i in range(5):
-            self.backend.enqueue(f"p{i}", f"prompt {i}")
-        self._drain(orch)
+        subs = [self.backend.enqueue(f"p{i}", f"prompt {i}") for i in range(6)]
 
-        self.assertEqual(len(gen.intervals), 5)
-        self.assertFalse(gen.any_overlap(), "two generations overlapped — not serial")
+        futures = [orch.submit_generation(s) for s in subs]
+        for fut in futures:
+            fut.result(timeout=20.0)
+        orch.wait_for_scoring(timeout=20.0)
+        orch.shutdown(wait=True)
+
+        self.assertEqual(len(gen.intervals), 6)
+        self.assertLessEqual(
+            gen.peak_concurrency, cfg.generation_concurrency,
+            f"peak generation concurrency {gen.peak_concurrency} exceeded cap "
+            f"{cfg.generation_concurrency}",
+        )
+        self.assertGreater(
+            gen.peak_concurrency, 1, "generation did not actually run in parallel"
+        )
         self.assertEqual(
-            Submission.objects.filter(status=Submission.Status.DONE).count(), 5
+            Submission.objects.filter(status=Submission.Status.DONE).count(), 6
         )
 
 
@@ -287,3 +311,89 @@ class QueuePositionTests(PipelineTestBase):
         self.assertEqual(a.queue_position(), 0)
         b.refresh_from_db()
         self.assertEqual(b.queue_position(), 1)
+
+
+class WorkerCommandTests(PipelineTestBase):
+    """Drive the REAL ``run_worker`` loop (not submit_generation directly) to
+    settle two doubts: (1) is generation actually parallel? (2) is the queue
+    drained FIFO and fully?"""
+
+    def _run_worker_once(self, cfg, gen, grade) -> None:
+        with mock.patch.object(OrchestratorConfig, "from_scoring_config", return_value=cfg), \
+             mock.patch.object(pipeline, "_default_generate_fn", return_value=gen), \
+             mock.patch.object(pipeline, "_default_grade_fn", return_value=grade):
+            call_command("run_worker", "--once")
+
+    def test_run_worker_parallelizes_and_drains_queue_fifo(self) -> None:
+        cfg = _test_config(
+            self.workdir_base, generation_concurrency=4, scoring_concurrency=4,
+            poll_interval_seconds=0.01,
+        )
+        gen = FakeGenerate(self.workdir_base, duration=0.15)
+        grade = FakeGrade(duration=0.02)
+        subs = [self.backend.enqueue(f"p{i}", f"prompt {i}") for i in range(8)]
+
+        self._run_worker_once(cfg, gen, grade)
+
+        # (2) queue fully drained, every submission done.
+        self.assertEqual(
+            Submission.objects.filter(status=Submission.Status.DONE).count(), 8
+        )
+        self.assertEqual(
+            Submission.objects.filter(status=Submission.Status.QUEUED).count(), 0
+        )
+        # (1) generation genuinely overlapped, but never above the pool cap.
+        self.assertGreater(
+            gen.peak_concurrency, 1, "run_worker did NOT parallelize generation"
+        )
+        self.assertLessEqual(gen.peak_concurrency, cfg.generation_concurrency)
+        # FIFO: the first `generation_concurrency` to START are the first enqueued
+        # (later ones can't dispatch until an earlier slot frees ~0.15s later).
+        started = [iv.submission_id for iv in sorted(gen.intervals, key=lambda i: i.start)]
+        self.assertEqual(
+            set(started[:4]), {str(s.pk) for s in subs[:4]}, "queue not claimed FIFO"
+        )
+
+    def test_codex_max_sessions_throttles_generation(self) -> None:
+        # Admin setting below the pool ceiling must cap live concurrency.
+        s = GraderSettings.load()
+        s.codex_max_sessions = 2
+        s.save()
+        cfg = _test_config(
+            self.workdir_base, generation_concurrency=5, scoring_concurrency=5,
+            poll_interval_seconds=0.01,
+        )
+        gen = FakeGenerate(self.workdir_base, duration=0.12)
+        grade = FakeGrade(duration=0.02)
+        for i in range(6):
+            self.backend.enqueue(f"p{i}", f"prompt {i}")
+
+        self._run_worker_once(cfg, gen, grade)
+
+        self.assertEqual(
+            Submission.objects.filter(status=Submission.Status.DONE).count(), 6
+        )
+        self.assertLessEqual(
+            gen.peak_concurrency, 2,
+            f"codex_max_sessions=2 did not throttle (peak={gen.peak_concurrency})",
+        )
+
+
+class AdminQueuePosTests(PipelineTestBase):
+    """The admin '대기순번' column: numbers for QUEUED rows, '-' otherwise. Proves
+    the column renders (the reported 'blank' is just terminal/in-flight rows)."""
+
+    def test_queue_pos_column_render(self) -> None:
+        from django.contrib.admin.sites import AdminSite
+        from submissions.admin import SubmissionAdmin
+
+        ma = SubmissionAdmin(Submission, AdminSite())
+        a = self.backend.enqueue("a", "p")
+        b = self.backend.enqueue("b", "p")
+        self.assertEqual(ma.queue_pos(a), 1)
+        self.assertEqual(ma.queue_pos(b), 2)
+        # Once it leaves QUEUED, the column shows '-' (not a stale number).
+        state.to_generating(a)
+        self.assertEqual(ma.queue_pos(a), "-")
+        b.refresh_from_db()
+        self.assertEqual(ma.queue_pos(b), 1)

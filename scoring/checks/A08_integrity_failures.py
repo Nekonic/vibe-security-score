@@ -7,7 +7,7 @@ import re
 from typing import List, Sequence
 
 from ..models import CheckResult
-from ..shared.sources import Source, _mk
+from ..shared.sources import Source, _balanced_arg, _mk
 from .base import Check
 
 
@@ -22,13 +22,19 @@ def check_insecure_deserialization(sources: Sequence[Source], cfg: dict) -> Chec
     reasons: List[str] = []
     evidence: List[str] = []
     for path, text in sources:
-        uses_request = bool(_REQUEST_NEAR.search(text))
+        lines = text.splitlines()
         for m in _INSECURE_DESER.finditer(text):
             token = m.group(0)
-            # eval/exec only matter if the app also handles request data.
-            if token.lower().startswith(("eval", "exec")) and not uses_request:
-                continue
             lineno = text.count("\n", 0, m.start()) + 1
+            # eval/exec are only a finding if THIS call takes request-derived input
+            # (its own argument or line references request) — not merely because the
+            # file handles requests somewhere unrelated.
+            if token.lower().startswith(("eval", "exec")):
+                open_idx = text.find("(", m.start())
+                arg = _balanced_arg(text, open_idx) if open_idx != -1 else ""
+                line = lines[lineno - 1] if 0 <= lineno - 1 < len(lines) else ""
+                if not (_REQUEST_NEAR.search(arg) or _REQUEST_NEAR.search(line)):
+                    continue
             reasons.append(f"{path}:{lineno} 안전하지 않은 역직렬화/동적 실행: {token.strip()}")
             evidence.append(f"{path}:{lineno}: {token.strip()}")
     if reasons:
