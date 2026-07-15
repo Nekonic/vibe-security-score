@@ -12,7 +12,7 @@ from django.views.decorators.http import require_POST
 
 from . import poc_session
 from .models import Submission
-from .poc import is_attackable, poc_terminals
+from .poc import poc_terminals
 from .rubric import visible_findings
 
 
@@ -23,15 +23,22 @@ def poc_console(request, pk: int):
     sub = get_object_or_404(Submission, pk=pk)
     if sub.status != Submission.Status.DONE:
         return redirect("submissions:result", pk=pk)
+    visible = visible_findings(sub)
+    # terminals cross-references ALL findings (incl. weight-0 session_forgery) so a
+    # replay PoC only appears when a verified forged cookie exists.
+    terminals = poc_terminals(visible, sub.findings)
+    poc_ids = {t["check_id"] for t in terminals}
     items = []
-    for f in visible_findings(sub):
+    for f in visible:
         f = dict(f)
-        f["has_poc"] = is_attackable(f)
+        # Badge tracks the tabs that were actually built (forgery tabs are gated on
+        # a verified cookie), so the "has_poc" chip never promises a missing tab.
+        f["has_poc"] = f.get("check_id") in poc_ids
         items.append(f)
     return render(request, "submissions/poc_console.html", {
         "sub": sub,
         "items": items,
-        "terminals": poc_terminals(visible_findings(sub)),
+        "terminals": terminals,
     })
 
 

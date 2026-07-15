@@ -142,23 +142,54 @@
       </div>
     </div>
 
-    <div id="ai-activity-card" class="card shadow-sm mt-3" style="display:none">
-      <div class="card-header d-flex align-items-center py-2">
-        <span class="fw-semibold">AI 작업 로그</span>
-        <span class="badge text-bg-secondary ms-2">실시간 · 읽기 전용</span>
+    <div id="ai-activity-card" class="card shadow-sm mt-3 codex-term" style="display:none">
+      <div class="codex-term-bar">
+        <span class="codex-dot codex-dot-r"></span>
+        <span class="codex-dot codex-dot-y"></span>
+        <span class="codex-dot codex-dot-g"></span>
+        <span class="codex-term-title">codex · 코드 생성</span>
+        <span id="codex-live" class="codex-live ms-auto"><span class="codex-live-dot"></span>생성 중</span>
       </div>
-      <div id="ai-activity" style="height:340px;overflow-y:auto;background:#0d1117;color:#c9d1d9;
-        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
-        line-height:1.55;padding:12px 14px;white-space:pre-wrap;word-break:break-word;"></div>
+      <div id="ai-activity" class="codex-term-body"></div>
     </div>
 
     <style>
-      #ai-activity .ln { padding:1px 0; }
-      #ai-activity .ln-message { color:#c9d1d9; }
+      /* Codex-CLI style terminal for the live generation view. */
+      .codex-term { overflow:hidden; border:1px solid #30363d; background:#0d1117; }
+      .codex-term-bar { display:flex; align-items:center; gap:8px;
+        background:#161b22; border-bottom:1px solid #30363d; padding:8px 12px; }
+      .codex-dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+      .codex-dot-r { background:#ff5f56; } .codex-dot-y { background:#ffbd2e; } .codex-dot-g { background:#27c93f; }
+      .codex-term-title { color:#8b949e; font-size:12.5px; margin-left:6px;
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+      .codex-live { display:inline-flex; align-items:center; gap:6px;
+        color:#7ee787; font-size:12px; font-weight:600; }
+      .codex-live-dot { width:8px; height:8px; border-radius:50%; background:#27c93f;
+        animation:codexPulse 1.4s infinite; }
+      .codex-live.done { color:#8b949e; }
+      .codex-live.done .codex-live-dot { background:#8b949e; animation:none; }
+      @keyframes codexPulse {
+        0%   { box-shadow:0 0 0 0 rgba(39,201,63,.6); }
+        70%  { box-shadow:0 0 0 7px rgba(39,201,63,0); }
+        100% { box-shadow:0 0 0 0 rgba(39,201,63,0); }
+      }
+      .codex-term-body { height:58vh; min-height:460px; max-height:74vh;
+        resize:vertical; overflow-y:auto; background:#0d1117; color:#c9d1d9;
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+        font-size:13.5px; line-height:1.65; padding:14px 16px;
+        white-space:pre-wrap; word-break:break-word; }
+      #ai-activity .ln { padding:1px 0; animation:codexIn .18s ease-out; }
+      @keyframes codexIn { from { opacity:0; transform:translateY(2px); } to { opacity:1; transform:none; } }
+      #ai-activity .ln-message { color:#e6edf3; }
       #ai-activity .ln-command { color:#7ee787; }
       #ai-activity .ln-files   { color:#79c0ff; }
-      #ai-activity .ln-status  { color:#6e7681; }
+      #ai-activity .ln-status  { color:#8b949e; }
       #ai-activity .exit-bad   { color:#ff7b72; }
+      #ai-activity .ai-empty   { color:#6e7681; }
+      .codex-caret { display:inline-block; width:.6em; color:#7ee787; font-weight:700;
+        animation:codexBlink 1s steps(1) infinite; }
+      .codex-caret.done { display:none; }
+      @keyframes codexBlink { 50% { opacity:0; } }
     </style>
 
     <script>
@@ -167,13 +198,24 @@
         var eventsUrl = "{% url 'submissions:events_json' pk=sub.id %}";
         var box = document.getElementById("ai-activity");
 
+        var liveBadge = document.getElementById("codex-live");
+        // A blinking block cursor pinned to the bottom, like the codex CLI prompt.
+        var caret = document.createElement("span");
+        caret.className = "codex-caret";
+        caret.textContent = "▌";
+        var emptyLine = document.createElement("div");
+        emptyLine.className = "ln ai-empty";
+        emptyLine.textContent = "codex 세션을 준비하고 있어요…";
+        box.appendChild(emptyLine);
+        box.appendChild(caret);
+
         function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-        function render(ev) {
-          if (ev.kind === "message") return esc(ev.text);
+        // Non-prose events (commands/files/status) render as instant HTML blocks.
+        function contentHtml(ev) {
           if (ev.kind === "command") {
             var code = (ev.exit_code != null && ev.exit_code !== 0)
               ? ' <span class="exit-bad">(exit ' + esc(ev.exit_code) + ')</span>' : '';
-            return '$ ' + esc(ev.command) + code;
+            return '<span style="color:#6e7681">$</span> ' + esc(ev.command) + code;
           }
           if (ev.kind === "files") {
             var names = (ev.files || []).map(function (f) { return f.path; }).join(", ");
@@ -181,18 +223,57 @@
           }
           return '· ' + esc(ev.text || "");
         }
-        function append(events) {
+        function atBottom() { return box.scrollHeight - box.scrollTop - box.clientHeight < 60; }
+
+        // Render queue: agent messages type out char-by-char (codex-like streaming),
+        // everything else appears instantly. A queue guarantees no event is lost even
+        // when several arrive in one poll, and preserves order.
+        var queue = [], draining = false;
+        function newLine(ev) {
+          var el = document.createElement("div");
+          el.className = "ln ln-" + (ev.kind || "status");
+          box.insertBefore(el, caret);   // keep the caret last
+          return el;
+        }
+        function enqueue(events) {
           if (!events || !events.length) return;
-          var empty = box.querySelector(".ai-empty");
-          if (empty) empty.remove();
-          var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-          events.forEach(function (ev) {
-            var el = document.createElement("div");
-            el.className = "ln ln-" + (ev.kind || "status");
-            el.innerHTML = render(ev);
-            box.appendChild(el);
-          });
-          if (atBottom) box.scrollTop = box.scrollHeight;
+          if (emptyLine) { emptyLine.remove(); emptyLine = null; }
+          for (var i = 0; i < events.length; i++) queue.push(events[i]);
+          drain();
+        }
+        function drain() {
+          if (draining) return;
+          var ev = queue.shift();
+          if (!ev) return;
+          draining = true;
+          var stick = atBottom();
+          if (ev.kind === "message" && ev.text) {
+            typeMessage(ev.text, stick, function () { draining = false; drain(); });
+          } else {
+            var el = newLine(ev);
+            el.innerHTML = contentHtml(ev);
+            if (stick) box.scrollTop = box.scrollHeight;
+            setTimeout(function () { draining = false; drain(); }, 80);
+          }
+        }
+        function typeMessage(text, stick, done) {
+          var el = newLine({ kind: "message" });
+          // Cap the per-char delay so long messages never lag the stream (~1s total).
+          var per = Math.max(4, Math.min(16, Math.floor(900 / Math.max(1, text.length))));
+          var step = text.length > 400 ? 6 : 1, i = 0;
+          (function tick() {
+            i = Math.min(text.length, i + step);
+            el.textContent = text.slice(0, i);
+            if (stick) box.scrollTop = box.scrollHeight;
+            if (i < text.length) setTimeout(tick, per); else done();
+          })();
+        }
+        function finishStream() {
+          caret.classList.add("done");
+          if (liveBadge) {
+            liveBadge.classList.add("done");
+            liveBadge.innerHTML = '<span class="codex-live-dot"></span>완료';
+          }
         }
 
         var since = 0, eventsStopped = false;
@@ -205,10 +286,10 @@
               // Only reveal the log once Codex is actually generating (re-grade
               // has no generation => stays hidden).
               if (d.generating || (d.events && d.events.length)) card.style.display = "";
-              append(d.events);
+              enqueue(d.events);
               since = d.next != null ? d.next : since;
-              if (d.done) { eventsStopped = true; return; }
-              setTimeout(pollEvents, 1500);
+              if (d.done) { eventsStopped = true; finishStream(); return; }
+              setTimeout(pollEvents, 1200);
             })
             .catch(function () { setTimeout(pollEvents, 2500); });
         }
@@ -237,9 +318,10 @@
                 pw.style.display = "none";
               }
               if (d.done) {                       // flush any final events, then reload
+                eventsStopped = true;
                 fetch(eventsUrl + "?since=" + since, {headers: {"X-Requested-With": "fetch"}})
                   .then(function (r) { return r.json(); })
-                  .then(function (e) { append(e.events); setTimeout(function () { window.location.reload(); }, 600); })
+                  .then(function (e) { enqueue(e.events); finishStream(); setTimeout(function () { window.location.reload(); }, 900); })
                   .catch(function () { window.location.reload(); });
                 return;
               }

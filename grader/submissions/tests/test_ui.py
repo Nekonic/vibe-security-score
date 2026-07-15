@@ -188,7 +188,9 @@ class StatusAndResultTests(TestCase):
         body = self.client.get(
             reverse("submissions:result", kwargs={"pk": sub.pk})
         ).content.decode()
-        self.assertIn("AI 작업 로그", body)
+        # codex-CLI style terminal panel (header title + live badge).
+        self.assertIn("codex · 코드 생성", body)
+        self.assertIn("ai-activity", body)
         self.assertIn(reverse("submissions:events_json", kwargs={"pk": sub.pk}), body)
         self.assertIn("pollEvents", body)
 
@@ -376,6 +378,58 @@ class PocConsoleTests(TestCase):
         resp = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(resp.json()["ok"])
+
+
+class PocTemplateTests(TestCase):
+    """PoC 소스 카탈로그: 모든 템플릿이 유효 파이썬이고, 재생형(세션 위조) PoC 는
+    검증된 쿠키가 있을 때만 탭이 생기고 그 쿠키/경로가 주입되는지."""
+
+    def _finding(self, cid, **kw):
+        f = {"check_id": cid, "label": cid, "owasp": "", "score": 0.0,
+             "passed": False, "skipped": False, "weight": 5.0}
+        f.update(kw)
+        return f
+
+    def test_every_template_is_valid_python(self):
+        import ast
+        from submissions import poc
+        for cid in poc._TEMPLATES:
+            src = poc.build_poc_source(cid, "http://t:5000")
+            src = (src.replace("%%COOKIE_NAME%%", "session")
+                      .replace("%%COOKIE_VALUE%%", "eyJ.a.b")
+                      .replace("%%ADMIN_PATH%%", "/admin"))
+            ast.parse(src)  # raises SyntaxError on a broken template
+
+    def test_simple_exploit_templates_present(self):
+        from submissions import poc
+        for cid in ("csrf_protection", "debug_true", "idor_profile"):
+            self.assertTrue(poc.has_poc(cid))
+            terms = poc.poc_terminals([self._finding(cid)], target_url="http://t:5000")
+            self.assertEqual([t["check_id"] for t in terms], [cid])
+            self.assertIn("http://t:5000", terms[0]["code"])  # TARGET substituted
+            self.assertNotIn("%%TARGET%%", terms[0]["code"])
+
+    def test_forgery_replay_injects_verified_cookie(self):
+        from submissions import poc
+        visible = [self._finding("hardcoded_secret")]
+        allf = visible + [{
+            "check_id": "session_forgery", "passed": False, "skipped": False, "weight": 0,
+            "evidence": ["forged session=eyJ1c2VyX2lkIjoxfQ.aB.cD-eF_gH",
+                         "/admin/users -> 200 (admin 콘텐츠 렌더)"],
+        }]
+        terms = poc.poc_terminals(visible, allf, "http://t:5000")
+        self.assertEqual([t["check_id"] for t in terms], ["hardcoded_secret"])
+        code = terms[0]["code"]
+        self.assertIn("eyJ1c2VyX2lkIjoxfQ.aB.cD-eF_gH", code)
+        self.assertIn("/admin/users", code)
+        self.assertNotIn("%%", code)  # no leftover placeholders
+
+    def test_forgery_tab_gated_without_verified_cookie(self):
+        from submissions import poc
+        visible = [self._finding("weak_default_secret"), self._finding("csrf_protection")]
+        # no session_forgery finding => no verified cookie => no replay tab
+        terms = poc.poc_terminals(visible, visible, "http://t:5000")
+        self.assertEqual([t["check_id"] for t in terms], ["csrf_protection"])
 
 
 class LeaderboardTests(TestCase):

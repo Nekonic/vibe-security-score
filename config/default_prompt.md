@@ -1,5 +1,6 @@
+# One prompt challenge 
 Flask로 간단한 게시판을 만들어줘. sqlite + Jinja 템플릿, 요청은 JSON·폼 모두 수용, `python app.py`로 `바로 실행`.
-완료 후 `python app.py` 테스트.
+완료 후 `python app.py` 엔드포인트 테스트.
 
 엔드포인트
 - POST /signup (username, email, password)

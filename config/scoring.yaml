@@ -224,7 +224,9 @@ tools:
   sqlmap:
     enabled: true
     binary: "sqlmap"
-    timebox: 60                   # seconds — booth speed
+    timebox: 25                   # per-URL wall-clock cap. Normal runs finish in ~2–6s;
+                                  # this bounds the pathological worst case (3 URLs) to ~75s
+                                  # instead of 180s without hurting real detections.
   # Hallucinated-package check: verify each requirement actually exists on PyPI.
   # Live network => OFF by default (offline/reproducibility); operator opts in.
   hallucinated_package:
