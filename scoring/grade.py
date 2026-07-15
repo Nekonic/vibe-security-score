@@ -82,19 +82,47 @@ def grade_submission(
         return _cb
 
     _progress.write(cfg, submission_id, phase="static", done=0, total=total, label="정적 분석 시작")
-    checks: List[CheckResult] = list(run_static(code_dir, cfg, on_check=_tick("static")))
     functional_failed = False
     boot_failed = False
     boot_log = ""
 
-    if not static_only:
+    if static_only:
+        # static_only has no dynamic CVE recompute, so the static osv run is the
+        # ONLY CVE source here — keep it (explicit False guards a shared config that
+        # a prior full grade may have flipped to True).
+        cfg.skip_static_osv = False
+        checks: List[CheckResult] = list(run_static(code_dir, cfg, on_check=_tick("static")))
+    else:
         # Lazy import: keeps dynamic deps (requests/docker) off static-only hosts.
-        from .runner import run_dynamic
+        from concurrent.futures import ThreadPoolExecutor
+        from .runner import boot_sandbox, run_dynamic
 
-        dyn_checks, functional_failed, boot_failed, boot_log = run_dynamic(
-            code_dir, cfg, on_check=_tick("dynamic")
-        )
-        checks.extend(dyn_checks)
+        # Boot the sandbox container CONCURRENTLY with the static phase: the ~5–9s
+        # docker boot is pure dead-wait, so we hide it behind static analysis.
+        # ``skip_static_osv`` then drops the static osv-scanner subprocess — the
+        # dynamic pip-freeze recompute supersedes it (aggregate._dedupe_cve) and a
+        # boot failure caps the score to 0 (gates.boot.fail_cap), so it's pure waste.
+        cfg.skip_static_osv = True
+        boot_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="boot")
+        boot_future = boot_pool.submit(boot_sandbox, code_dir, cfg)
+        box = None
+        try:
+            checks = list(run_static(code_dir, cfg, on_check=_tick("static")))
+            box = boot_future.result()  # boot_sandbox never raises (boot_failed flag)
+            dyn_checks, functional_failed, boot_failed, boot_log = run_dynamic(
+                code_dir, cfg, on_check=_tick("dynamic"), box=box
+            )
+            checks.extend(dyn_checks)
+        finally:
+            # Always tear the container down, even if static raised before the join.
+            if box is None:
+                try:
+                    box = boot_future.result(timeout=120)
+                except Exception:  # pragma: no cover - defensive
+                    box = None
+            if box is not None:
+                box.__exit__(None, None, None)
+            boot_pool.shutdown(wait=False)
 
     _progress.write(cfg, submission_id, phase="done", done=total, total=total, label="채점 완료")
     result = combine_scores(

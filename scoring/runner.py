@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -100,19 +101,44 @@ def _boot_failed_checks(config: Config, reason: str) -> List[CheckResult]:
     ]
 
 
-def run_dynamic(app_dir: str, config: Config, on_check=None):
+def boot_sandbox(app_dir: str, config: Config) -> Sandbox:
+    """Construct and boot a Sandbox (docker run + wait-for-port). NEVER raises — on
+    any failure the returned box has ``boot_failed=True``. Split out so callers can
+    boot the container in a background thread while the static phase runs, hiding the
+    ~5–9s boot latency behind static analysis. The caller owns teardown (__exit__)."""
+    box = Sandbox(app_dir, config)
+    box.__enter__()  # __enter__ swallows all errors -> boot_failed flag, never raises
+    return box
+
+
+def run_dynamic(app_dir: str, config: Config, on_check=None, box: Optional[Sandbox] = None):
     """Returns (checks, functional_failed, boot_failed, boot_log). boot_log is the
-    container's log tail on boot failure (empty otherwise) so the operator sees WHY."""
+    container's log tail on boot failure (empty otherwise) so the operator sees WHY.
+
+    If ``box`` is given it is an already-booted Sandbox (the caller owns its
+    teardown — see ``boot_sandbox``); otherwise one is created and torn down here."""
+    if box is not None:
+        return _probe_dynamic(app_dir, config, box, on_check)
+    with Sandbox(app_dir, config) as owned:
+        return _probe_dynamic(app_dir, config, owned, on_check)
+
+
+def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
     dyn_cfg = config.get("dynamic.checks", {}) or {}
     require = list(config.get("gates.functional.require", ["signup", "login", "create_post"]))
     deadline = time.monotonic() + float(config.get("timeouts.dynamic_total", 180))
 
-    with Sandbox(app_dir, config) as box:
-        if box.boot_failed:
-            boot_log = (box.logs(tail=60) or "부팅 로그 없음").strip()
-            short = (boot_log.splitlines()[-1] if boot_log else "포트가 열리지 않음")[:200]
-            return _boot_failed_checks(config, short), False, True, boot_log
+    if box.boot_failed:
+        boot_log = (box.logs(tail=60) or "부팅 로그 없음").strip()
+        short = (boot_log.splitlines()[-1] if boot_log else "포트가 열리지 않음")[:200]
+        return _boot_failed_checks(config, short), False, True, boot_log
 
+    # A03 CVE recompute (pip freeze + osv on RESOLVED transitive versions) is
+    # host/exec-bound and independent of the HTTP probes, so run it CONCURRENTLY
+    # with the probe sequence to hide its ~6s behind the HTTP work.
+    cve_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dyn-cve")
+    cve_future = cve_pool.submit(dependencies.dynamic_cve, box, config)
+    try:
         ctx = DynamicContext(box.base_url, config)
         # Feed hardcoded SECRET_KEY literals to session_forgery so it forges with the
         # app's ACTUAL key (a live PoC proving a hardcoded secret is exploitable).
@@ -138,9 +164,15 @@ def run_dynamic(app_dir: str, config: Config, on_check=None):
             if on_check:
                 on_check(c.label)
 
-        # A03: recompute CVE against real resolved (transitive) versions.
-        checks.append(dependencies.dynamic_cve(box, config))
+        # Join the concurrent CVE recompute (defensive: dynamic_cve never raises).
+        try:
+            checks.append(cve_future.result())
+        except Exception as exc:  # pragma: no cover - dynamic_cve is defensive
+            checks.append(_scored_zero("cve", "의존성 CVE(실측 전이 포함)", 0.0,
+                                       f"CVE 재검사 예외: {exc}"))
         if on_check:
             on_check("의존성 CVE 재검사")
 
         return checks, functional_failed, False, ""
+    finally:
+        cve_pool.shutdown(wait=True)

@@ -304,10 +304,21 @@ def check_cve(
     dep_cfg: dict,
     requirements_path: Optional[str],
     config,
+    *,
+    use_osv: Optional[bool] = None,
 ) -> CheckResult:
     """CVE check via OSV-Scanner when available, else the local snapshot.
     tool="osv-scanner" when the CLI produced the result; "" for the fallback
-    (guaranteeing an offline score identical to the deterministic built-in)."""
+    (guaranteeing an offline score identical to the deterministic built-in).
+
+    ``use_osv``: None => honor ``config.skip_static_osv`` (the full grading path
+    sets it so the STATIC osv run is skipped — the dynamic pip-freeze recompute
+    supersedes it). dynamic_cve passes ``use_osv=True`` to force osv on the
+    container's resolved versions regardless of that flag."""
+    if use_osv is None:
+        use_osv = not getattr(config, "skip_static_osv", False)
+    if not use_osv:
+        return _match_cve(requirements, dep_cfg)
     tcfg = _tool_cfg(config, "osv_scanner")
     bin_path, _skip = _gate(config, "osv_scanner")
 
@@ -442,7 +453,8 @@ def dynamic_cve(box, config) -> CheckResult:
     try:
         tmp.write(freeze)
         tmp.close()
-        result = check_cve(requirements, dep_cfg, tmp.name, config)
+        # Force osv on the RESOLVED versions even when the static path skipped it.
+        result = check_cve(requirements, dep_cfg, tmp.name, config, use_osv=True)
     finally:
         try:
             os.unlink(tmp.name)
