@@ -9,14 +9,14 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
-from ...models import CheckResult
-from ...shared import sqlmap as sqlmap_tool
-from ...shared.http import (
-    ProbeContext, _body_text, _json_or_none, _looks_like_login_form, _low_conf,
+from ..models import CheckResult
+from ..shared import sqlmap as sqlmap_tool
+from ..shared.http import (
+    DynamicContext, _body_text, _json_or_none, _looks_like_login_form, _scored_zero,
     _post_payload, _snip,
 )
-from ...shared.sources import Source, _balanced_arg, _clamp, _first_call_arg
-from ..base import Control
+from ..shared.sources import Source, _balanced_arg, _clamp, _first_call_arg
+from .base import Check
 
 
 # sql_parameterization — execute()/executescript() with a string-built query.
@@ -99,7 +99,7 @@ def _has_sql_error(resp: Optional[requests.Response]) -> bool:
 _SQLI_LABEL = "SQL 인젝션(/search, /posts sort)"
 
 
-def probe_sqli(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_sqli(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     """SQLi verdict: sqlmap PRIMARY (if enabled+installed), built-in oracle FALLBACK."""
     weight = float(cfg.get("weight", 16))
     label = _SQLI_LABEL
@@ -127,7 +127,7 @@ def probe_sqli(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
 
 
 def _sqli_builtin_oracle(
-    ctx: ProbeContext, cfg: Dict[str, Any], weight: float, label: str, fallback_note: str
+    ctx: DynamicContext, cfg: Dict[str, Any], weight: float, label: str, fallback_note: str
 ) -> CheckResult:
     try:
         sess = ctx.userA.session if ctx.userA is not None else requests.Session()
@@ -215,11 +215,11 @@ def _sqli_builtin_oracle(
             penalty_reasons=[], evidence=[_snip("boolean 차등/오류 노출 모두 없음 → 인젝션 미발견")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("sqli", label, weight, f"SQLi 프로브 예외: {exc}")
+        return _scored_zero("sqli", label, weight, f"SQLi 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("sql_parameterization", "SQL 파라미터화", "static",
+CHECKS = [
+    Check("sql_parameterization", "SQL 파라미터화", "static",
             lambda sctx, cfg: check_sql_parameterization(sctx.sources, cfg)),
-    Control("sqli", _SQLI_LABEL, "dynamic", probe_sqli),
+    Check("sqli", _SQLI_LABEL, "dynamic", dynamic_sqli),
 ]

@@ -8,7 +8,7 @@ from typing import List, Sequence
 
 from ..models import CheckResult
 from ..shared.sources import Source, _mk
-from .base import Control
+from .base import Check
 
 
 _INSECURE_DESER = re.compile(
@@ -40,7 +40,7 @@ def check_insecure_deserialization(sources: Sequence[Source], cfg: dict) -> Chec
                passed=True, reasons=[], evidence=[])
 
 
-CONTROLS = [
-    Control("insecure_deserialization", "안전하지 않은 역직렬화", "static",
+CHECKS = [
+    Check("insecure_deserialization", "안전하지 않은 역직렬화", "static",
             lambda sctx, cfg: check_insecure_deserialization(sctx.sources, cfg)),
 ]

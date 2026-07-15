@@ -36,6 +36,13 @@ def _save_with_retry(sub: Submission, update_fields) -> None:
             raise
 
 
+def save_fields(sub: Submission, *fields: str) -> Submission:
+    """Persist non-status fields (retry counters, workdir, flags) with the same
+    lock-retry as transitions — the one place any Submission write goes through."""
+    _save_with_retry(sub, list(fields))
+    return sub
+
+
 def to_queued(sub: Submission) -> Submission:
     sub.status = Submission.Status.QUEUED
     if sub.queued_at is None:
@@ -53,8 +60,7 @@ def to_generating(sub: Submission) -> Submission:
 
 def mark_generation_finished(sub: Submission) -> Submission:
     sub.generation_finished_at = timezone.now()
-    _save_with_retry(sub, ["generation_finished_at"])
-    return sub
+    return save_fields(sub, "generation_finished_at")
 
 
 def to_scoring(sub: Submission) -> Submission:

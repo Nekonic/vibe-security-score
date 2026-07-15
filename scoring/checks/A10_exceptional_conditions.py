@@ -9,8 +9,8 @@ from typing import Any, Dict
 import requests
 
 from ..models import CheckResult
-from ..shared.http import ProbeContext, _body_text, _low_conf, _snip
-from .base import Control
+from ..shared.http import DynamicContext, _body_text, _scored_zero, _snip
+from .base import Check
 
 
 _DEBUG_SIGNS = (
@@ -19,7 +19,7 @@ _DEBUG_SIGNS = (
 )
 
 
-def probe_verbose_errors(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_verbose_errors(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 8))
     label = "오류 처리(스택트레이스 노출)"
     try:
@@ -49,9 +49,9 @@ def probe_verbose_errors(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
             penalty_reasons=[], evidence=[_snip("잘못된 입력에도 스택트레이스/디버거 미노출")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("verbose_errors", label, weight, f"오류 처리 프로브 예외: {exc}")
+        return _scored_zero("verbose_errors", label, weight, f"오류 처리 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("verbose_errors", "오류 처리(스택트레이스 노출)", "dynamic", probe_verbose_errors),
+CHECKS = [
+    Check("verbose_errors", "오류 처리(스택트레이스 노출)", "dynamic", dynamic_verbose_errors),
 ]

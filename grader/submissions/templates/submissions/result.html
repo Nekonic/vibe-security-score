@@ -87,6 +87,7 @@
     <p class="mt-3 d-flex align-items-center gap-3">
       <a href="{% url 'submissions:submit' %}">← 다시 제출하기</a>
       {% if user.is_staff %}
+        <a href="{% url 'submissions:poc_console' pk=sub.id %}" class="btn btn-danger btn-sm">공격 시연 (PoC)</a>
         <form method="post" action="{% url 'submissions:rerun' pk=sub.id %}" class="d-inline m-0">
           {% csrf_token %}
           <button type="submit" class="btn btn-warning btn-sm">재채점</button>

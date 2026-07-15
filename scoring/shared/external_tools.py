@@ -65,7 +65,7 @@ def resolve_binary(binary: str) -> Optional[str]:
     return shutil.which(binary)
 
 
-def _skipped_check(check_id: str, label: str, tool: str, reason: str) -> CheckResult:
+def _skipped(check_id: str, label: str, tool: str, reason: str) -> CheckResult:
     return CheckResult(
         check_id=check_id,
         category="static",

@@ -10,17 +10,19 @@ import requests
 
 from ..models import CheckResult
 from ..shared.http import (
-    ProbeContext, _body_text, _json_or_none, _login_payload, _looks_like_login_form,
-    _low_conf, _post_payload, _signup_payload, _snip,
+    DynamicContext, _body_text, _json_or_none, _login_payload, _looks_like_login_form,
+    _scored_zero, _post_payload, _signup_payload, _snip,
 )
-from .base import Control
+from .base import Check
 
 
 # functional (drives the gate)
-def probe_functional(ctx: ProbeContext, cfg: Dict[str, Any], require: List[str]):
-    """signup A/B/admin, login each, A creates a post. Returns (CheckResult,
-    functional_failed). Score = pass-rate over the ``require`` gate steps."""
+def dynamic_functional(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
+    """signup A/B/admin, login each, A creates a post. Score = pass-rate over the
+    ``require`` gate steps (in cfg); ``passed`` is the gate verdict the runner caps
+    the final score on."""
     weight = float(cfg.get("weight", 10))
+    require = list(cfg.get("require") or ["signup", "login", "create_post"])
     step_ok: Dict[str, bool] = {
         "signup": True, "login": True, "create_post": False,
         "wrong_password_rejected": True,
@@ -124,11 +126,11 @@ def probe_functional(ctx: ProbeContext, cfg: Dict[str, Any], require: List[str])
         penalty_reasons=reasons if functional_failed else [],
         evidence=evidence,
     )
-    return result, functional_failed
+    return result
 
 
 # weak_password_policy — signup with a trivial password must fail.
-def probe_weak_password_policy(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_weak_password_policy(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 8))
     label = "비밀번호 정책"
     try:
@@ -151,10 +153,10 @@ def probe_weak_password_policy(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
             penalty_reasons=[], evidence=[_snip(f"취약한 비밀번호 거부됨 ({code})")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("weak_password_policy", label, weight, f"비밀번호 정책 프로브 예외: {exc}")
+        return _scored_zero("weak_password_policy", label, weight, f"비밀번호 정책 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("functional", "기능 게이트(회원가입/로그인/글작성)", "dynamic", probe_functional),
-    Control("weak_password_policy", "비밀번호 정책", "dynamic", probe_weak_password_policy),
+CHECKS = [
+    Check("functional", "기능 게이트(회원가입/로그인/글작성)", "dynamic", dynamic_functional),
+    Check("weak_password_policy", "비밀번호 정책", "dynamic", dynamic_weak_password_policy),
 ]

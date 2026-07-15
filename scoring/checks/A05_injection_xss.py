@@ -9,12 +9,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 
-from ...models import CheckResult
-from ...shared.http import (
-    ProbeContext, _body_text, _is_html_response, _low_conf, _post_payload, _snip,
+from ..models import CheckResult
+from ..shared.http import (
+    DynamicContext, _body_text, _is_html_response, _scored_zero, _post_payload, _snip,
 )
-from ...shared.sources import Source, _balanced_arg, _clamp, _joined, _mk
-from ..base import Control
+from ..shared.sources import Source, _balanced_arg, _clamp, _joined, _mk
+from .base import Check
 
 
 # xss_template
@@ -104,7 +104,7 @@ def check_csp(
 
 # XSS helpers: a payload is "unescaped" if its dangerous raw fragment survives
 # verbatim in the rendered HTML (the app neither escaped <>&" nor rejected it).
-def _xss_variants(ctx: ProbeContext) -> List[Tuple[str, str, str]]:
+def _xss_variants(ctx: DynamicContext) -> List[Tuple[str, str, str]]:
     """(marker, payload, raw_signature) for each configured XSS payload."""
     out: List[Tuple[str, str, str]] = []
     for tmpl in ctx.xss_payloads:
@@ -122,12 +122,12 @@ def _find_unescaped(body: str, variants: List[Tuple[str, str, str]]) -> Optional
 
 
 # stored_xss (dynamic, multi-payload, multi-context)
-def probe_stored_xss(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_stored_xss(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 18))
     label = "저장형 XSS"
     try:
         if ctx.userA is None:
-            return _low_conf("stored_xss", label, weight, "작성자 세션 없음으로 XSS 판정 불가")
+            return _scored_zero("stored_xss", label, weight, "작성자 세션 없음으로 XSS 판정 불가")
 
         variants = _xss_variants(ctx)
         rejected = True
@@ -174,11 +174,11 @@ def probe_stored_xss(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
             penalty_reasons=[], evidence=[_snip(f"XSS 방어됨 ({note}); {len(variants)}종 페이로드 검증")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("stored_xss", label, weight, f"XSS 프로브 예외: {exc}")
+        return _scored_zero("stored_xss", label, weight, f"XSS 프로브 예외: {exc}")
 
 
 # reflected_xss — payload echoed back in /search or error pages.
-def probe_reflected_xss(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_reflected_xss(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 12))
     label = "반사형 XSS"
     try:
@@ -205,14 +205,14 @@ def probe_reflected_xss(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
             penalty_reasons=[], evidence=[_snip(f"반사형 XSS 미검출; {len(variants)}종 페이로드 검증")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("reflected_xss", label, weight, f"반사형 XSS 프로브 예외: {exc}")
+        return _scored_zero("reflected_xss", label, weight, f"반사형 XSS 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("xss_template", "XSS 템플릿", "static",
+CHECKS = [
+    Check("xss_template", "XSS 템플릿", "static",
             lambda sctx, cfg: check_xss_template(sctx.sources, cfg, sctx.templates)),
-    Control("csp", "CSP(XSS 심층방어)", "static",
+    Check("csp", "CSP(XSS 심층방어)", "static",
             lambda sctx, cfg: check_csp(sctx.sources, cfg, sctx.templates)),
-    Control("stored_xss", "저장형 XSS", "dynamic", probe_stored_xss),
-    Control("reflected_xss", "반사형 XSS", "dynamic", probe_reflected_xss),
+    Check("stored_xss", "저장형 XSS", "dynamic", dynamic_stored_xss),
+    Check("reflected_xss", "반사형 XSS", "dynamic", dynamic_reflected_xss),
 ]

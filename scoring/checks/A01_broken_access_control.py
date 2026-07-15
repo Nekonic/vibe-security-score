@@ -1,4 +1,4 @@
-"""A01 Broken Access Control (SSRF folded in for 2025): CSRF protection and SSRF
+"""A01 Broken Access Check (SSRF folded in for 2025): CSRF protection and SSRF
 sink static checks, plus the IDOR and admin access-control probes.
 """
 from __future__ import annotations
@@ -11,10 +11,10 @@ import requests
 
 from ..models import CheckResult
 from ..shared.http import (
-    Account, ProbeContext, _body_text, _json_or_none, _looks_like_admin, _low_conf, _snip,
+    Account, DynamicContext, _body_text, _json_or_none, _looks_like_admin, _scored_zero, _snip,
 )
 from ..shared.sources import Source, _joined, _mk
-from .base import Control
+from .base import Check
 
 
 # CSRF protection. State-changing POST forms need a token / Flask-WTF.
@@ -45,7 +45,7 @@ def check_csrf_protection(
                evidence=[])
 
 
-# SSRF sink (folded into Broken Access Control for 2025). Outbound fetch with a non-literal (possibly user) URL.
+# SSRF sink (folded into Broken Access Check for 2025). Outbound fetch with a non-literal (possibly user) URL.
 _OUTBOUND = re.compile(
     r"""(?:requests\.(?:get|post|put|delete|head|request)|httpx\.(?:get|post)|urllib\.request\.urlopen|urlopen)\s*\(\s*(?P<arg>[^,)\s]+)""",
     re.IGNORECASE,
@@ -72,7 +72,7 @@ def check_ssrf_sink(sources: Sequence[Source], cfg: dict) -> CheckResult:
 
 
 # idor_profile (dynamic)
-def _discover_user_id(ctx: ProbeContext, acct: Account) -> Optional[int]:
+def _discover_user_id(ctx: DynamicContext, acct: Account) -> Optional[int]:
     """If login didn't return an id, probe /users/<n> with the account's own
     session and match its email to find its id."""
     if acct is None:
@@ -87,17 +87,17 @@ def _discover_user_id(ctx: ProbeContext, acct: Account) -> Optional[int]:
     return None
 
 
-def probe_idor_profile(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_idor_profile(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 18))
     label = "IDOR(타인 프로필 조회)"
     try:
         if ctx.userA is None or ctx.userB is None:
-            return _low_conf("idor_profile", label, weight, "테스트 계정 구성 부족으로 IDOR 판정 불가")
+            return _scored_zero("idor_profile", label, weight, "테스트 계정 구성 부족으로 IDOR 판정 불가")
 
         if ctx.userA.user_id is None:
             ctx.userA.user_id = _discover_user_id(ctx, ctx.userA)
         if ctx.userA.user_id is None:
-            return _low_conf("idor_profile", label, weight,
+            return _scored_zero("idor_profile", label, weight,
                              "userA의 id를 확인할 수 없어 IDOR 판정 불가", passed=False)
 
         target = f"/users/{ctx.userA.user_id}"
@@ -113,7 +113,7 @@ def probe_idor_profile(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
         )
         predictable_penalty = float(cfg.get("predictable_id_penalty", 0))
 
-        # Control: userA sees own email on own profile.
+        # Check: userA sees own email on own profile.
         ctrl = ctx.get(ctx.userA.session, target)
         ctrl_body = _body_text(ctrl)
         control_ok = ctrl is not None and ctrl.status_code == 200 and ctx.userA.email in ctrl_body
@@ -161,16 +161,16 @@ def probe_idor_profile(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
             evidence=def_evidence,
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("idor_profile", label, weight, f"IDOR 프로브 예외: {exc}")
+        return _scored_zero("idor_profile", label, weight, f"IDOR 프로브 예외: {exc}")
 
 
 # access_control_admin (dynamic)
-def probe_access_control_admin(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_access_control_admin(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 18))
     label = "접근 통제(관리자 페이지)"
     try:
         if ctx.userB is None:
-            return _low_conf("access_control_admin", label, weight, "일반 사용자 세션 없음으로 판정 불가")
+            return _scored_zero("access_control_admin", label, weight, "일반 사용자 세션 없음으로 판정 불가")
 
         exposed_paths: List[str] = []
         codes: Dict[str, Optional[int]] = {}
@@ -186,7 +186,7 @@ def probe_access_control_admin(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
                 exposed_paths.append(path)
             evidence.append(_snip(f"userB GET {path} -> {code}: {body}"))
 
-        # Control: admin account must still reach admin (if required).
+        # Check: admin account must still reach admin (if required).
         admin_control_ok = True
         require_admin = bool(cfg.get("require_admin_control", True))
         if require_admin and ctx.admin is not None:
@@ -228,7 +228,7 @@ def probe_access_control_admin(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
             penalty_reasons=[], evidence=evidence,
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("access_control_admin", label, weight, f"접근 통제 프로브 예외: {exc}")
+        return _scored_zero("access_control_admin", label, weight, f"접근 통제 프로브 예외: {exc}")
 
 
 # privilege_escalation (dynamic) — mass assignment: does /signup trust a
@@ -236,7 +236,7 @@ def probe_access_control_admin(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
 _PRIVESC_FIELDS = {"is_admin": True, "admin": True, "role": "admin", "is_staff": True}
 
 
-def _signup_login(ctx: ProbeContext, extra: Dict[str, Any]) -> Optional[requests.Session]:
+def _signup_login(ctx: DynamicContext, extra: Dict[str, Any]) -> Optional[requests.Session]:
     sess = requests.Session()
     tag = uuid.uuid4().hex[:10]
     creds = {"username": f"pe_{tag}", "email": f"pe_{tag}@test.com",
@@ -249,7 +249,7 @@ def _signup_login(ctx: ProbeContext, extra: Dict[str, Any]) -> Optional[requests
     return sess
 
 
-def _reaches_admin(ctx: ProbeContext, sess: requests.Session) -> Optional[str]:
+def _reaches_admin(ctx: DynamicContext, sess: requests.Session) -> Optional[str]:
     for path in ("/admin", "/admin/users"):
         r = ctx.get(sess, path)
         if r is not None and r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r)):
@@ -257,7 +257,7 @@ def _reaches_admin(ctx: ProbeContext, sess: requests.Session) -> Optional[str]:
     return None
 
 
-def probe_privilege_escalation(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_privilege_escalation(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     """PoC: sign up while sending is_admin/role in the body. If that account reaches
     the admin area while a plain-signup control does not, the app trusted a
     client-set privilege field (mass assignment)."""
@@ -268,11 +268,11 @@ def probe_privilege_escalation(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
         attacker = _signup_login(ctx, extra)
         control = _signup_login(ctx, {})
         if attacker is None or control is None:
-            return _low_conf("privilege_escalation", label, weight, "가입/로그인 실패로 권한상승 판정 불가")
+            return _scored_zero("privilege_escalation", label, weight, "가입/로그인 실패로 권한상승 판정 불가")
 
         if _reaches_admin(ctx, control) is not None:
             # Admin area is open to ANY signup — that is access_control_admin's finding.
-            return _low_conf("privilege_escalation", label, weight,
+            return _scored_zero("privilege_escalation", label, weight,
                              "관리자 페이지가 일반 가입자에게도 열려 mass-assignment로 분리 판정 불가")
 
         atk_path = _reaches_admin(ctx, attacker)
@@ -290,15 +290,15 @@ def probe_privilege_escalation(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckR
             evidence=[_snip("is_admin 주입 가입도 관리자 접근 불가 → mass-assignment 방어됨")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("privilege_escalation", label, weight, f"권한상승 프로브 예외: {exc}")
+        return _scored_zero("privilege_escalation", label, weight, f"권한상승 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("csrf_protection", "CSRF 보호", "static",
+CHECKS = [
+    Check("csrf_protection", "CSRF 보호", "static",
             lambda sctx, cfg: check_csrf_protection(sctx.sources, cfg, sctx.templates)),
-    Control("ssrf_sink", "SSRF", "static",
+    Check("ssrf_sink", "SSRF", "static",
             lambda sctx, cfg: check_ssrf_sink(sctx.sources, cfg)),
-    Control("idor_profile", "IDOR(타인 프로필 조회)", "dynamic", probe_idor_profile),
-    Control("access_control_admin", "접근 통제(관리자 페이지)", "dynamic", probe_access_control_admin),
-    Control("privilege_escalation", "권한 상승(mass-assignment)", "dynamic", probe_privilege_escalation),
+    Check("idor_profile", "IDOR(타인 프로필 조회)", "dynamic", dynamic_idor_profile),
+    Check("access_control_admin", "접근 통제(관리자 페이지)", "dynamic", dynamic_access_control_admin),
+    Check("privilege_escalation", "권한 상승(mass-assignment)", "dynamic", dynamic_privilege_escalation),
 ]

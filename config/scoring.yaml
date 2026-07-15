@@ -121,6 +121,21 @@ sandbox:
   network: true                      # NEVER disable — app needs DB/HTTP
   read_only_rootfs: false            # app may write sqlite; use tmpfs for /tmp
 
+# Operator attack-demonstration (PoC) console. Per demo session: one long-lived
+# target container (the graded app, via Sandbox) + a disposable per-run attack
+# container (docker run --rm) that runs the (possibly operator-edited) PoC in
+# isolation and reaches the target at http://host.docker.internal:{host_port}.
+poc:
+  attack_image: "vibe-sec-attack:latest"   # docker build -f sandbox/attack/Dockerfile -t vibe-sec-attack:latest .
+  # Host dir the per-run PoC folder is created under, then bind-mounted into the
+  # attack container. MUST sit on a path shared with the Docker VM (e.g. under
+  # $HOME) — the OS temp dir (/var/folders on macOS/colima) often is NOT shared,
+  # which would mount an empty /poc. Relative paths resolve against the repo root.
+  run_dir_base: "data/poc_runs"
+  max_sessions: 4                           # hard cap on concurrent live target containers
+  idle_timeout_seconds: 600                 # reap sessions idle longer than this
+  run_timeout_seconds: 20                   # per attack-container run wall-clock cap
+
 # Codex runner (Part 2). ChatGPT login auth only (no API key); serial use.
 codex:
   binary: "codex"                 # PATH name or absolute path on operator machine
@@ -200,7 +215,7 @@ tools:
     timebox: 60                   # seconds — booth speed
   # Hallucinated-package check: verify each requirement actually exists on PyPI.
   # Live network => OFF by default (offline/reproducibility); operator opts in.
-  pypi_existence:
+  hallucinated_package:
     enabled: false
     index_url: "https://pypi.org/pypi/{package}/json"
     timeout: 8
@@ -209,7 +224,7 @@ tools:
 # Orchestrator (Part 4). Generation is globally serial (ChatGPT limit); scoring bounded-parallel.
 orchestrator:
   keep_generated: true
-  queue_backend: "db"             # "db" = Option A (DB queue + single worker); "celery" = Option B
+  queue_backend: "db"             # DB table as the queue + single worker
   generation_concurrency: 1       # MUST be 1 — ChatGPT rolling limit. Do not raise.
   scoring_concurrency: 2          # bounded parallel scoring (isolated containers); tune to server CPU/RAM
   poll_interval_seconds: 2        # worker loop poll cadence for queued submissions

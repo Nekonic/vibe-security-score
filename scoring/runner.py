@@ -14,9 +14,9 @@ from typing import List, Optional
 
 from . import registry
 from .config import Config
-from .controls import dependencies
+from .checks import A03_supply_chain as dependencies
 from .models import CheckResult
-from .shared.http import ProbeContext, _low_conf
+from .shared.http import DynamicContext, _scored_zero
 from .shared.sandbox import Sandbox
 from .shared.sources import Source, _read_tree
 
@@ -99,25 +99,24 @@ def run_dynamic(app_dir: str, config: Config):
             reason = (box.logs(tail=20) or "부팅 로그 없음").strip()[:200]
             return _boot_failed_checks(config, reason or "포트가 열리지 않음"), False, True
 
-        ctx = ProbeContext(box.base_url, config)
-        dynamic_controls = registry.by_phase("dynamic")
+        ctx = DynamicContext(box.base_url, config)
+        dynamic_checks = registry.by_phase("dynamic")
         # functional runs first (drives the gate + seeds sessions); rest follow.
-        functional = next(c for c in dynamic_controls if c.id == "functional")
-        rest = [c for c in dynamic_controls if c.id != "functional"]
+        functional = next(c for c in dynamic_checks if c.id == "functional")
+        rest = [c for c in dynamic_checks if c.id != "functional"]
 
-        func_result, functional_failed = functional.fn(
-            ctx, dyn_cfg.get(functional.id, {}), require
-        )
+        func_result = functional.fn(ctx, {**dyn_cfg.get(functional.id, {}), "require": require})
+        functional_failed = not func_result.passed
         checks: List[CheckResult] = [func_result]
 
         for c in rest:
             if time.monotonic() >= deadline:
                 weight = float((dyn_cfg.get(c.id, {}) or {}).get("weight", 0))
-                checks.append(_low_conf(c.id, c.label, weight, "동적 검사 전체 시간 예산 초과"))
+                checks.append(_scored_zero(c.id, c.label, weight, "동적 검사 전체 시간 예산 초과"))
                 continue
             checks.append(c.fn(ctx, dyn_cfg.get(c.id, {})))
 
         # A03: recompute CVE against real resolved (transitive) versions.
-        checks.append(dependencies.resolved_cve(box, config))
+        checks.append(dependencies.dynamic_cve(box, config))
 
         return checks, functional_failed, False

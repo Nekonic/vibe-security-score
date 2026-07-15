@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Sequence
 import requests
 
 from ..models import CheckResult
-from ..shared.http import ProbeContext, _login_payload, _low_conf, _snip
+from ..shared.http import DynamicContext, _login_payload, _scored_zero, _snip
 from ..shared.sources import Source, _clamp, _iter_lines
-from .base import Control
+from .base import Check
 
 
 # debug_true
@@ -90,7 +90,7 @@ _SEC_HEADERS = ("content-security-policy", "x-frame-options",
 _COOKIE_ATTRS = ("secure", "httponly", "samesite")
 
 
-def probe_transport_security(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_transport_security(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 12))
     label = "전송/응답 보안(헤더·쿠키 플래그)"
     try:
@@ -100,7 +100,7 @@ def probe_transport_security(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckRes
             ctx.post(sess, "/login", _login_payload(ctx.userA))
         r = ctx.get(sess, "/posts")
         if r is None:
-            return _low_conf("transport_security", label, weight, "응답 없음으로 판정 불가")
+            return _scored_zero("transport_security", label, weight, "응답 없음으로 판정 불가")
 
         headers_low = {k.lower(): v for k, v in r.headers.items()}
         present_headers = [h for h in _SEC_HEADERS if h in headers_low]
@@ -128,14 +128,14 @@ def probe_transport_security(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckRes
             evidence=[_snip(f"headers={present_headers} cookie={present_cookie}")],
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("transport_security", label, weight, f"전송 보안 프로브 예외: {exc}")
+        return _scored_zero("transport_security", label, weight, f"전송 보안 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("debug_true", "디버그 모드", "static",
+CHECKS = [
+    Check("debug_true", "디버그 모드", "static",
             lambda sctx, cfg: check_debug_true(sctx.sources, cfg)),
-    Control("security_headers", "보안 헤더", "static",
+    Check("security_headers", "보안 헤더", "static",
             lambda sctx, cfg: check_security_headers(sctx.sources, cfg)),
-    Control("transport_security", "전송/응답 보안(헤더·쿠키 플래그)", "dynamic",
-            probe_transport_security),
+    Check("transport_security", "전송/응답 보안(헤더·쿠키 플래그)", "dynamic",
+            dynamic_transport_security),
 ]

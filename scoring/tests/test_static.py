@@ -12,10 +12,11 @@ import pytest
 
 from scoring.aggregate import combine_scores
 from scoring.config import load_config
-from scoring.controls import crypto, misconfig
-from scoring.controls import dependencies as dc
-from scoring.controls.injection import sql as sql_ctl
-from scoring.controls.injection import xss as xss_ctl
+from scoring.checks import A04_cryptographic_failures as crypto
+from scoring.checks import A02_security_misconfiguration as misconfig
+from scoring.checks import A03_supply_chain as dc
+from scoring.checks import A05_injection_sql as sql_ctl
+from scoring.checks import A05_injection_xss as xss_ctl
 from scoring.runner import run_static
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))

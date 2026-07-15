@@ -3,12 +3,12 @@ accounts, and response helpers. Probe verdicts themselves live in ``probes.py``.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 import requests
 
+from . import csrf
 from ..config import Config
 from ..models import CheckResult
 
@@ -38,41 +38,6 @@ def _json_or_none(resp: Optional[requests.Response]) -> Optional[Any]:
         return resp.json()
     except Exception:
         return None
-
-
-# --- CSRF awareness -------------------------------------------------------
-# A correctly CSRF-protected app rejects token-less POSTs (that defense is
-# rewarded by the static `csrf_protection` check). The functional/attack probes
-# must still be able to act as a legit logged-in user, so they discover the
-# session's CSRF token (from a login JSON response, a hidden form field, or a
-# <meta> tag) and attach it — otherwise a *secure* app fails the functional gate.
-_CSRF_JSON_KEYS = ("csrf_token", "csrf", "csrfToken", "_csrf", "authenticity_token", "token")
-_CSRF_FIELD = "csrf_token"
-_CSRF_HEADER = "X-CSRF-Token"
-_CSRF_HTML_RE = (
-    re.compile(r'name=["\']?csrf[_-]?token["\']?[^>]*?value=["\']([^"\']+)', re.I),
-    re.compile(r'value=["\']([^"\']+)["\'][^>]*?name=["\']?csrf[_-]?token["\']?', re.I),
-    re.compile(r'<meta[^>]*?name=["\']csrf-token["\'][^>]*?content=["\']([^"\']+)', re.I),
-)
-
-
-def _extract_csrf(resp: Optional[requests.Response]) -> Optional[str]:
-    """Pull a CSRF token from a response: JSON body first, then hidden input / meta."""
-    if resp is None:
-        return None
-    j = _json_or_none(resp)
-    if isinstance(j, dict):
-        for k in _CSRF_JSON_KEYS:
-            v = j.get(k)
-            if isinstance(v, str) and v:
-                return v
-    body = _body_text(resp)
-    if body:
-        for rx in _CSRF_HTML_RE:
-            m = rx.search(body)
-            if m:
-                return m.group(1)
-    return None
 
 
 def _signup_payload(acct: "Account") -> Dict[str, Any]:
@@ -122,7 +87,7 @@ class Account:
             self.username = self.email.split("@", 1)[0] if self.email else self.name
 
 
-class ProbeContext:
+class DynamicContext:
     def __init__(self, base_url: str, config: Config):
         self.base_url = base_url.rstrip("/")
         self.config = config
@@ -143,19 +108,30 @@ class ProbeContext:
         self.sqli_auth_bypass = list(probes.get("sqli_auth_bypass", []) or [])
         self.dev = bool(getattr(config, "dev", False))  # gate real CLI tools (sqlmap)
         self.sqlmap_cfg = dict(config.get("tools.sqlmap", {}) or {})
+        # Endpoints that hand out a CSRF token (JSON body / form / <meta>), tried in
+        # order to seed a token when a state-changing POST is rejected for lacking one.
+        self._csrf_paths = [str(p) for p in (probes.get("csrf_paths") or ["/csrf", "/", "/login"])]
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
     @staticmethod
     def _remember_csrf(sess: requests.Session, resp: Optional[requests.Response]) -> None:
-        tok = _extract_csrf(resp)
+        tok = csrf.extract_csrf(resp)
         if tok:
             setattr(sess, "_csrf_token", tok)
 
     @staticmethod
     def _csrf_for(sess: requests.Session) -> str:
         return getattr(sess, "_csrf_token", "") or ""
+
+    def _bound_post(self, sess: requests.Session):
+        def _post(url, **kw):
+            try:
+                return sess.post(url, timeout=self.http_timeout, **kw)
+            except requests.RequestException:
+                return None
+        return _post
 
     def get(self, sess: requests.Session, path: str, **kw) -> Optional[requests.Response]:
         try:
@@ -165,40 +141,20 @@ class ProbeContext:
         self._remember_csrf(sess, r)  # seed token from form pages / meta tags
         return r
 
-    def _send_post(self, sess, path, data, token):
-        """One POST attempt (JSON, form fallback), CSRF token attached both ways."""
-        headers = {_CSRF_HEADER: token} if token else None
-        body = data if not token else {**data, _CSRF_FIELD: token}
-        try:
-            r = sess.post(self._url(path), json=body, timeout=self.http_timeout, headers=headers)
-        except requests.RequestException:
-            return None
-        if r is not None and r.status_code in (400, 415, 422):
-            try:
-                r2 = sess.post(self._url(path), data=body, timeout=self.http_timeout, headers=headers)
-                if r2 is not None and r2.status_code < r.status_code:
-                    return r2
-            except requests.RequestException:
-                pass
-        return r
+    def _seed_csrf(self, sess: requests.Session, path: str) -> None:
+        """GET token-bearing endpoints until the session holds a CSRF token."""
+        for p in self._csrf_paths + [path]:
+            if self._csrf_for(sess):
+                return
+            self.get(sess, p)
 
     def post(self, sess: requests.Session, path: str, data: Dict[str, Any]) -> Optional[requests.Response]:
-        """POST leniently: JSON then form fallback, with the session's CSRF token
-        attached (header + field). On a CSRF rejection, fetch a token and retry once
-        so a correctly CSRF-protected app still passes the functional/attack probes."""
-        r = self._send_post(sess, path, data, self._csrf_for(sess))
-        self._remember_csrf(sess, r)  # login responses often return the token
-        # CSRF-protected app rejected us: get a token (GET seeds it), retry once.
-        if r is not None and r.status_code in (403, 419):
-            if not self._csrf_for(sess):
-                self.get(sess, path)
-            token = self._csrf_for(sess)
-            if token:
-                r2 = self._send_post(sess, path, data, token)
-                self._remember_csrf(sess, r2)
-                if r2 is not None and (r2.status_code in (200, 201) or r2.status_code < r.status_code):
-                    return r2
-        return r
+        return csrf.post_with_csrf(
+            self._bound_post(sess), self._url(path), data,
+            get_token=lambda: self._csrf_for(sess),
+            set_token=lambda t: setattr(sess, "_csrf_token", t),
+            reseed=lambda: self._seed_csrf(sess, path),
+        )
 
 
 # Admin-page recognition, shared by the access-control and session-forgery probes.
@@ -226,7 +182,7 @@ def _is_html_response(resp: Optional[requests.Response]) -> bool:
     return "html" in resp.headers.get("Content-Type", "").lower()
 
 
-def _low_conf(check_id: str, label: str, weight: float, reason: str, passed: bool = False) -> CheckResult:
+def _scored_zero(check_id: str, label: str, weight: float, reason: str, passed: bool = False) -> CheckResult:
     """A check we could NOT reliably test. Marked ``skipped`` so aggregation
     EXCLUDES it — scoring an untestable check as vulnerable would falsely penalize
     a defended app. Still reported so the operator sees why it was skipped."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # check_id -> OWASP Top 10:2025 code
 OWASP_BY_CHECK = {
-    # A01 Broken Access Control (SSRF folded in for 2025)
+    # A01 Broken Access Check (SSRF folded in for 2025)
     "idor_profile": "A01",
     "access_control_admin": "A01",
     "privilege_escalation": "A01",
@@ -17,14 +17,14 @@ OWASP_BY_CHECK = {
     # A03 Software Supply Chain Failures (2021 "Vulnerable & Outdated Components")
     "cve": "A03",
     "typosquatting": "A03",
-    "pypi_existence": "A03",
+    "hallucinated_package": "A03",
     # A04 Cryptographic Failures
     "hardcoded_secret": "A04",
     "weak_default_secret": "A04",
     "session_forgery": "A04",
     "password_hashing": "A04",
     "cookie_flags": "A04",
-    "gitleaks": "A04",
+    "gitleaks_secrets": "A04",
     # A05 Injection
     "sql_parameterization": "A05",
     "xss_template": "A05",

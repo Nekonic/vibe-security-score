@@ -183,7 +183,7 @@ class Orchestrator:
                 return self._handle_generation_error(sub, err, attempt)
 
             sub.workdir = str(workdir)
-            sub.save(update_fields=["workdir"])
+            state.save_fields(sub, "workdir")
             state.mark_generation_finished(sub)
             return Path(workdir)
 
@@ -215,7 +215,7 @@ class Orchestrator:
             retry_after = getattr(err, "retry_after", None)
             wait = float(retry_after) if retry_after is not None else self.config.backoff(attempt)
             sub.generation_retries = attempt + 1
-            sub.save(update_fields=["generation_retries"])
+            state.save_fields(sub, "generation_retries")
             logger.info(
                 "submission #%s rate-limited; re-queue after %.1fs", sub.pk, wait
             )
@@ -227,7 +227,7 @@ class Orchestrator:
         if isinstance(err, (GenerationTimeoutError, GenerationError)):
             if attempt + 1 < self.config.generation_max:
                 sub.generation_retries = attempt + 1
-                sub.save(update_fields=["generation_retries"])
+                state.save_fields(sub, "generation_retries")
                 wait = self.config.backoff(attempt)
                 logger.info(
                     "submission #%s generation error (attempt %d/%d); retry after %.1fs: %s",
@@ -260,7 +260,7 @@ class Orchestrator:
                     if attempt + 1 < self.config.scoring_max:
                         attempt += 1
                         sub.scoring_retries = attempt
-                        state._save_with_retry(sub, ["scoring_retries"])
+                        state.save_fields(sub, "scoring_retries")
                         wait = self.config.backoff(attempt - 1)
                         logger.info(
                             "submission #%s scoring error (attempt %d/%d); retry after %.1fs: %s",
@@ -309,10 +309,11 @@ class Orchestrator:
             # Operator re-grade: score the existing generated code, NEVER Codex.
             if sub.regrade_only:
                 sub.regrade_only = False
-                sub.save(update_fields=["regrade_only"])
+                state.save_fields(sub, "regrade_only")
                 wd = Path(sub.workdir) if sub.workdir else None
                 if wd is not None and wd.is_dir():
-                    # Leave QUEUED synchronously so the poll loop won't re-claim it.
+                    # Move out of QUEUED synchronously so the worker loop won't
+                    # re-claim it before the async scoring thread starts.
                     state.to_scoring(sub)
                     return self.submit_scoring(sub, wd)
                 # Code is gone: FAIL — a re-grade must never fall back to Codex.

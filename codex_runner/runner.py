@@ -72,10 +72,6 @@ def _build_argv(config: Config) -> List[str]:
     return argv
 
 
-def _redacted_argv(argv: Sequence[str]) -> List[str]:
-    return [str(a) for a in argv]
-
-
 def _scrubbed_env(config: Config) -> Dict[str, str]:
     # Blank the API-key vars so an API key can never trigger paid billing (ChatGPT login only).
     env = dict(os.environ)
@@ -244,18 +240,7 @@ def _parse_line(line: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_jsonl(stdout: str) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(obj, dict):
-            events.append(obj)
-    return events
+    return [obj for obj in map(_parse_line, stdout.splitlines()) if obj is not None]
 
 
 def _hit_rate_limit(stdout: str, stderr: str, signals: Sequence[str]) -> Optional[str]:
@@ -330,7 +315,7 @@ def _write_transcript(
         tdir.mkdir(parents=True, exist_ok=True)
         transcript = {
             "submission_id": submission_id,
-            "argv_redacted": _redacted_argv(argv),
+            "argv": [str(a) for a in argv],
             "returncode": returncode,
             "elapsed_seconds": round(elapsed, 3),
             "outcome": outcome,

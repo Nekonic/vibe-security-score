@@ -42,7 +42,6 @@ class Sandbox:
         self.host_port = _find_free_port()
         self.base_url = f"http://127.0.0.1:{self.host_port}"
 
-        self._started = False
         self.boot_failed = False
 
     def __enter__(self) -> "Sandbox":
@@ -55,7 +54,6 @@ class Sandbox:
                     f"no app.py/wsgi.py/main.py in {mount_src}"
                 )
             self._docker_run(mount_src)
-            self._started = True
             if not self._wait_for_boot():
                 self.boot_failed = True
         except Exception:
@@ -150,4 +148,3 @@ class Sandbox:
             )
         except Exception:
             pass
-        self._started = False

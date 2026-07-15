@@ -92,7 +92,7 @@ def test_session_forgery_live_poc(dynamic_results):
     assert any("forged" in ev for ev in r.evidence)
 
 
-def test_resolved_cve_flags_pinned_flask(dynamic_results):
+def test_dynamic_cve_flags_pinned_flask(dynamic_results):
     by_id, _, _ = dynamic_results
     r = by_id["cve"]
     assert "freeze" in r.tool  # resolved (pip-freeze) path

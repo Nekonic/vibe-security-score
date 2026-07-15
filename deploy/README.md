@@ -1,12 +1,21 @@
 # 프로덕션 배포 (Ubuntu)
 
-실서버(Ubuntu)에 vibe-security-score를 올리는 절차. 채점기는 **네이티브로**
-(systemd) 돌리고, 참가자 앱만 Docker 컨테이너로 띄운다 — 그래서 채점기 프로세스는
-호스트 Docker 데몬에 접근할 수 있어야 한다(Docker-in-Docker 불필요).
+채점기는 **네이티브(systemd)**로 돌리고 참가자 앱만 Docker 컨테이너로 띄운다 — 채점기 프로세스가
+호스트 Docker 데몬에 접근할 수 있어야 한다(Docker-in-Docker 불필요). systemd 프로세스 2개:
+`vibe-grader-web`(gunicorn, 참가자 UI + `/admin`), `vibe-grader-worker`(제출 파이프라인: 직렬
+생성 → 병렬 채점, 시작 시 고아 자원 정리).
 
-구성 프로세스 2개:
-- `vibe-grader-web` — gunicorn (참가자 UI + 운영자 `/admin`)
-- `vibe-grader-worker` — 제출 파이프라인 (직렬 생성 → 병렬 채점; 시작 시 고아 자원 정리)
+```mermaid
+flowchart TB
+    U[사용자] -->|HTTPS| NG[nginx + TLS]
+    subgraph host["Ubuntu 호스트 · systemd"]
+        NG --> WEB["vibe-grader-web · gunicorn"]
+        WEB --> DB[("PostgreSQL")]
+        WK[vibe-grader-worker] --> DB
+        WK -->|"codex exec · OAuth"| CX[Codex CLI]
+        WK -->|docker run| SB["참가자 앱 · 샌드박스 컨테이너"]
+    end
+```
 
 ## 0. 사전 패키지
 

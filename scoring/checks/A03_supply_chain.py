@@ -14,9 +14,9 @@ from typing import Dict, List, Optional, Tuple
 
 from ..models import CheckResult
 from ..shared.external_tools import (
-    _SKIP_DEV, _SKIP_DISABLED, _gate, _run_json, _skipped_check, _stub_command, _tool_cfg,
+    _SKIP_DEV, _SKIP_DISABLED, _gate, _run_json, _skipped, _stub_command, _tool_cfg,
 )
-from .base import Control
+from .base import Check
 
 try:  # prefer packaging.version for correct comparisons; degrade gracefully
     from packaging.version import Version, InvalidVersion
@@ -100,15 +100,19 @@ def _in_affected_range(version: str, introduced: str, fixed: Optional[str]) -> b
     return _ver_lt(version, fixed)
 
 
-def check_cve(requirements: List[Tuple[str, str]], dep_cfg: dict) -> CheckResult:
-    cve_cfg = dep_cfg.get("cve", {}) or {}
-    snapshot_path = _resolve(cve_cfg.get("source", "data/osv_snapshot.json"))
-    penalties = {
+def _severity_penalties(cve_cfg: dict) -> dict:
+    return {
         "critical": float(cve_cfg.get("penalty_critical", 40)),
         "high": float(cve_cfg.get("penalty_high", 25)),
         "medium": float(cve_cfg.get("penalty_medium", 10)),
         "low": float(cve_cfg.get("penalty_low", 3)),
     }
+
+
+def _match_cve(requirements: List[Tuple[str, str]], dep_cfg: dict) -> CheckResult:
+    cve_cfg = dep_cfg.get("cve", {}) or {}
+    snapshot_path = _resolve(cve_cfg.get("source", "data/osv_snapshot.json"))
+    penalties = _severity_penalties(cve_cfg)
 
     with open(snapshot_path, "r", encoding="utf-8") as fh:
         snapshot = json.load(fh)
@@ -293,7 +297,7 @@ def _cvss_bucket(score) -> str:
     return "low"
 
 
-def check_cve_with_osv(
+def check_cve(
     requirements: List[Tuple[str, str]],
     dep_cfg: dict,
     requirements_path: Optional[str],
@@ -316,19 +320,14 @@ def check_cve_with_osv(
             return result
 
     # Default / fallback: deterministic local snapshot (offline, reproducible).
-    return check_cve(requirements, dep_cfg)
+    return _match_cve(requirements, dep_cfg)
 
 
 def _osv_result_from_data(data: object, dep_cfg: dict) -> Optional[CheckResult]:
     if data is None:
         return None
     cve_cfg = dep_cfg.get("cve", {}) or {}
-    penalties = {
-        "critical": float(cve_cfg.get("penalty_critical", 40)),
-        "high": float(cve_cfg.get("penalty_high", 25)),
-        "medium": float(cve_cfg.get("penalty_medium", 10)),
-        "low": float(cve_cfg.get("penalty_low", 3)),
-    }
+    penalties = _severity_penalties(cve_cfg)
     findings = _parse_osv_output(data)
     total_penalty = 0.0
     reasons: List[str] = []
@@ -355,13 +354,13 @@ def _osv_result_from_data(data: object, dep_cfg: dict) -> Optional[CheckResult]:
 
 
 # PyPI existence — hallucinated-package check (opt-in, live network).
-def check_pypi_existence(requirements: List[Tuple[str, str]], config) -> CheckResult:
-    tcfg = _tool_cfg(config, "pypi_existence")
+def check_hallucinated_package(requirements: List[Tuple[str, str]], config) -> CheckResult:
+    tcfg = _tool_cfg(config, "hallucinated_package")
     label = "존재하지 않는 패키지"
     if not bool(tcfg.get("enabled", False)):
-        return _skipped_check("hallucinated_package", label, "pypi", _SKIP_DISABLED)
+        return _skipped("hallucinated_package", label, "pypi", _SKIP_DISABLED)
     if getattr(config, "dev", False):
-        return _skipped_check("hallucinated_package", label, "pypi", _SKIP_DEV)
+        return _skipped("hallucinated_package", label, "pypi", _SKIP_DEV)
 
     index_url = tcfg.get("index_url", "https://pypi.org/pypi/{package}/json")
     timeout = float(tcfg.get("timeout", 8))
@@ -412,46 +411,25 @@ def _find_missing_packages(
 
 
 # --- dependencies pool weight split (shared by static + dynamic CVE paths) ---
-def _cve_cfg(dep_cfg: dict) -> dict:
+def _pool_split(dep_cfg: dict, key: str) -> dict:
+    """Give the CVE / typosquatting sub-check its own weight, defaulting to an
+    even split of the dependencies pool weight."""
     dep_weight = float(dep_cfg.get("weight", 0))
     cfg = dict(dep_cfg)
-    cfg["weight"] = float((dep_cfg.get("cve") or {}).get("weight", dep_weight / 2.0))
+    cfg["weight"] = float((dep_cfg.get(key) or {}).get("weight", dep_weight / 2.0))
     return cfg
 
 
-def _typo_cfg(dep_cfg: dict) -> dict:
-    dep_weight = float(dep_cfg.get("weight", 0))
-    cfg = dict(dep_cfg)
-    cfg["weight"] = float((dep_cfg.get("typosquatting") or {}).get("weight", dep_weight / 2.0))
-    return cfg
-
-
-def cve_control(sctx) -> CheckResult:
-    """Static CVE: OSV-Scanner primary (if installed+enabled), local-snapshot fallback."""
-    dep_cfg = dict(sctx.config.static_dependencies)
-    return check_cve_with_osv(sctx.requirements, _cve_cfg(dep_cfg),
-                              sctx.requirements_path, sctx.config)
-
-
-def typosquatting_control(sctx) -> CheckResult:
-    dep_cfg = dict(sctx.config.static_dependencies)
-    return check_typosquatting(sctx.requirements, _typo_cfg(dep_cfg))
-
-
-def pypi_control(sctx) -> CheckResult:
-    return check_pypi_existence(sctx.requirements, sctx.config)
-
-
-def resolved_cve(box, config) -> CheckResult:
+def dynamic_cve(box, config) -> CheckResult:
     """Recompute the CVE check against the container's REAL resolved (transitive)
     package versions from `pip freeze`. In --dev this runs osv-scanner on those
     versions; otherwise the deterministic local snapshot. tool marks it as resolved
     so aggregation prefers it over the requirements-only static result."""
-    dep_cfg = _cve_cfg(dict(config.get("static.dependencies", {}) or {}))
+    dep_cfg = _pool_split(dict(config.get("static.dependencies", {}) or {}), "cve")
     freeze = box.pip_freeze()
     requirements = parse_requirements(freeze)
     if not requirements:
-        result = check_cve([], dep_cfg)
+        result = _match_cve([], dep_cfg)
         result.tool = "pip-freeze"
         result.label = "의존성 CVE(실측 전이 포함)"
         result.evidence = ["pip freeze 실패 → 정적 requirements 결과 유지"]
@@ -462,7 +440,7 @@ def resolved_cve(box, config) -> CheckResult:
     try:
         tmp.write(freeze)
         tmp.close()
-        result = check_cve_with_osv(requirements, dep_cfg, tmp.name, config)
+        result = check_cve(requirements, dep_cfg, tmp.name, config)
     finally:
         try:
             os.unlink(tmp.name)
@@ -473,8 +451,12 @@ def resolved_cve(box, config) -> CheckResult:
     return result
 
 
-CONTROLS = [
-    Control("cve", "의존성 CVE", "static", lambda sctx, cfg: cve_control(sctx)),
-    Control("typosquatting", "오타 스쿼팅", "static", lambda sctx, cfg: typosquatting_control(sctx)),
-    Control("hallucinated_package", "존재하지 않는 패키지", "static", lambda sctx, cfg: pypi_control(sctx)),
+CHECKS = [
+    Check("cve", "의존성 CVE", "static", lambda sctx, cfg: check_cve(
+        sctx.requirements, _pool_split(dict(sctx.config.static_dependencies), "cve"),
+        sctx.requirements_path, sctx.config)),
+    Check("typosquatting", "오타 스쿼팅", "static", lambda sctx, cfg: check_typosquatting(
+        sctx.requirements, _pool_split(dict(sctx.config.static_dependencies), "typosquatting"))),
+    Check("hallucinated_package", "존재하지 않는 패키지", "static",
+            lambda sctx, cfg: check_hallucinated_package(sctx.requirements, sctx.config)),
 ]

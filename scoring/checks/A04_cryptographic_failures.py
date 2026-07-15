@@ -10,13 +10,13 @@ import requests
 
 from ..models import CheckResult
 from ..shared.external_tools import (
-    _SKIP_REASON, _gate, _run_json, _skipped_check, _stub_command, _tool_cfg,
+    _SKIP_REASON, _gate, _run_json, _skipped, _stub_command, _tool_cfg,
 )
 from ..shared.http import (
-    ProbeContext, _body_text, _json_or_none, _looks_like_admin, _low_conf, _snip,
+    DynamicContext, _body_text, _json_or_none, _looks_like_admin, _scored_zero, _snip,
 )
 from ..shared.sources import Source, _clamp, _iter_lines, _mk
-from .base import Control
+from .base import Check
 
 
 # hardcoded_secret — *_KEY / secret_key assigned a string literal.
@@ -204,12 +204,12 @@ def check_cookie_flags(sources: Sequence[Source], cfg: dict) -> CheckResult:
 
 
 # gitleaks — hardcoded-secret corroboration (report-only, weight 0).
-def check_gitleaks(app_dir: str, config) -> CheckResult:
+def check_gitleaks_secrets(app_dir: str, config) -> CheckResult:
     tcfg = _tool_cfg(config, "gitleaks")
     label = "시크릿 스캔(gitleaks)"
     bin_path, skip = _gate(config, "gitleaks")
     if bin_path is None:
-        return _skipped_check("gitleaks_secrets", label, "gitleaks", skip or _SKIP_REASON)
+        return _skipped("gitleaks_secrets", label, "gitleaks", skip or _SKIP_REASON)
 
     cmd = _stub_command(bin_path) + [
         "detect", "--no-git", "--report-format", "json",
@@ -275,13 +275,13 @@ def _forge_flask_cookie(secret: str, payload: Dict[str, Any]) -> Optional[Tuple[
         return None
 
 
-def probe_session_forgery(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult:
+def dynamic_session_forgery(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     weight = float(cfg.get("weight", 0))
     label = "세션 위조 검증(약한 SECRET_KEY)"
     try:
         secrets = list(ctx.config.get("probes.weak_secrets", []) or [])
         if not secrets:
-            return _low_conf("session_forgery", label, weight, "약한 시크릿 목록 미구성")
+            return _scored_zero("session_forgery", label, weight, "약한 시크릿 목록 미구성")
         fid = int(cfg.get("forge_user_id", 1))
         paths = list(cfg.get("admin_paths", ["/admin", "/admin/users"]))
         # Forge several common session-key shapes so it works across apps.
@@ -289,7 +289,7 @@ def probe_session_forgery(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult
                    "is_admin": True, "admin": True, "role": "admin"}
 
         if _forge_flask_cookie(secrets[0], payload) is None:
-            return _low_conf("session_forgery", label, weight,
+            return _scored_zero("session_forgery", label, weight,
                              "flask 미설치로 세션 위조 검증 불가(정적 weak_default_secret로 감점 유지)")
 
         # Only attribute to forgery if the path is NOT already open without a cookie.
@@ -330,20 +330,20 @@ def probe_session_forgery(ctx: ProbeContext, cfg: Dict[str, Any]) -> CheckResult
             tool="flask-session-forge",
         )
     except Exception as exc:  # pragma: no cover
-        return _low_conf("session_forgery", label, weight, f"세션 위조 프로브 예외: {exc}")
+        return _scored_zero("session_forgery", label, weight, f"세션 위조 프로브 예외: {exc}")
 
 
-CONTROLS = [
-    Control("hardcoded_secret", "하드코딩 시크릿", "static",
+CHECKS = [
+    Check("hardcoded_secret", "하드코딩 시크릿", "static",
             lambda sctx, cfg: check_hardcoded_secret(sctx.sources, cfg)),
-    Control("weak_default_secret", "약한 기본 시크릿", "static",
+    Check("weak_default_secret", "약한 기본 시크릿", "static",
             lambda sctx, cfg: check_weak_default_secret(sctx.sources, cfg)),
-    Control("password_hashing", "비밀번호 해싱", "static",
+    Check("password_hashing", "비밀번호 해싱", "static",
             lambda sctx, cfg: check_password_hashing(sctx.sources, cfg)),
-    Control("cookie_flags", "쿠키 보안 플래그", "static",
+    Check("cookie_flags", "쿠키 보안 플래그", "static",
             lambda sctx, cfg: check_cookie_flags(sctx.sources, cfg)),
-    Control("gitleaks_secrets", "시크릿 스캔(gitleaks)", "static",
-            lambda sctx, cfg: check_gitleaks(sctx.app_dir, sctx.config)),
-    Control("session_forgery", "세션 위조 검증(약한 SECRET_KEY)", "dynamic",
-            probe_session_forgery),
+    Check("gitleaks_secrets", "시크릿 스캔(gitleaks)", "static",
+            lambda sctx, cfg: check_gitleaks_secrets(sctx.app_dir, sctx.config)),
+    Check("session_forgery", "세션 위조 검증(약한 SECRET_KEY)", "dynamic",
+            dynamic_session_forgery),
 ]
