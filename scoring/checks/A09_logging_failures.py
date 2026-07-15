@@ -8,7 +8,7 @@ from typing import Sequence
 
 from ..models import CheckResult
 from ..shared.sources import Source, _joined, _mk
-from .base import Control
+from .base import Check
 
 
 _LOG_CONFIG = re.compile(r"""logging\.basicConfig|logging\.getLogger|app\.logger|dictConfig|RotatingFileHandler""")
@@ -31,7 +31,7 @@ def check_security_logging(sources: Sequence[Source], cfg: dict) -> CheckResult:
                reasons=["보안 로깅/모니터링 구성이 없음 → 침해 탐지 불가"], evidence=[])
 
 
-CONTROLS = [
-    Control("security_logging", "보안 로깅", "static",
+CHECKS = [
+    Check("security_logging", "보안 로깅", "static",
             lambda sctx, cfg: check_security_logging(sctx.sources, cfg)),
 ]

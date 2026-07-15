@@ -48,7 +48,9 @@ def _cmd_static(app_dir: str, config_path: str | None, dev: bool = False) -> int
 
 def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     config = _load(config_path, dev)
-    checks, functional_failed, boot_failed = run_dynamic(app_dir, config)
+    checks, functional_failed, boot_failed, boot_log = run_dynamic(app_dir, config)
+    if boot_failed and boot_log:
+        print("=== 부팅 실패 로그 ===\n" + boot_log + "\n", file=sys.stderr)
     grade = combine_scores(
         checks, config, functional_failed=functional_failed, boot_failed=boot_failed
     )
@@ -61,6 +63,7 @@ def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> in
         "cap_reason": grade.cap_reason,
         "functional_failed": functional_failed,
         "boot_failed": boot_failed,
+        "boot_log": boot_log,
         "checks": [c.to_dict() for c in checks],
         "result": grade.to_dict(),
     })
@@ -70,7 +73,7 @@ def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> in
 def _cmd_grade(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     config = _load(config_path, dev)
     static_checks = run_static(app_dir, config)
-    dynamic_checks, functional_failed, boot_failed = run_dynamic(app_dir, config)
+    dynamic_checks, functional_failed, boot_failed, boot_log = run_dynamic(app_dir, config)
     all_checks = static_checks + dynamic_checks
 
     grade = combine_scores(
@@ -80,6 +83,10 @@ def _cmd_grade(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     print(f"=== {app_dir} ===")
     print(f"최종 점수: {round(grade.score, 2)} / 100  등급: {grade.grade}"
           + (f"  (상한 적용: {grade.cap_reason})" if grade.capped else ""))
+    if boot_failed and boot_log:
+        print("--- 부팅 실패 로그 ---")
+        print(boot_log)
+        print("---------------------")
     if grade.critical_penalties:
         deducted = round(grade.raw_score - grade.score, 2)
         print(f"기본 점수 {round(grade.raw_score, 2)} − 치명 감점 {deducted} = {round(grade.score, 2)}")

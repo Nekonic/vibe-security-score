@@ -27,11 +27,20 @@ class FakeGenerate:
         self.workdir_base = Path(workdir_base)
         self.duration = duration
         self.intervals: List[Interval] = []
+        self._live = 0
+        self._peak = 0
         self._lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None, model=None, reasoning_effort=None) -> Path:
         start = time.monotonic()
-        time.sleep(self.duration)
+        with self._lock:
+            self._live += 1
+            self._peak = max(self._peak, self._live)
+        try:
+            time.sleep(self.duration)
+        finally:
+            with self._lock:
+                self._live -= 1
         wd = self.workdir_base / f"sub-{submission_id}"
         wd.mkdir(parents=True, exist_ok=True)
         (wd / "app.py").write_text("# fake generated app\n", encoding="utf-8")
@@ -47,6 +56,10 @@ class FakeGenerate:
             if a.overlaps(b):
                 return True
         return False
+
+    @property
+    def peak_concurrency(self) -> int:
+        return self._peak
 
 
 class FakeGrade:
@@ -99,7 +112,7 @@ class RaiseOnceThenSucceedGenerate(FakeGenerate):
         self._raised = False
         self._raise_lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None, model=None, reasoning_effort=None) -> Path:
         with self._raise_lock:
             if not self._raised:
                 self._raised = True
@@ -115,7 +128,7 @@ class FailForSubmissionGenerate(FakeGenerate):
         self._fail_id = str(fail_id)
         self._exc = exc
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None, model=None, reasoning_effort=None) -> Path:
         if str(submission_id) == self._fail_id:
             raise self._exc
         return super().__call__(submission_id, prompt, config=config, event_sink=event_sink)
@@ -130,7 +143,7 @@ class CountingGenerate(FakeGenerate):
         self.count = 0
         self._count_lock = threading.Lock()
 
-    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None) -> Path:
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None, model=None, reasoning_effort=None) -> Path:
         with self._count_lock:
             self.count += 1
         raise self._exc

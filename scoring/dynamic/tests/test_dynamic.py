@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def dynamic_results():
     config = load_config()
-    checks, functional_failed, boot_failed = run_dynamic(_APP_DIR, config)
+    checks, functional_failed, boot_failed, _boot_log = run_dynamic(_APP_DIR, config)
     by_id = {c.check_id: c for c in checks}
     return by_id, functional_failed, boot_failed
 
@@ -92,7 +92,7 @@ def test_session_forgery_live_poc(dynamic_results):
     assert any("forged" in ev for ev in r.evidence)
 
 
-def test_resolved_cve_flags_pinned_flask(dynamic_results):
+def test_dynamic_cve_flags_pinned_flask(dynamic_results):
     by_id, _, _ = dynamic_results
     r = by_id["cve"]
     assert "freeze" in r.tool  # resolved (pip-freeze) path

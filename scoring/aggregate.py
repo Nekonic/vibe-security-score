@@ -60,21 +60,26 @@ def _apply_critical_penalties(
     repro = crit.get("repro", {}) or {}
     by_id = {c.check_id: c for c in checks}
 
+    sf = by_id.get("session_forgery")
+    sf_confirmed = sf is not None and not sf.skipped and not sf.passed
+
     total = 0.0
     out: List[CriticalPenalty] = []
     for cid, pts in penalties.items():
         c = by_id.get(cid)
         if c is None or c.skipped or c.passed or pts <= 0:
             continue
+        # hardcoded_secret is critical ONLY when the live session-forgery PoC proves
+        # the key is exploitable (forged an admin session). A hardcoded-but-not-
+        # forgeable key stays a minor static finding — no critical.
+        if cid == "hardcoded_secret" and not sf_confirmed:
+            continue
         reasons = list(c.penalty_reasons)
         evidence = list(c.evidence)
-        # If the dynamic session-forgery check confirmed weak_default_secret live,
-        # add its (already human-readable) finding as an extra reason.
-        if cid == "weak_default_secret":
-            sf = by_id.get("session_forgery")
-            if sf is not None and not sf.skipped and not sf.passed:
-                reasons = reasons + list(sf.penalty_reasons)
-                evidence = evidence + sf.evidence
+        # Fold the live forge PoC into the secret finding that caused it.
+        if cid in ("weak_default_secret", "hardcoded_secret") and sf_confirmed:
+            reasons = reasons + list(sf.penalty_reasons)
+            evidence = evidence + sf.evidence
         total += pts
         out.append(
             CriticalPenalty(

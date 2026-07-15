@@ -135,7 +135,7 @@ def test_transcript_written_on_success(tmp_path):
     data = json.loads(tpath.read_text(encoding="utf-8"))
     assert data["outcome"] == "success"
     assert "app.py" in data["harvested"]
-    assert _PARTICIPANT_PROMPT not in json.dumps(data["argv_redacted"])
+    assert _PARTICIPANT_PROMPT not in json.dumps(data["argv"])
 
 
 def test_exception_str_is_generic(tmp_path):

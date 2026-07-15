@@ -293,6 +293,91 @@ class RerunAndAdminTests(TestCase):
             self.assertTrue(sub.regrade_only)
 
 
+class PocConsoleTests(TestCase):
+    """Operator attack-demonstration console: staff-only, DONE+workdir guarded,
+    and the live start/run/stop endpoints (docker layer mocked out)."""
+
+    def setUp(self):
+        self.op = get_user_model().objects.create_user(
+            username="op", password="x", is_staff=True
+        )
+
+    def _done_with_workdir(self):
+        sub = Submission.objects.create(participant="tester", prompt="게시판 만들어줘")
+        state.to_queued(sub)
+        state.to_done(sub, {
+            "final_score": 30.0, "grade": "미흡", "pass_fail": "FAIL",
+            "findings": [{
+                "check_id": "sqli", "category": "dynamic", "label": "SQL 인젝션",
+                "owasp": "A03", "score": 0.0, "weight": 10.0,
+                "passed": False, "skipped": False, "tool": "",
+                "penalty_reasons": ["/login 인증 우회"], "evidence": [],
+            }],
+        })
+        sub.workdir = "/some/generated/dir"
+        sub.save(update_fields=["workdir"])
+        return sub
+
+    def test_console_requires_staff(self):
+        sub = self._done_with_workdir()
+        resp = self.client.get(reverse("submissions:poc_console", kwargs={"pk": sub.pk}))
+        self.assertEqual(resp.status_code, 302)  # staff_member_required -> login
+
+    def test_console_renders_editable_code_run_button_and_csrf(self):
+        self.client.force_login(self.op)
+        sub = self._done_with_workdir()
+        body = self.client.get(
+            reverse("submissions:poc_console", kwargs={"pk": sub.pk})
+        ).content.decode()
+        self.assertIn('contenteditable="true"', body)   # code is editable
+        self.assertIn('id="btn-run"', body)              # run control present
+        self.assertIn("csrfmiddlewaretoken", body)       # CSRF token for POSTs
+        self.assertIn(reverse("submissions:poc_run", kwargs={"pk": sub.pk}), body)
+
+    def test_start_requires_staff(self):
+        sub = self._done_with_workdir()
+        resp = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_start_run_stop_are_json(self):
+        self.client.force_login(self.op)
+        sub = self._done_with_workdir()
+        with mock.patch("submissions.poc_session.start", return_value={"ok": True, "ready": True}) as m_start, \
+             mock.patch("submissions.poc_session.run", return_value={"ok": True, "stdout": "EXPLOITED", "stderr": "", "html": "<p>x</p>"}) as m_run, \
+             mock.patch("submissions.poc_session.stop", return_value={"ok": True, "stopped": True}) as m_stop:
+            r1 = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
+            self.assertEqual(r1.json(), {"ok": True, "ready": True})
+            self.assertTrue(m_start.called)
+            r2 = self.client.post(
+                reverse("submissions:poc_run", kwargs={"pk": sub.pk}),
+                data={"check_id": "sqli", "code": "print('x')"},
+                content_type="application/json",
+            )
+            self.assertEqual(r2.json()["stdout"], "EXPLOITED")
+            self.assertTrue(m_run.called)
+            r3 = self.client.post(reverse("submissions:poc_stop", kwargs={"pk": sub.pk}))
+            self.assertTrue(r3.json()["ok"])
+            self.assertTrue(m_stop.called)
+
+    def test_run_rejects_empty_payload(self):
+        self.client.force_login(self.op)
+        sub = self._done_with_workdir()
+        resp = self.client.post(
+            reverse("submissions:poc_run", kwargs={"pk": sub.pk}),
+            data={"check_id": "", "code": ""},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_start_rejected_when_not_done_or_no_workdir(self):
+        self.client.force_login(self.op)
+        # DONE but no workdir
+        sub = _make_done_submission()
+        resp = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+
+
 class LeaderboardTests(TestCase):
     def _done(self, participant, score, grade="통과", pf="PASS"):
         sub = Submission.objects.create(participant=participant, prompt="x")

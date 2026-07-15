@@ -1,0 +1,263 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>공격 시연 (PoC) · 제출 #{{ sub.id }}</title>
+  <link rel="stylesheet" href="{% static 'submissions/bootstrap.min.css' %}">
+  <style>
+    html, body { height: 100%; }
+    .mockup-note { font-size: .68rem; letter-spacing: .03em; }
+    .panel-tag { font-size: .66rem; letter-spacing: .05em; text-transform: uppercase; opacity: .55; }
+    .finding-sev { width: 4px; align-self: stretch; border-radius: 2px; }
+    .browser-view { background:#fff; color:#111; }
+    /* JetBrains(New UI) 스타일 탭 */
+    .poc-tabs { --bs-nav-tabs-border-width: 0; flex-wrap: nowrap; background:#2b2d30; border-bottom:1px solid #1e1f22; padding-left:4px; }
+    .poc-tabs .nav-link { border: 0; border-radius: 0; color:#b4b8bf; white-space: nowrap; padding:.62rem 1.15rem; font-size:.92rem; }
+    .poc-tabs .nav-link:hover { color:#dfe1e5; background:rgba(255,255,255,.07); }
+    .poc-tabs .nav-link.active { color:#fff; background:#1e1f22; box-shadow: inset 0 -2px 0 #3574f0; }
+    .term-wrap { background:#1e1f22; }
+    .term-body { color:#bcbec4; caret-color:#3574f0; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+    .term-dim { color:#6b7280; } .term-hit { color:#e8a54b; font-weight:600; } .term-cur { color:#3574f0; }
+    .term-err { color:#f2777a; }
+    .poc-code { display:block; outline:none; white-space:pre-wrap; word-break:break-word; }
+    .poc-code:focus { background:rgba(53,116,240,.06); box-shadow: inset 2px 0 0 #3574f0; }
+    .poc-out { display:block; }
+    #btn-run { --bs-btn-padding-y:.15rem; --bs-btn-padding-x:.7rem; --bs-btn-font-size:.82rem; }
+    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; vertical-align:middle; }
+  </style>
+</head>
+<body>
+<div class="vh-100 d-flex flex-column" style="overflow:hidden">
+
+  <!-- 상단 바 -->
+  <nav class="navbar navbar-dark bg-dark flex-shrink-0 px-3 py-2 border-bottom border-secondary">
+    <span class="navbar-brand mb-0 fs-6">공격 시연 (PoC) &nbsp;·&nbsp; 제출 #{{ sub.id }}</span>
+    <div class="d-flex align-items-center gap-3 small text-light">
+      <span class="text-secondary">점수 <span class="text-light">{{ sub.final_score|default:"—" }}</span>
+        {% if sub.grade %}· {{ sub.grade }}{% endif %}</span>
+      <span id="session-status"><span class="status-dot bg-secondary"></span> 세션 미시작</span>
+      <button id="btn-session" class="btn btn-sm btn-outline-light">세션 시작</button>
+      <button id="btn-session-stop" class="btn btn-sm btn-outline-warning d-none">세션 종료</button>
+      <a href="{% url 'submissions:result' pk=sub.id %}" class="link-light text-decoration-none">← 결과로</a>
+    </div>
+  </nav>
+
+  <form id="poc-csrf" class="d-none">{% csrf_token %}</form>
+
+  <!-- 작업 영역 -->
+  <div class="d-flex flex-grow-1" style="min-height:0">
+
+    <!-- ① 좌: 취약점 목록 -->
+    <aside class="d-flex flex-column border-end bg-body-tertiary" style="width:300px; min-width:300px">
+      <div class="px-3 py-2 border-bottom fw-semibold small">취약점</div>
+      <div class="list-group list-group-flush overflow-auto" style="min-height:0">
+        {% for it in items %}
+          {% if it.has_poc %}
+            <button data-poc="{{ it.check_id }}" class="list-group-item list-group-item-action d-flex align-items-center gap-2 py-2">
+              <span class="finding-sev {% if it.score == 0 %}bg-danger{% else %}bg-warning{% endif %}"></span>
+              <span class="flex-grow-1">
+                <div class="fw-semibold small">{{ it.label }}</div>
+                <div class="mockup-note text-muted">{{ it.owasp }} · 클릭 → 터미널</div>
+              </span>
+              <span class="badge {% if it.score == 0 %}bg-danger{% else %}bg-warning text-dark{% endif %}">{{ it.score|floatformat:0 }}</span>
+            </button>
+          {% else %}
+            <div class="list-group-item d-flex align-items-center gap-2 py-2 opacity-50">
+              <span class="finding-sev {% if it.passed %}bg-success{% elif it.score == 0 %}bg-danger{% else %}bg-warning{% endif %}"></span>
+              <span class="flex-grow-1">
+                <div class="small">{{ it.label }}</div>
+                <div class="mockup-note">{{ it.owasp }}{% if it.passed %} · 방어됨{% else %} · PoC 없음{% endif %}</div>
+              </span>
+              <span class="badge {% if it.passed %}bg-success{% else %}bg-secondary{% endif %}">{{ it.score|floatformat:0 }}</span>
+            </div>
+          {% endif %}
+        {% empty %}
+          <div class="list-group-item text-secondary small">표시할 항목이 없습니다.</div>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <!-- 우: 스테이지 -->
+    <main class="d-flex flex-column flex-grow-1" style="min-width:0">
+
+      <!-- ② 브라우저 속 브라우저 -->
+      <section class="d-flex flex-column border-bottom" style="flex:55 1 0; min-height:0">
+        <div class="d-flex align-items-center gap-2 px-2 py-2 border-bottom bg-body-tertiary">
+          <span class="btn btn-sm btn-light disabled px-2 py-0">↻</span>
+          <input id="browser-url" class="form-control form-control-sm font-monospace" value="about:blank" readonly>
+        </div>
+        <iframe id="browser-frame" class="flex-grow-1 border-0 browser-view" style="min-height:0"
+                sandbox="allow-scripts" srcdoc="&lt;div style='font:14px system-ui;color:#6b7482;padding:2rem'&gt;PoC를 실행하면 공격 결과 화면이 여기에 렌더됩니다.&lt;/div&gt;"></iframe>
+      </section>
+
+      <!-- ③ 터미널 -->
+      <section class="d-flex flex-column term-wrap" style="flex:45 1 0; min-height:0">
+        <ul class="nav nav-tabs poc-tabs overflow-auto mb-0 flex-shrink-0">
+          {% for t in terminals %}
+            <li class="nav-item">
+              <button class="nav-link {% if forloop.first %}active{% endif %} d-flex align-items-center gap-2" data-pane="{{ t.check_id }}">
+                <span class="bg-danger rounded" style="width:3px;height:15px"></span>
+                <span>{{ t.label }}</span>
+              </button>
+            </li>
+          {% empty %}
+            <li class="nav-item"><span class="nav-link disabled py-1 small">공격 가능한 취약점 없음</span></li>
+          {% endfor %}
+          {% if terminals %}
+            <li class="nav-item ms-auto d-flex align-items-center pe-2">
+              <button id="btn-run" class="btn btn-sm btn-primary" disabled title="세션을 먼저 시작하세요">실행</button>
+            </li>
+          {% endif %}
+        </ul>
+
+        {% for t in terminals %}
+          <pre class="poc-pane term-body m-0 p-2 font-monospace small flex-grow-1 overflow-auto {% if not forloop.first %}d-none{% endif %}"
+               data-pane="{{ t.check_id }}" tabindex="0"><span class="term-dim">attacker@poc:~$ vi poc_{{ t.check_id }}.py   (편집 후 [실행])</span>
+<code class="poc-code" contenteditable="true" spellcheck="false">{{ t.code }}</code><span class="poc-out"></span></pre>
+        {% empty %}
+          <div class="term-body flex-grow-1 d-flex align-items-center justify-content-center small text-secondary">
+            확인된(공격 가능한) 취약점이 없습니다.
+          </div>
+        {% endfor %}
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+  var POC = {
+    startUrl: "{% url 'submissions:poc_start' pk=sub.id %}",
+    runUrl: "{% url 'submissions:poc_run' pk=sub.id %}",
+    stopUrl: "{% url 'submissions:poc_stop' pk=sub.id %}",
+    csrf: (document.querySelector('#poc-csrf [name=csrfmiddlewaretoken]') || {}).value || "",
+    ready: false,
+  };
+
+  // -- tab switching (unchanged behaviour) --
+  function activatePane(id) {
+    document.querySelectorAll(".poc-tabs .nav-link[data-pane]").forEach(function (t) {
+      t.classList.toggle("active", t.dataset.pane === id);
+    });
+    document.querySelectorAll(".poc-pane").forEach(function (p) {
+      p.classList.toggle("d-none", p.dataset.pane !== id);
+    });
+  }
+  document.querySelectorAll(".poc-tabs .nav-link[data-pane]").forEach(function (t) {
+    t.addEventListener("click", function () { activatePane(t.dataset.pane); });
+  });
+  document.querySelectorAll("[data-poc]").forEach(function (el) {
+    el.addEventListener("click", function () { activatePane(el.dataset.poc); });
+  });
+
+  // -- session status --
+  var statusEl = document.getElementById("session-status");
+  var btnStart = document.getElementById("btn-session");
+  var btnStop = document.getElementById("btn-session-stop");
+  var btnRun = document.getElementById("btn-run");
+
+  function setStatus(state, msg) {
+    POC.ready = (state === "running");
+    var dot = "bg-secondary", text = "세션 미시작";
+    if (state === "booting") { dot = "bg-warning"; text = "부팅 중…"; }
+    else if (state === "running") { dot = "bg-success"; text = "실행 중"; }
+    else if (state === "error") { dot = "bg-danger"; text = "오류: " + (msg || ""); }
+    if (statusEl) {
+      statusEl.innerHTML = '<span class="status-dot ' + dot + '"></span> ' +
+        text.replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; });
+    }
+    if (btnRun) {
+      btnRun.disabled = !POC.ready;
+      btnRun.title = POC.ready ? "현재 탭의 PoC 실행" : "세션을 먼저 시작하세요";
+    }
+    if (btnStart) { btnStart.classList.toggle("d-none", state === "running" || state === "booting"); btnStart.disabled = (state === "booting"); }
+    if (btnStop) { btnStop.classList.toggle("d-none", state !== "running"); }
+  }
+
+  async function startSession() {
+    setStatus("booting");
+    try {
+      var res = await fetch(POC.startUrl, { method: "POST", headers: { "X-CSRFToken": POC.csrf } });
+      var data = await res.json();
+      if (data.ok && data.ready) { setStatus("running"); }
+      else { setStatus("error", data.error || "부팅 실패"); }
+    } catch (e) { setStatus("error", String(e)); }
+  }
+
+  async function stopSession() {
+    try { await fetch(POC.stopUrl, { method: "POST", headers: { "X-CSRFToken": POC.csrf } }); } catch (e) {}
+    setStatus("idle");
+  }
+
+  if (btnStart) btnStart.addEventListener("click", startSession);
+  if (btnStop) btnStop.addEventListener("click", stopSession);
+
+  // -- transcript rendering --
+  function appendLines(out, text, cls) {
+    var lines = (text || "").replace(/\s+$/, "").split("\n");
+    lines.forEach(function (line) {
+      var span = document.createElement("span");
+      if (line.indexOf("EXPLOITED") !== -1) span.className = "term-hit";
+      else if (cls) span.className = cls;
+      span.textContent = line + "\n";
+      out.appendChild(span);
+    });
+  }
+  function appendOutput(pane, stdout, stderr) {
+    var out = pane.querySelector(".poc-out");
+    var cmd = document.createElement("span");
+    cmd.className = "term-dim";
+    cmd.textContent = "\nattacker@poc:~$ python poc_" + pane.dataset.pane + ".py\n";
+    out.appendChild(cmd);
+    if (stdout) appendLines(out, stdout, null);
+    if (stderr && stderr.trim()) appendLines(out, stderr, "term-err");
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  function setBrowser(html, checkId) {
+    var frame = document.getElementById("browser-frame");
+    var urlBar = document.getElementById("browser-url");
+    if (frame) frame.srcdoc = html;
+    if (urlBar) urlBar.value = "http://target:5000  ·  poc_" + checkId;
+  }
+
+  async function runActive() {
+    if (!POC.ready) return;
+    var pane = document.querySelector(".poc-pane:not(.d-none)");
+    if (!pane) return;
+    var codeEl = pane.querySelector(".poc-code");
+    var code = codeEl ? codeEl.innerText : "";
+    btnRun.disabled = true;
+    var label = btnRun.textContent;
+    btnRun.textContent = "실행 중…";
+    try {
+      var res = await fetch(POC.runUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": POC.csrf },
+        body: JSON.stringify({ check_id: pane.dataset.pane, code: code }),
+      });
+      var data = await res.json();
+      if (!data.ok) { appendOutput(pane, "", data.error || "실행 실패"); }
+      else {
+        appendOutput(pane, data.stdout, data.stderr);
+        if (data.html) setBrowser(data.html, pane.dataset.pane);
+      }
+    } catch (e) { appendOutput(pane, "", String(e)); }
+    finally { btnRun.textContent = label; btnRun.disabled = !POC.ready; }
+  }
+  if (btnRun) btnRun.addEventListener("click", runActive);
+
+  // best-effort teardown when the operator leaves the console
+  window.addEventListener("pagehide", function () {
+    try {
+      var fd = new FormData();
+      fd.append("csrfmiddlewaretoken", POC.csrf);
+      navigator.sendBeacon(POC.stopUrl, fd);
+    } catch (e) {}
+  });
+
+  setStatus("idle");
+</script>
+</body>
+</html>

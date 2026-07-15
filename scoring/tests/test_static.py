@@ -12,10 +12,11 @@ import pytest
 
 from scoring.aggregate import combine_scores
 from scoring.config import load_config
-from scoring.controls import crypto, misconfig
-from scoring.controls import dependencies as dc
-from scoring.controls.injection import sql as sql_ctl
-from scoring.controls.injection import xss as xss_ctl
+from scoring.checks import A04_cryptographic_failures as crypto
+from scoring.checks import A02_security_misconfiguration as misconfig
+from scoring.checks import A03_supply_chain as dc
+from scoring.checks import A05_injection_sql as sql_ctl
+from scoring.checks import A05_injection_xss as xss_ctl
 from scoring.runner import run_static
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -57,10 +58,19 @@ def test_csrf_missing_flagged(gen_results):
     assert r.passed is False and r.score == 0.0
 
 
-def test_security_headers_and_cookie_flags_missing(gen_results):
-    # No baseline any more: omitting all headers/cookie flags scores 0.
+def test_security_headers_missing(gen_results):
+    # No baseline: omitting all response security headers scores 0.
     assert gen_results["security_headers"].score == 0.0
-    assert gen_results["cookie_flags"].score == 0.0
+
+
+def test_cookie_flags_credits_flask_default_httponly(gen_results):
+    # Flask sets the session cookie HttpOnly by DEFAULT, so a Flask-session app is
+    # credited for it even without explicit config (no false "HttpOnly missing").
+    # Only Secure + SameSite are genuinely absent here.
+    r = gen_results["cookie_flags"]
+    assert r.score == 34.0
+    assert not any("HttpOnly" in reason for reason in r.penalty_reasons)
+    assert any("Secure" in reason for reason in r.penalty_reasons)
 
 
 def test_weak_default_secret_flagged(gen_results):
