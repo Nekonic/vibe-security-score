@@ -465,12 +465,28 @@ def dynamic_cve(box, config) -> CheckResult:
     return result
 
 
+# ── registry entry points ──────────────────────────────────────────────────
+# Thin adapters: unpack the StaticContext for the core checks above. cve and
+# typosquatting take their weight from the dependencies POOL (via _pool_split, the
+# same split the dynamic CVE path uses), so they read config directly instead of the
+# runner-passed cfg — the one place a check's weight isn't in its own cfg subtree.
+def _cve(check, sctx, cfg):
+    dep_cfg = _pool_split(dict(sctx.config.static_dependencies), "cve")
+    return check_cve(sctx.requirements, dep_cfg, sctx.requirements_path, sctx.config)
+
+
+def _typosquatting(check, sctx, cfg):
+    dep_cfg = _pool_split(dict(sctx.config.static_dependencies), "typosquatting")
+    return check_typosquatting(sctx.requirements, dep_cfg)
+
+
+def _hallucinated_package(check, sctx, cfg):
+    return check_hallucinated_package(sctx.requirements, sctx.config)
+
+
 CHECKS = [
-    Check("cve", "의존성 CVE", "static", lambda sctx, cfg: check_cve(
-        sctx.requirements, _pool_split(dict(sctx.config.static_dependencies), "cve"),
-        sctx.requirements_path, sctx.config)),
-    Check("typosquatting", "오타 스쿼팅", "static", lambda sctx, cfg: check_typosquatting(
-        sctx.requirements, _pool_split(dict(sctx.config.static_dependencies), "typosquatting"))),
-    Check("hallucinated_package", "존재하지 않는 패키지", "static",
-            lambda sctx, cfg: check_hallucinated_package(sctx.requirements, sctx.config)),
+    Check("cve", "의존성 CVE", "static", _cve),
+    Check("typosquatting", "오타 스쿼팅", "static", _typosquatting),
+    Check("hallucinated_package", "존재하지 않는 패키지", "static", _hallucinated_package,
+          report_only=True),
 ]

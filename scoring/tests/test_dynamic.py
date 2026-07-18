@@ -16,7 +16,7 @@ import pytest
 from scoring.config import load_config
 from scoring.runner import run_dynamic
 
-_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Committed copy of a real codex-generated app (data/generated/* is gitignored).
 _APP_DIR = os.path.join(_REPO_ROOT, "samples", "vulnerable_board")
 

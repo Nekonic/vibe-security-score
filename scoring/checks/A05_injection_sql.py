@@ -1,11 +1,15 @@
-"""A05 Injection (SQL): the SQL-parameterization static check and the SQLi probe
-(sqlmap primary when dev-enabled, built-in oracle fallback).
+"""A05 Injection (SQL): the SQL-parameterization static check and the SQLi probe.
+
+The probe is authoritative-tool-first: in the default (non-dev) mode sqlmap decides,
+and the built-in requests oracle runs only to corroborate a clean sqlmap result — it
+is NOT a fallback for an absent tool (sqlmap that cannot run hard-fails; see
+``dynamic_sqli``). Only ``--dev`` uses the oracle alone, with no external tool.
 """
 from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -15,21 +19,22 @@ from ..shared.http import (
     DynamicContext, _body_text, _json_or_none, _looks_like_login_form, _scored_zero,
     _post_payload, _snip,
 )
-from ..shared.sources import Source, _balanced_arg, _clamp, _first_call_arg
-from .base import Check
+from ..shared.sources import _balanced_arg, _first_call_arg
+from .base import Check, result
 
 
-# sql_parameterization — execute()/executescript() with a string-built query.
+# ── sql_parameterization  (static) — execute()/executescript() with a string-
+# built query.
 _EXEC_CALL = re.compile(r"""\.\s*(execute|executescript)\s*\(""", re.IGNORECASE)
 
 
-def check_sql_parameterization(sources: Sequence[Source], cfg: dict) -> CheckResult:
+def check_sql_parameterization(check, sctx, cfg):
     penalty = float(cfg.get("penalty_per_raw_query", 40))
     score_ok = float(cfg.get("score_orm_or_parameterized", 100))
 
     reasons: List[str] = []
     evidence: List[str] = []
-    for path, text in sources:
+    for path, text in sctx.sources:
         for m in _EXEC_CALL.finditer(text):
             open_idx = text.index("(", m.end() - 1)
             arg = _balanced_arg(text, open_idx)
@@ -39,17 +44,8 @@ def check_sql_parameterization(sources: Sequence[Source], cfg: dict) -> CheckRes
                 reasons.append(f"{path}:{lineno} 문자열 조합 SQL을 execute()에 전달")
                 evidence.append(f"{path}:{lineno}: {arg.strip()[:160]}")
 
-    score = _clamp(score_ok - penalty * len(reasons))
-    return CheckResult(
-        check_id="sql_parameterization",
-        category="static",
-        label="SQL 파라미터화",
-        score=score,
-        weight=float(cfg.get("weight", 0)),
-        passed=not reasons,
-        penalty_reasons=reasons,
-        evidence=evidence,
-    )
+    return result(check, cfg, score=score_ok - penalty * len(reasons),
+                  passed=not reasons, reasons=reasons, evidence=evidence)
 
 
 def _is_string_built_sql(arg: str) -> bool:
@@ -67,7 +63,11 @@ def _is_string_built_sql(arg: str) -> bool:
     return False
 
 
-# sqli (dynamic)
+# sqli (dynamic). Opts out of standard handling (standard=False in CHECKS): outside
+# --dev this probe RAISES when sqlmap cannot run (see dynamic_sqli), and that hard-fail
+# must PROPAGATE out of run_dynamic/grade_submission as an operational error. The runner
+# wraps standard dynamic probes in try/except → it would swallow the raise into an
+# _undecidable skip. So this probe keeps its own signature and its own _scored_zero handling.
 def _row_count(resp: Optional[requests.Response]) -> Optional[int]:
     """Best-effort count of returned rows from JSON."""
     j = _json_or_none(resp)
@@ -101,20 +101,32 @@ _SQLI_LABEL = "SQL 인젝션(/search, /posts sort)"
 
 
 def dynamic_sqli(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
-    """SQLi verdict: sqlmap PRIMARY (if enabled+installed), built-in oracle FALLBACK."""
+    """SQLi verdict.
+
+    Default (non-dev): sqlmap is authoritative. If it CANNOT run (disabled/missing/
+    timeout/error) the dynamic phase FAILS HARD (raises) instead of silently
+    degrading to the built-in oracle — outside ``--dev`` a verdict must come from the
+    real tool. When sqlmap ran and found nothing, the built-in oracle still runs as
+    corroboration (it catches auth-bypass/error-based cases the shallow scan misses).
+
+    ``--dev`` (test level): no external tool — the built-in requests oracle alone.
+    """
     weight = float(cfg.get("weight", 16))
     label = _SQLI_LABEL
 
     if ctx.dev:
-        # --dev: use the built-in oracle instead of the external sqlmap CLI.
-        outcome = sqlmap_tool.SqlmapOutcome(ran=False, reason="--dev: 내장 오라클 사용(sqlmap 미실행)")
-    else:
-        try:
-            outcome = sqlmap_tool.run_sqlmap(ctx.base_url, ctx.sqlmap_cfg)
-        except Exception as exc:  # any surprise => fall back
-            outcome = sqlmap_tool.SqlmapOutcome(ran=False, reason=f"sqlmap 래퍼 예외({exc}) → 폴백")
+        return _sqli_builtin_oracle(ctx, cfg, weight, label, "--dev: 내장 오라클 사용(sqlmap 미실행)")
 
-    if outcome.ran and outcome.injectable:
+    outcome = sqlmap_tool.run_sqlmap(ctx.base_url, ctx.sqlmap_cfg)
+    if not outcome.ran:
+        # No tool result and not in --dev: refuse to fabricate a verdict. grade_submission
+        # lets this propagate as an operational failure (distinct from a boot failure).
+        raise RuntimeError(
+            f"sqlmap 실행 불가로 SQLi 판정 불가: {outcome.reason}. "
+            "sqlmap 설치·활성화 후 재실행하거나, 내장 오라클(테스트 수준)로 돌리려면 --dev 를 사용하세요."
+        )
+
+    if outcome.injectable:
         ev = ["path=sqlmap (primary)"] + [_snip(e) for e in outcome.evidence]
         return CheckResult(
             check_id="sqli", category="dynamic", label=label,
@@ -123,16 +135,17 @@ def dynamic_sqli(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
             evidence=ev, tool="sqlmap",
         )
 
-    fallback_note = outcome.reason or "내장 오라클 사용"
-    return _sqli_builtin_oracle(ctx, cfg, weight, label, fallback_note)
+    # sqlmap ran clean → corroborate with the built-in oracle (never a fallback for
+    # an absent tool; sqlmap already ran).
+    return _sqli_builtin_oracle(ctx, cfg, weight, label, outcome.reason or "sqlmap 인젝션 미검출")
 
 
 def _sqli_builtin_oracle(
-    ctx: DynamicContext, cfg: Dict[str, Any], weight: float, label: str, fallback_note: str
+    ctx: DynamicContext, cfg: Dict[str, Any], weight: float, label: str, note: str
 ) -> CheckResult:
     try:
         sess = ctx.userA.session if ctx.userA is not None else requests.Session()
-        evidence: List[str] = [_snip(f"path=requests-oracle (fallback: {fallback_note})")]
+        evidence: List[str] = [_snip(f"path=requests-oracle ({note})")]
         injection = False
         error_leak = False
 
@@ -221,6 +234,8 @@ def _sqli_builtin_oracle(
 
 CHECKS = [
     Check("sql_parameterization", "SQL 파라미터화", "static",
-            lambda sctx, cfg: check_sql_parameterization(sctx.sources, cfg)),
-    Check("sqli", _SQLI_LABEL, "dynamic", dynamic_sqli),
+          check_sql_parameterization),
+    # standard=False: outside --dev this probe RAISES when sqlmap can't run, and that
+    # hard-fail must propagate — the runner would otherwise wrap it into a skip.
+    Check("sqli", _SQLI_LABEL, "dynamic", dynamic_sqli, standard=False),
 ]

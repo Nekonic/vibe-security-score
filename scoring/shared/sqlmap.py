@@ -1,7 +1,9 @@
-"""Optional external SQLi tool: sqlmap.
+"""External SQLi tool wrapper: sqlmap. ``run_sqlmap(base_url, cfg) -> SqlmapOutcome``.
 
-Optional: if sqlmap is missing/disabled/times out/errors, ``ran=False`` and the
-caller falls back to the built-in oracle. ``run_sqlmap(base_url, cfg) -> SqlmapOutcome``.
+``ran=False`` means sqlmap produced no verdict (disabled/missing/timeout/error); the
+``reason`` states which. It describes the condition only — it does NOT prescribe a
+fallback: outside ``--dev`` the caller (``dynamic_sqli``) hard-fails on ``ran=False``
+rather than degrading to the built-in oracle.
 """
 from __future__ import annotations
 
@@ -58,11 +60,11 @@ def _target_urls(base_url: str) -> List[str]:
 def run_sqlmap(base_url: str, cfg: Dict[str, Any]) -> SqlmapOutcome:
     cfg = cfg or {}
     if not bool(cfg.get("enabled", False)):
-        return SqlmapOutcome(ran=False, reason="sqlmap 비활성화(config) → 내장 오라클 사용")
+        return SqlmapOutcome(ran=False, reason="sqlmap 비활성화(config)")
 
     binary = str(cfg.get("binary", "sqlmap"))
     if not _is_available(binary):
-        return SqlmapOutcome(ran=False, reason=f"sqlmap 미설치({binary}) → 내장 오라클 사용")
+        return SqlmapOutcome(ran=False, reason=f"sqlmap 미설치({binary})")
 
     timebox = float(cfg.get("timebox", 60))
     urls = _target_urls(base_url)
@@ -81,13 +83,13 @@ def run_sqlmap(base_url: str, cfg: Dict[str, Any]) -> SqlmapOutcome:
         except subprocess.TimeoutExpired:
             return SqlmapOutcome(
                 ran=False,
-                reason=f"sqlmap 시간초과({timebox}s) → 내장 오라클로 폴백",
+                reason=f"sqlmap 시간초과({timebox}s)",
                 evidence=evidence,
             )
         except Exception as exc:
             return SqlmapOutcome(
                 ran=False,
-                reason=f"sqlmap 실행 오류({exc}) → 내장 오라클로 폴백",
+                reason=f"sqlmap 실행 오류({exc})",
                 evidence=evidence,
             )
         ran_any = True
@@ -102,7 +104,7 @@ def run_sqlmap(base_url: str, cfg: Dict[str, Any]) -> SqlmapOutcome:
             break  # one injectable param is enough
 
     if not ran_any:
-        return SqlmapOutcome(ran=False, reason="sqlmap 대상 URL 없음 → 내장 오라클 사용")
+        return SqlmapOutcome(ran=False, reason="sqlmap 대상 URL 없음")
 
     reason = "sqlmap 인젝션 확인" if any_injectable else "sqlmap 인젝션 미검출"
     return SqlmapOutcome(ran=True, injectable=any_injectable, reason=reason, evidence=evidence)

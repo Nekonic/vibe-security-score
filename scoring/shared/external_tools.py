@@ -28,15 +28,25 @@ def _tool_cfg(config, name: str) -> dict:
 
 
 def missing_required_tools(config) -> List[str]:
-    """Enabled external tools whose binary is not installed. Empty in --dev
-    (built-in checks are used and no tool is required)."""
+    """External tools that cannot produce a verdict in the default (non-dev) mode,
+    so grading must abort at preflight rather than fail deep in a phase. Empty in
+    --dev (built-in checks replace them and nothing is required).
+
+    Reported when an enabled tool's binary is absent. sqlmap is additionally
+    reported when DISABLED: unlike the other tools it does not degrade to a skipped
+    result — ``dynamic_sqli`` hard-fails when sqlmap cannot run — so in non-dev it
+    must be enabled AND installed, and a disabled sqlmap is caught here instead of
+    raising after the sandbox has already booted."""
     if getattr(config, "dev", False):
         return []
     missing: List[str] = []
     for name in _REQUIRED_TOOLS:
         tcfg = _tool_cfg(config, name)
-        if bool(tcfg.get("enabled", False)) and not resolve_binary(tcfg.get("binary", name)):
-            missing.append(str(tcfg.get("binary", name)))
+        binary = str(tcfg.get("binary", name))
+        if name == "sqlmap" and not bool(tcfg.get("enabled", False)):
+            missing.append(f"{binary}(비활성화)")
+        elif bool(tcfg.get("enabled", False)) and not resolve_binary(binary):
+            missing.append(binary)
     return missing
 
 

@@ -15,6 +15,7 @@ from scoring.checks import A04_cryptographic_failures as crypto
 from scoring.checks import A03_supply_chain as dependencies
 from scoring.checks import sast
 from scoring.checks.A03_supply_chain import parse_requirements
+from scoring.runner import StaticContext
 
 _HERE = os.path.dirname(__file__)
 _STUBS = os.path.join(_HERE, "stubs")
@@ -24,6 +25,17 @@ _APP_DIR = os.path.join(_REPO_ROOT, "samples", "vulnerable_board")  # committed 
 
 def _stub(name: str) -> str:
     return os.path.join(_STUBS, name)
+
+
+def _by_id(module, cid):
+    """The real Check declared by a family module (carries id/label/flags), so a
+    direct-call test scores exactly as production does."""
+    return next(c for c in module.CHECKS if c.id == cid)
+
+
+def _sctx(app_dir: str, config: Config) -> StaticContext:
+    return StaticContext(sources=[], templates=[], requirements=[],
+                         requirements_path=None, app_dir=app_dir, config=config)
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +56,7 @@ def _config_with_tool(base: Config, tool: str, **overrides) -> Config:
 # ---------------------------------------------------------------------------
 def test_gitleaks_skipped_when_binary_missing(base_config):
     cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary="definitely-not-here-xyz")
-    r = crypto.check_gitleaks_secrets(_APP_DIR, cfg)
+    r = crypto.check_gitleaks_secrets(_by_id(crypto, "gitleaks_secrets"), _sctx(_APP_DIR, cfg), {})
     assert r.skipped is True
     assert r.weight == 0.0
     assert r.tool == "gitleaks"
@@ -53,7 +65,7 @@ def test_gitleaks_skipped_when_binary_missing(base_config):
 
 def test_semgrep_skipped_when_disabled(base_config):
     cfg = _config_with_tool(base_config, "semgrep", enabled=False)
-    r = sast.check_semgrep(_APP_DIR, cfg)
+    r = sast.check_semgrep(_by_id(sast, "semgrep"), _sctx(_APP_DIR, cfg), {})
     assert r.skipped is True
     assert r.weight == 0.0
     assert r.tool == "semgrep"
@@ -108,7 +120,7 @@ def test_osv_stub_applies_critical_penalty(base_config):
 
 def test_gitleaks_stub_surfaces_secret(base_config):
     cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary=_stub("gitleaks_stub.py"))
-    r = crypto.check_gitleaks_secrets(_APP_DIR, cfg)
+    r = crypto.check_gitleaks_secrets(_by_id(crypto, "gitleaks_secrets"), _sctx(_APP_DIR, cfg), {})
     assert r.skipped is False
     assert r.weight == 0.0           # report-only, never moves the score
     assert r.tool == "gitleaks"
@@ -120,7 +132,7 @@ def test_gitleaks_stub_surfaces_secret(base_config):
 
 def test_semgrep_stub_surfaces_finding(base_config):
     cfg = _config_with_tool(base_config, "semgrep", enabled=True, binary=_stub("semgrep_stub.py"))
-    r = sast.check_semgrep(_APP_DIR, cfg)
+    r = sast.check_semgrep(_by_id(sast, "semgrep"), _sctx(_APP_DIR, cfg), {})
     assert r.skipped is False
     assert r.weight == 0.0
     assert r.tool == "semgrep"

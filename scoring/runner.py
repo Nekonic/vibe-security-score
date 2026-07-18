@@ -16,6 +16,7 @@ from typing import List, Optional
 from . import registry
 from .config import Config
 from .checks import A03_supply_chain as dependencies
+from .checks.base import resolve_cfg, _undecidable
 from .models import CheckResult
 from .shared.http import DynamicContext, _scored_zero
 from .shared.sandbox import Sandbox
@@ -75,7 +76,11 @@ def run_static(app_dir: str, config: Config, on_check=None) -> List[CheckResult]
     checks_cfg = config.static_checks
     results: List[CheckResult] = []
     for c in registry.by_phase("static"):
-        results.append(c.fn(sctx, checks_cfg.get(c.id, {})))
+        # Static exceptions are infrastructure errors — NOT swallowed (원칙 5 예외 ②).
+        if c.standard:
+            results.append(c.fn(c, sctx, resolve_cfg(config, c)))
+        else:
+            results.append(c.fn(sctx, checks_cfg.get(c.id, {})))
         if on_check:
             on_check(c.label)  # progress tick
     return results
@@ -157,8 +162,15 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
 
         for c in rest:
             if time.monotonic() >= deadline:
-                weight = float((dyn_cfg.get(c.id, {}) or {}).get("weight", 0))
-                checks.append(_scored_zero(c.id, c.label, weight, "동적 검사 전체 시간 예산 초과"))
+                checks.append(_undecidable(c, resolve_cfg(config, c), "동적 검사 전체 시간 예산 초과"))
+            elif c.standard:
+                # Standard probes carry pure logic; the runner owns exception wrapping
+                # (원칙 5). sqli opts out (standard=False) — its hard-fail must propagate.
+                cfg = resolve_cfg(config, c)
+                try:
+                    checks.append(c.fn(c, ctx, cfg))
+                except Exception as exc:
+                    checks.append(_undecidable(c, cfg, f"{c.label} 프로브 예외: {exc}"))
             else:
                 checks.append(c.fn(ctx, dyn_cfg.get(c.id, {})))
             if on_check:

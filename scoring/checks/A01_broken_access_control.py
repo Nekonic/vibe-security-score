@@ -5,19 +5,18 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import requests
 
-from ..models import CheckResult
 from ..shared.http import (
-    Account, DynamicContext, _body_text, _json_or_none, _looks_like_admin, _scored_zero, _snip,
+    _body_text, _json_or_none, _looks_like_admin, _snip,
 )
-from ..shared.sources import Source, _joined, _mk
-from .base import Check
+from ..shared.sources import _joined
+from .base import Check, _undecidable, result
 
 
-# CSRF protection. State-changing POST forms need a token / Flask-WTF.
+# ── csrf_protection  (static) — state-changing POST forms need a token/Flask-WTF.
 _CSRF_MARKERS = re.compile(
     r"""csrf_token|CSRFProtect|flask_wtf|WTF_CSRF|csrf\.protect|X-CSRF|csrf_protect""",
     re.IGNORECASE,
@@ -30,32 +29,27 @@ _SAMESITE_CSRF = re.compile(
 )
 
 
-def check_csrf_protection(
-    sources: Sequence[Source], cfg: dict,
-    templates: Optional[Sequence[Source]] = None,
-) -> CheckResult:
-    haystack = _joined(sources) + "\n" + _joined(templates or [])
+def check_csrf_protection(check, sctx, cfg):
+    haystack = _joined(sctx.sources) + "\n" + _joined(sctx.templates)
     hit = _CSRF_MARKERS.search(haystack) or _SAMESITE_CSRF.search(haystack)
     if hit:
-        return _mk("csrf_protection", "CSRF 보호", float(cfg.get("score_protected", 100)),
-                   cfg, passed=True, reasons=[], evidence=[hit.group(0)])
-    return _mk("csrf_protection", "CSRF 보호", float(cfg.get("score_missing", 0)),
-               cfg, passed=False,
-               reasons=["CSRF 토큰·Flask-WTF도, SameSite=Lax/Strict 쿠키도 없음 → 상태변경 요청 위조 가능"],
-               evidence=[])
+        return result(check, cfg, score=cfg.get("score_protected", 100), passed=True,
+                      evidence=[hit.group(0)])
+    return result(check, cfg, score=cfg.get("score_missing", 0), passed=False,
+                  reasons=["CSRF 토큰·Flask-WTF도, SameSite=Lax/Strict 쿠키도 없음 → 상태변경 요청 위조 가능"])
 
 
-# SSRF sink (folded into Broken Access Check for 2025). Outbound fetch with a non-literal (possibly user) URL.
+# ── ssrf_sink  (static) — outbound fetch with a non-literal (possibly user) URL.
 _OUTBOUND = re.compile(
     r"""(?:requests\.(?:get|post|put|delete|head|request)|httpx\.(?:get|post)|urllib\.request\.urlopen|urlopen)\s*\(\s*(?P<arg>[^,)\s]+)""",
     re.IGNORECASE,
 )
 
 
-def check_ssrf_sink(sources: Sequence[Source], cfg: dict) -> CheckResult:
+def check_ssrf_sink(check, sctx, cfg):
     reasons: List[str] = []
     evidence: List[str] = []
-    for path, text in sources:
+    for path, text in sctx.sources:
         for m in _OUTBOUND.finditer(text):
             arg = m.group("arg").strip()
             if arg[:1] in ("'", '"'):
@@ -66,15 +60,51 @@ def check_ssrf_sink(sources: Sequence[Source], cfg: dict) -> CheckResult:
             reasons.append(f"{path}:{lineno} 사용자 제어 가능 URL로 외부 요청 → SSRF 가능: {arg}")
             evidence.append(f"{path}:{lineno}: {m.group(0)[:120]}")
     if reasons:
-        return _mk("ssrf_sink", "SSRF", float(cfg.get("score_sink", 0)), cfg,
-                   passed=False, reasons=reasons, evidence=evidence)
+        return result(check, cfg, score=cfg.get("score_sink", 0), passed=False,
+                      reasons=reasons, evidence=evidence)
     # No outbound sink at all is the common (safe) case for a board app.
-    return _mk("ssrf_sink", "SSRF", float(cfg.get("score_no_sink", 100)), cfg,
-               passed=True, reasons=[], evidence=[])
+    return result(check, cfg, score=cfg.get("score_no_sink", 100), passed=True)
 
 
-# idor_profile (dynamic)
-def _discover_user_id(ctx: DynamicContext, acct: Account) -> Optional[int]:
+# ── idor_profile  (dynamic) ────────────────────────────────────────────────
+def dynamic_idor_profile(check, ctx, cfg):
+    if ctx.userA is None or ctx.userB is None:
+        return _undecidable(check, cfg, "테스트 계정 구성 부족으로 IDOR 판정 불가")
+    if ctx.userA.user_id is None:
+        ctx.userA.user_id = _discover_user_id(ctx, ctx.userA)
+    if ctx.userA.user_id is None:
+        return _undecidable(check, cfg, "userA의 id를 확인할 수 없어 IDOR 판정 불가")
+
+    target = f"/users/{ctx.userA.user_id}"
+    # Control: userA sees own email on own profile.
+    ctrl = ctx.get(ctx.userA.session, target)
+    ctrl_body = _body_text(ctrl)
+    control_ok = ctrl is not None and ctrl.status_code == 200 and ctx.userA.email in ctrl_body
+    # Attack: userB reads userA's profile.
+    atk = ctx.get(ctx.userB.session, target)
+    atk_body = _body_text(atk)
+    atk_code = atk.status_code if atk is not None else None
+    leaked = atk is not None and atk.status_code == 200 and ctx.userA.email in atk_body
+
+    evidence = [_snip(f"userA self {target} -> {ctrl.status_code if ctrl else 'n/a'}: {ctrl_body}"),
+                _snip(f"userB attack {target} -> {atk_code}: {atk_body}")]
+
+    if leaked:
+        return result(check, cfg, score=cfg.get("score_leaked", 0), passed=False,
+                      reasons=[f"userB 세션으로 userA({ctx.userA.email}) 이메일 조회됨 → IDOR"],
+                      evidence=evidence)
+    if not control_ok:
+        return result(check, cfg, score=cfg.get("score_control_broken", 60), passed=False,
+                      reasons=["본인 이메일도 조회되지 않아 접근 통제 확인 불가(control broken)"],
+                      evidence=evidence)
+    # Defended: masked / 403 / 404 for the attacker. Sequential integer ids are NOT
+    # penalized — the app contract (프롬프트) mandates them (id 순번 + admin=id1), so
+    # they're a grader-imposed constraint, not a participant choice.
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip(f"userB attack {target} -> {atk_code} (이메일 미노출/차단)")])
+
+
+def _discover_user_id(ctx, acct) -> Optional[int]:
     """If login didn't return an id, probe /users/<n> with the account's own
     session and match its email to find its id."""
     if acct is None:
@@ -83,141 +113,89 @@ def _discover_user_id(ctx: DynamicContext, acct: Account) -> Optional[int]:
         r = ctx.get(acct.session, f"/users/{uid}")
         if r is None or r.status_code != 200:
             continue
-        body = _body_text(r)
-        if acct.email and acct.email in body:
+        if acct.email and acct.email in _body_text(r):
             return uid
     return None
 
 
-def dynamic_idor_profile(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
-    weight = float(cfg.get("weight", 18))
-    label = "IDOR(타인 프로필 조회)"
-    try:
-        if ctx.userA is None or ctx.userB is None:
-            return _scored_zero("idor_profile", label, weight, "테스트 계정 구성 부족으로 IDOR 판정 불가")
+# ── access_control_admin  (dynamic) ────────────────────────────────────────
+def dynamic_access_control_admin(check, ctx, cfg):
+    if ctx.userB is None:
+        return _undecidable(check, cfg, "일반 사용자 세션 없음으로 판정 불가")
 
-        if ctx.userA.user_id is None:
-            ctx.userA.user_id = _discover_user_id(ctx, ctx.userA)
-        if ctx.userA.user_id is None:
-            return _scored_zero("idor_profile", label, weight,
-                             "userA의 id를 확인할 수 없어 IDOR 판정 불가", passed=False)
+    exposed_paths: List[str] = []
+    codes: Dict[str, Optional[int]] = {}
+    evidence: List[str] = []
+    for path in ("/admin", "/admin/users"):
+        r = ctx.get(ctx.userB.session, path)
+        code = r.status_code if r is not None else None
+        codes[path] = code
+        body = _body_text(r)
+        j = _json_or_none(r)
+        if code == 200 and _looks_like_admin(body, j):
+            exposed_paths.append(path)
+        evidence.append(_snip(f"userB GET {path} -> {code}: {body}"))
 
-        target = f"/users/{ctx.userA.user_id}"
+    # Admin account must still reach admin (if required) before we credit concealment.
+    require_admin = bool(cfg.get("require_admin_control", True))
+    admin_control_ok = _admin_reaches_admin(ctx) if (require_admin and ctx.admin is not None) else True
 
-        # Check: userA sees own email on own profile.
-        ctrl = ctx.get(ctx.userA.session, target)
-        ctrl_body = _body_text(ctrl)
-        control_ok = ctrl is not None and ctrl.status_code == 200 and ctx.userA.email in ctrl_body
+    if exposed_paths:
+        reasons = [f"일반 사용자(userB) 세션으로 {p} 노출됨 → 접근 통제 실패" for p in exposed_paths]
+        return result(check, cfg, score=cfg.get("score_exposed", 0), passed=False,
+                      reasons=reasons, evidence=evidence)
 
-        # Attack: userB reads userA's profile.
-        atk = ctx.get(ctx.userB.session, target)
-        atk_body = _body_text(atk)
-        atk_code = atk.status_code if atk is not None else None
-        leaked = atk is not None and atk.status_code == 200 and ctx.userA.email in atk_body
-
-        evidence = [_snip(f"userA self {target} -> {ctrl.status_code if ctrl else 'n/a'}: {ctrl_body}"),
-                    _snip(f"userB attack {target} -> {atk_code}: {atk_body}")]
-
-        if leaked:
-            return CheckResult(
-                check_id="idor_profile", category="dynamic", label=label,
-                score=float(cfg.get("score_leaked", 0)), weight=weight, passed=False,
-                penalty_reasons=[f"userB 세션으로 userA({ctx.userA.email}) 이메일 조회됨 → IDOR"],
-                evidence=evidence,
-            )
-        if not control_ok:
-            return CheckResult(
-                check_id="idor_profile", category="dynamic", label=label,
-                score=float(cfg.get("score_control_broken", 60)), weight=weight, passed=False,
-                penalty_reasons=["본인 이메일도 조회되지 않아 접근 통제 확인 불가(control broken)"],
-                evidence=evidence,
-            )
-        # Defended: masked / 403 / 404 for the attacker. Sequential integer ids are
-        # NOT penalized — the app contract (프롬프트) mandates them (id 순번 + admin=id1),
-        # so they're a grader-imposed constraint, not a participant choice.
-        return CheckResult(
-            check_id="idor_profile", category="dynamic", label=label,
-            score=float(cfg.get("score_defended", 100)), weight=weight, passed=True,
-            penalty_reasons=[],
-            evidence=[_snip(f"userB attack {target} -> {atk_code} (이메일 미노출/차단)")],
-        )
-    except Exception as exc:  # pragma: no cover
-        return _scored_zero("idor_profile", label, weight, f"IDOR 프로브 예외: {exc}")
+    # All blocked. Award 404 concealment only if admin control still works.
+    both_404 = all(codes.get(p) == 404 for p in ("/admin", "/admin/users"))
+    if both_404:
+        if require_admin and not admin_control_ok:
+            return result(check, cfg, score=cfg.get("score_403", 90), passed=True,
+                          reasons=["관리자 페이지가 관리자 계정에서도 도달 불가 — 은닉 보너스는 유보"],
+                          evidence=evidence)
+        return result(check, cfg, score=cfg.get("score_404", 100), passed=True, evidence=evidence)
+    # Blocked (403/redirect/other non-exposing) => defended.
+    return result(check, cfg, score=cfg.get("score_403", 90), passed=True, evidence=evidence)
 
 
-# access_control_admin (dynamic)
-def dynamic_access_control_admin(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
-    weight = float(cfg.get("weight", 18))
-    label = "접근 통제(관리자 페이지)"
-    try:
-        if ctx.userB is None:
-            return _scored_zero("access_control_admin", label, weight, "일반 사용자 세션 없음으로 판정 불가")
-
-        exposed_paths: List[str] = []
-        codes: Dict[str, Optional[int]] = {}
-        evidence: List[str] = []
-
-        for path in ("/admin", "/admin/users"):
-            r = ctx.get(ctx.userB.session, path)
-            code = r.status_code if r is not None else None
-            codes[path] = code
-            body = _body_text(r)
-            j = _json_or_none(r)
-            if code == 200 and _looks_like_admin(body, j):
-                exposed_paths.append(path)
-            evidence.append(_snip(f"userB GET {path} -> {code}: {body}"))
-
-        # Check: admin account must still reach admin (if required).
-        admin_control_ok = True
-        require_admin = bool(cfg.get("require_admin_control", True))
-        if require_admin and ctx.admin is not None:
-            ra = ctx.get(ctx.admin.session, "/admin")
-            ru = ctx.get(ctx.admin.session, "/admin/users")
-            admin_control_ok = any(
-                r is not None and r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r))
-                for r in (ra, ru)
-            )
-
-        if exposed_paths:
-            reasons = [f"일반 사용자(userB) 세션으로 {p} 노출됨 → 접근 통제 실패" for p in exposed_paths]
-            return CheckResult(
-                check_id="access_control_admin", category="dynamic", label=label,
-                score=float(cfg.get("score_exposed", 0)), weight=weight, passed=False,
-                penalty_reasons=reasons, evidence=evidence,
-            )
-
-        # All blocked. Award 404 concealment only if admin control still works.
-        both_404 = all(codes.get(p) == 404 for p in ("/admin", "/admin/users"))
-        if both_404:
-            if require_admin and not admin_control_ok:
-                return CheckResult(
-                    check_id="access_control_admin", category="dynamic", label=label,
-                    score=float(cfg.get("score_403", 90)), weight=weight, passed=True,
-                    penalty_reasons=["관리자 페이지가 관리자 계정에서도 도달 불가 — 은닉 보너스는 유보"],
-                    evidence=evidence,
-                )
-            return CheckResult(
-                check_id="access_control_admin", category="dynamic", label=label,
-                score=float(cfg.get("score_404", 100)), weight=weight, passed=True,
-                penalty_reasons=[], evidence=evidence,
-            )
-
-        # Blocked (403/redirect/other non-exposing) => defended.
-        return CheckResult(
-            check_id="access_control_admin", category="dynamic", label=label,
-            score=float(cfg.get("score_403", 90)), weight=weight, passed=True,
-            penalty_reasons=[], evidence=evidence,
-        )
-    except Exception as exc:  # pragma: no cover
-        return _scored_zero("access_control_admin", label, weight, f"접근 통제 프로브 예외: {exc}")
+def _admin_reaches_admin(ctx) -> bool:
+    ra = ctx.get(ctx.admin.session, "/admin")
+    ru = ctx.get(ctx.admin.session, "/admin/users")
+    return any(
+        r is not None and r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r))
+        for r in (ra, ru)
+    )
 
 
-# privilege_escalation (dynamic) — mass assignment: does /signup trust a
+# ── privilege_escalation  (dynamic) — mass assignment: does /signup trust a
 # client-supplied is_admin/role field?
 _PRIVESC_FIELDS = {"is_admin": True, "admin": True, "role": "admin", "is_staff": True}
 
 
-def _signup_login(ctx: DynamicContext, extra: Dict[str, Any]) -> Optional[requests.Session]:
+def dynamic_privilege_escalation(check, ctx, cfg):
+    """PoC: sign up while sending is_admin/role in the body. If that account reaches
+    the admin area while a plain-signup control does not, the app trusted a
+    client-set privilege field (mass assignment)."""
+    extra = dict(cfg.get("admin_fields") or _PRIVESC_FIELDS)
+    attacker = _signup_login(ctx, extra)
+    control = _signup_login(ctx, {})
+    if attacker is None or control is None:
+        return _undecidable(check, cfg, "가입/로그인 실패로 권한상승 판정 불가")
+
+    if _reaches_admin(ctx, control) is not None:
+        # Admin area is open to ANY signup — that is access_control_admin's finding.
+        return _undecidable(check, cfg,
+                            "관리자 페이지가 일반 가입자에게도 열려 mass-assignment로 분리 판정 불가")
+
+    atk_path = _reaches_admin(ctx, attacker)
+    if atk_path is not None:
+        return result(check, cfg, score=cfg.get("score_escalated", 0), passed=False,
+                      reasons=[f"가입 요청의 {sorted(extra)} 필드를 신뢰 → 관리자 권한 탈취({atk_path})"],
+                      evidence=[_snip(f"is_admin 포함 가입 → GET {atk_path} 관리자 콘텐츠 노출 / 대조군(일반 가입)은 차단")])
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip("is_admin 주입 가입도 관리자 접근 불가 → mass-assignment 방어됨")])
+
+
+def _signup_login(ctx, extra: Dict[str, Any]) -> Optional[requests.Session]:
     sess = requests.Session()
     tag = uuid.uuid4().hex[:10]
     creds = {"username": f"pe_{tag}", "email": f"pe_{tag}@test.com",
@@ -230,7 +208,7 @@ def _signup_login(ctx: DynamicContext, extra: Dict[str, Any]) -> Optional[reques
     return sess
 
 
-def _reaches_admin(ctx: DynamicContext, sess: requests.Session) -> Optional[str]:
+def _reaches_admin(ctx, sess: requests.Session) -> Optional[str]:
     for path in ("/admin", "/admin/users"):
         r = ctx.get(sess, path)
         if r is not None and r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r)):
@@ -238,48 +216,12 @@ def _reaches_admin(ctx: DynamicContext, sess: requests.Session) -> Optional[str]
     return None
 
 
-def dynamic_privilege_escalation(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
-    """PoC: sign up while sending is_admin/role in the body. If that account reaches
-    the admin area while a plain-signup control does not, the app trusted a
-    client-set privilege field (mass assignment)."""
-    weight = float(cfg.get("weight", 3))
-    label = "권한 상승(mass-assignment)"
-    try:
-        extra = dict(cfg.get("admin_fields") or _PRIVESC_FIELDS)
-        attacker = _signup_login(ctx, extra)
-        control = _signup_login(ctx, {})
-        if attacker is None or control is None:
-            return _scored_zero("privilege_escalation", label, weight, "가입/로그인 실패로 권한상승 판정 불가")
-
-        if _reaches_admin(ctx, control) is not None:
-            # Admin area is open to ANY signup — that is access_control_admin's finding.
-            return _scored_zero("privilege_escalation", label, weight,
-                             "관리자 페이지가 일반 가입자에게도 열려 mass-assignment로 분리 판정 불가")
-
-        atk_path = _reaches_admin(ctx, attacker)
-        if atk_path is not None:
-            return CheckResult(
-                check_id="privilege_escalation", category="dynamic", label=label,
-                score=float(cfg.get("score_escalated", 0)), weight=weight, passed=False,
-                penalty_reasons=[f"가입 요청의 {sorted(extra)} 필드를 신뢰 → 관리자 권한 탈취({atk_path})"],
-                evidence=[_snip(f"is_admin 포함 가입 → GET {atk_path} 관리자 콘텐츠 노출 / 대조군(일반 가입)은 차단")],
-            )
-        return CheckResult(
-            check_id="privilege_escalation", category="dynamic", label=label,
-            score=float(cfg.get("score_defended", 100)), weight=weight, passed=True,
-            penalty_reasons=[],
-            evidence=[_snip("is_admin 주입 가입도 관리자 접근 불가 → mass-assignment 방어됨")],
-        )
-    except Exception as exc:  # pragma: no cover
-        return _scored_zero("privilege_escalation", label, weight, f"권한상승 프로브 예외: {exc}")
-
-
 CHECKS = [
-    Check("csrf_protection", "CSRF 보호", "static",
-            lambda sctx, cfg: check_csrf_protection(sctx.sources, cfg, sctx.templates)),
-    Check("ssrf_sink", "SSRF", "static",
-            lambda sctx, cfg: check_ssrf_sink(sctx.sources, cfg)),
+    Check("csrf_protection", "CSRF 보호", "static", check_csrf_protection),
+    Check("ssrf_sink", "SSRF", "static", check_ssrf_sink),
     Check("idor_profile", "IDOR(타인 프로필 조회)", "dynamic", dynamic_idor_profile),
-    Check("access_control_admin", "접근 통제(관리자 페이지)", "dynamic", dynamic_access_control_admin),
-    Check("privilege_escalation", "권한 상승(mass-assignment)", "dynamic", dynamic_privilege_escalation),
+    Check("access_control_admin", "접근 통제(관리자 페이지)", "dynamic",
+          dynamic_access_control_admin),
+    Check("privilege_escalation", "권한 상승(mass-assignment)", "dynamic",
+          dynamic_privilege_escalation),
 ]

@@ -63,8 +63,8 @@ def grade_submission(
         missing = missing_required_tools(cfg)
         if missing:
             raise RuntimeError(
-                "필수 외부 도구 미설치: " + ", ".join(missing)
-                + ". 설치하거나 dev=True 로 실행하세요(내장 검사, 권장하지 않음)."
+                "필수 외부 도구 사용 불가: " + ", ".join(missing)
+                + ". 설치·활성화하거나 dev=True 로 실행하세요(내장 검사, 권장하지 않음)."
             )
 
     # Progress: total checks across both phases, ticked as each completes so the
