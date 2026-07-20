@@ -10,14 +10,26 @@ import os
 
 import pytest
 
-from scoring.aggregate import combine_scores
+from scoring.engine import combine_scores
 from scoring.config import load_config
 from scoring.checks import A04_cryptographic_failures as crypto
 from scoring.checks import A02_security_misconfiguration as misconfig
 from scoring.checks import A03_supply_chain as dc
 from scoring.checks import A05_injection_sql as sql_ctl
 from scoring.checks import A05_injection_xss as xss_ctl
-from scoring.runner import run_static
+from scoring.engine import StaticContext, run_static
+
+
+def _by_id(module, cid):
+    """The real Check declared by a family module (carries id/label/flags), so a
+    direct-call test scores exactly as production does."""
+    return next(c for c in module.CHECKS if c.id == cid)
+
+
+def _sctx(sources=(), templates=(), app_dir="", config=None):
+    return StaticContext(sources=list(sources), templates=list(templates),
+                         requirements=[], requirements_path=None,
+                         app_dir=app_dir, config=config)
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Committed copy of a real codex-generated app (data/generated/* is gitignored).
@@ -73,22 +85,26 @@ def test_cookie_flags_credits_flask_default_httponly(gen_results):
     assert any("Secure" in reason for reason in r.penalty_reasons)
 
 
-def test_weak_default_secret_flagged(gen_results):
-    # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback.
-    r = gen_results["weak_default_secret"]
-    assert r.passed is False and r.score == 0.0
+def test_hardcoded_secret_flagged(gen_results):
+    # SECRET_KEY is hardcoded in app.py => flagged. The literal is a strong random
+    # value (not a known dev/default token), so weak_default_secret separately passes.
+    assert gen_results["hardcoded_secret"].passed is False
+    assert gen_results["hardcoded_secret"].score == 0.0
+    assert gen_results["weak_default_secret"].score == 100.0
 
 
 def test_security_logging_missing(gen_results):
     assert gen_results["security_logging"].passed is False
 
 
-def test_injection_and_hashing_pass(gen_results):
-    # A competent generated app gets these right => full marks.
+def test_injection_flagged_hashing_passes(gen_results):
+    # This baseline hashes passwords (good) but string-builds a query and renders a
+    # post body with |safe (bad) => the injection statics flag it, hashing stays full.
     assert gen_results["password_hashing"].score == 100.0
-    assert gen_results["sql_parameterization"].score == 100.0
-    assert gen_results["xss_template"].score == 100.0
-    assert gen_results["hardcoded_secret"].score == 100.0  # secret read from env
+    assert gen_results["sql_parameterization"].passed is False
+    assert gen_results["sql_parameterization"].score == 20.0
+    assert gen_results["xss_template"].passed is False
+    assert gen_results["xss_template"].score == 65.0
 
 
 def test_cve_flags_pinned_flask(gen_results):
@@ -127,11 +143,14 @@ def test_csp_is_bucketed_into_xss(gen_results):
 
 
 def test_critical_penalties_subtract_from_final(config, gen_results):
-    # debug=True (RCE), weak_default_secret (auth bypass), missing CSRF are
-    # app-wide-exploitable => they come straight off the final score, not averaged.
+    # debug=True (RCE) and missing CSRF are app-wide-exploitable => they come
+    # straight off the final score, not averaged. (hardcoded_secret is NOT critical
+    # here: its key is strong, so the live session-forgery PoC can't confirm it — it
+    # stays a minor static finding by design.)
     grade = combine_scores(list(gen_results.values()), config)
     hit = {p.check_id: p.penalty for p in grade.critical_penalties}
-    assert "debug_true" in hit and "weak_default_secret" in hit and "csrf_protection" in hit
+    assert "debug_true" in hit and "csrf_protection" in hit
+    assert "hardcoded_secret" not in hit
     assert grade.raw_score > grade.score
     assert abs((grade.raw_score - sum(hit.values())) - grade.score) < 0.01
     # Each penalty carries a severity + repro so the deduction is defensible.
@@ -198,23 +217,30 @@ def _clean_sources():
 
 
 def test_clean_hardcoded_secret_env_ok(config):
-    r = crypto.check_hardcoded_secret(_clean_sources(), config.static_checks["hardcoded_secret"])
+    r = crypto.check_hardcoded_secret(_by_id(crypto, "hardcoded_secret"),
+                                      _sctx(sources=_clean_sources()),
+                                      config.static_checks["hardcoded_secret"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_debug_ok(config):
-    r = misconfig.check_debug_true(_clean_sources(), config.static_checks["debug_true"])
+    r = misconfig.check_debug_true(_by_id(misconfig, "debug_true"),
+                                   _sctx(sources=_clean_sources()),
+                                   config.static_checks["debug_true"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_password_hashing_strong(config):
     cfg = config.static_checks["password_hashing"]
-    r = crypto.check_password_hashing(_clean_sources(), cfg)
+    r = crypto.check_password_hashing(_by_id(crypto, "password_hashing"),
+                                      _sctx(sources=_clean_sources()), cfg)
     assert r.passed is True and r.score == float(cfg["score_strong"])
 
 
 def test_clean_sql_parameterized(config):
-    r = sql_ctl.check_sql_parameterization(_clean_sources(), config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(_by_id(sql_ctl, "sql_parameterization"),
+                                           _sctx(sources=_clean_sources()),
+                                           config.static_checks["sql_parameterization"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -222,7 +248,9 @@ def test_sql_fstring_bound_param_is_safe(config):
     # An f-string used ONLY as a bound parameter (LIKE wildcard) is safe — the query
     # itself uses ? placeholders. Must not be flagged (regression: false positive).
     src = [("s.py", 'db.execute("SELECT * FROM p WHERE title LIKE ?", (f"%{q}%",))')]
-    r = sql_ctl.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(_by_id(sql_ctl, "sql_parameterization"),
+                                           _sctx(sources=src),
+                                           config.static_checks["sql_parameterization"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -230,22 +258,30 @@ def test_sql_string_built_query_flagged(config):
     # A query assembled from user input IS injection — still flagged (the fix only
     # spares bound params, never the query string itself).
     src = [("s.py", 'db.execute(f"SELECT * FROM users WHERE id={uid}")')]
-    r = sql_ctl.check_sql_parameterization(src, config.static_checks["sql_parameterization"])
+    r = sql_ctl.check_sql_parameterization(_by_id(sql_ctl, "sql_parameterization"),
+                                           _sctx(sources=src),
+                                           config.static_checks["sql_parameterization"])
     assert r.passed is False and r.score < 100.0
 
 
 def test_clean_xss_ok(config):
-    r = xss_ctl.check_xss_template(_clean_sources(), config.static_checks["xss_template"])
+    r = xss_ctl.check_xss_template(_by_id(xss_ctl, "xss_template"),
+                                   _sctx(sources=_clean_sources()),
+                                   config.static_checks["xss_template"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_cookie_flags_full(config):
-    r = crypto.check_cookie_flags(_clean_sources(), config.static_checks["cookie_flags"])
+    r = crypto.check_cookie_flags(_by_id(crypto, "cookie_flags"),
+                                  _sctx(sources=_clean_sources()),
+                                  config.static_checks["cookie_flags"])
     assert r.passed is True and r.score == 100.0
 
 
 def test_clean_security_headers_full(config):
-    r = misconfig.check_security_headers(_clean_sources(), config.static_checks["security_headers"])
+    r = misconfig.check_security_headers(_by_id(misconfig, "security_headers"),
+                                         _sctx(sources=_clean_sources()),
+                                         config.static_checks["security_headers"])
     assert r.passed is True and r.score == 100.0
 
 
@@ -266,7 +302,9 @@ _CLEAN_TEMPLATE = (
 
 def test_xss_template_safe_filter_fails(config):
     cfg = config.static_checks["xss_template"]
-    r = xss_ctl.check_xss_template([], cfg, templates=[("templates/posts.html", _DIRTY_TEMPLATE)])
+    r = xss_ctl.check_xss_template(
+        _by_id(xss_ctl, "xss_template"),
+        _sctx(templates=[("templates/posts.html", _DIRTY_TEMPLATE)]), cfg)
     assert r.passed is False
     joined = " ".join(r.penalty_reasons)
     assert "templates/posts.html:2" in joined and "safe" in joined
@@ -275,7 +313,9 @@ def test_xss_template_safe_filter_fails(config):
 
 def test_xss_clean_template_passes(config):
     cfg = config.static_checks["xss_template"]
-    r = xss_ctl.check_xss_template([], cfg, templates=[("templates/posts.html", _CLEAN_TEMPLATE)])
+    r = xss_ctl.check_xss_template(
+        _by_id(xss_ctl, "xss_template"),
+        _sctx(templates=[("templates/posts.html", _CLEAN_TEMPLATE)]), cfg)
     assert r.passed is True and r.score == 100.0
 
 
@@ -285,7 +325,7 @@ def test_xss_render_template_string_still_dirty(config):
             'from flask import render_template_string, request\n'
             'def v():\n'
             '    return render_template_string("<b>" + request.args.get("x") + "</b>")\n')]
-    r = xss_ctl.check_xss_template(src, cfg)
+    r = xss_ctl.check_xss_template(_by_id(xss_ctl, "xss_template"), _sctx(sources=src), cfg)
     assert r.passed is False
     assert any("render_template_string" in reason for reason in r.penalty_reasons)
 
@@ -317,7 +357,7 @@ def test_hardcoded_secret_positive_forms(config):
         "app.config['SECRET_KEY']=\"w\"\n"
         'SECRET_KEY: "v"\n',
     )]
-    r = crypto.check_hardcoded_secret(src, cfg)
+    r = crypto.check_hardcoded_secret(_by_id(crypto, "hardcoded_secret"), _sctx(sources=src), cfg)
     assert r.passed is False
     assert len(r.penalty_reasons) == 5
 

@@ -100,6 +100,18 @@ def test_ratelimit_raises_with_retry_after(tmp_path):
     assert _count_codexgen_workdirs() == before
 
 
+def test_failed_command_with_429_not_misread_as_ratelimit(tmp_path):
+    # A failed self-test command whose output contains HTTP 429 / 'rate limit' is the
+    # generated app's own code, NOT a Codex rate limit. Generation must SUCCEED, not
+    # raise RateLimitError and re-queue forever (regression: transcript #26).
+    cfg = _make_config("noisy_ok", tmp_path=tmp_path)
+    outdir = generate("sub_noisy", _PARTICIPANT_PROMPT, config=cfg)
+    assert (outdir / "app.py").is_file()
+    tpath = tmp_path / "transcripts" / "sub_noisy" / "transcript.json"
+    data = json.loads(tpath.read_text(encoding="utf-8"))
+    assert data["outcome"] == "success"
+
+
 def test_timeout_raises_and_leaves_no_child(tmp_path):
     cfg = _make_config("timeout", timeout=2.0, tmp_path=tmp_path)
     before = _count_codexgen_workdirs()

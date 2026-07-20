@@ -11,12 +11,14 @@ import requests
 from ..models import CheckResult
 from ..shared.http import (
     DynamicContext, _body_text, _json_or_none, _login_payload, _looks_like_login_form,
-    _scored_zero, _post_payload, _signup_payload, _snip,
+    _post_payload, _signup_payload, _snip,
 )
-from .base import Check
+from .base import Check, result
 
 
-# functional (drives the gate)
+# functional (drives the gate). Opts out of standard handling (standard=False in
+# CHECKS): the runner calls it specially with an injected "require" key and reads
+# .passed to drive the gate cap, and its exception must PROPAGATE (원칙 5 예외 ①).
 def dynamic_functional(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     """signup A/B/admin, login each, A creates a post. Score = pass-rate over the
     ``require`` gate steps (in cfg); ``passed`` is the gate verdict the runner caps
@@ -129,45 +131,35 @@ def dynamic_functional(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
     return result
 
 
-# weak_password_policy — signup with a trivial password must fail.
-def dynamic_weak_password_policy(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
-    weight = float(cfg.get("weight", 8))
-    label = "비밀번호 정책"
-    try:
-        weak = str(cfg.get("weak_password", "123"))
-        tag = uuid.uuid4().hex[:8]
-        uname, mail = f"weakpw-{tag}", f"weakpw-{tag}@test.com"
-        r = ctx.post(requests.Session(), "/signup",
-                     {"username": uname, "email": mail, "name": "Weak", "password": weak})
-        # 2xx alone isn't acceptance — form apps re-render the signup form with HTTP
-        # 200 on a rejected password. Confirm the weak account was really created by
-        # logging in with it; only a reached authenticated state proves no policy.
-        accepted = False
-        if r is not None and r.status_code in (200, 201):
-            login = ctx.post(requests.Session(), "/login",
-                             {"username": uname, "email": mail, "password": weak})
-            accepted = (
-                login is not None and 200 <= login.status_code < 400
-                and not _looks_like_login_form(_body_text(login))
-            )
-        if accepted:
-            return CheckResult(
-                check_id="weak_password_policy", category="dynamic", label=label,
-                score=float(cfg.get("score_weak", 0)), weight=weight, passed=False,
-                penalty_reasons=[f"취약한 비밀번호({weak!r})로 가입·로그인 성공 → 비밀번호 정책 없음"],
-                evidence=[_snip(f"signup weak-pw -> {r.status_code}, 이후 로그인 성공")],
-            )
-        code = "무응답" if r is None else f"HTTP {r.status_code}"
-        return CheckResult(
-            check_id="weak_password_policy", category="dynamic", label=label,
-            score=float(cfg.get("score_enforced", 100)), weight=weight, passed=True,
-            penalty_reasons=[], evidence=[_snip(f"취약한 비밀번호 거부됨(가입 실패/로그인 불가, signup {code})")],
+# ── weak_password_policy  (dynamic) — signup with a trivial password must fail.
+def dynamic_weak_password_policy(check, ctx, cfg):
+    weak = str(cfg.get("weak_password", "123"))
+    tag = uuid.uuid4().hex[:8]
+    uname, mail = f"weakpw-{tag}", f"weakpw-{tag}@test.com"
+    r = ctx.post(requests.Session(), "/signup",
+                 {"username": uname, "email": mail, "name": "Weak", "password": weak})
+    # 2xx alone isn't acceptance — form apps re-render the signup form with HTTP 200
+    # on a rejected password. Confirm the weak account was really created by logging
+    # in with it; only a reached authenticated state proves no policy.
+    accepted = False
+    if r is not None and r.status_code in (200, 201):
+        login = ctx.post(requests.Session(), "/login",
+                         {"username": uname, "email": mail, "password": weak})
+        accepted = (
+            login is not None and 200 <= login.status_code < 400
+            and not _looks_like_login_form(_body_text(login))
         )
-    except Exception as exc:  # pragma: no cover
-        return _scored_zero("weak_password_policy", label, weight, f"비밀번호 정책 프로브 예외: {exc}")
+    if accepted:
+        return result(check, cfg, score=cfg.get("score_weak", 0), passed=False,
+                      reasons=[f"취약한 비밀번호({weak!r})로 가입·로그인 성공 → 비밀번호 정책 없음"],
+                      evidence=[_snip(f"signup weak-pw -> {r.status_code}, 이후 로그인 성공")])
+    code = "무응답" if r is None else f"HTTP {r.status_code}"
+    return result(check, cfg, score=cfg.get("score_enforced", 100), passed=True,
+                  evidence=[_snip(f"취약한 비밀번호 거부됨(가입 실패/로그인 불가, signup {code})")])
 
 
 CHECKS = [
-    Check("functional", "기능 게이트(회원가입/로그인/글작성)", "dynamic", dynamic_functional),
+    Check("functional", "기능 게이트(회원가입/로그인/글작성)", "dynamic", dynamic_functional,
+          standard=False),
     Check("weak_password_policy", "비밀번호 정책", "dynamic", dynamic_weak_password_policy),
 ]

@@ -1,16 +1,36 @@
-{% extends "base.html" %}{% block body %}
-<h1>게시판</h1>
-<form method="post" action="/posts">
-  <input name="title" placeholder="제목" required>
-  <textarea name="content" placeholder="내용" required></textarea>
-  <button>작성</button>
-</form>
-{% if q is defined %}<p class="muted">검색: {{ q }}</p>{% endif %}
-{% for p in posts %}
-  <article class="post">
-    <h2>{{ p.title }}</h2>
-    <p>{{ p.content }}</p>
-    <p class="muted">작성자: <a href="/users/{{ p.author_id }}">{{ p.author }}</a></p>
-  </article>
-{% else %}<p>글이 없습니다.</p>{% endfor %}
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h2>{% if is_search %}검색 결과{% else %}게시글 목록{% endif %}</h2>
+    {% if is_search %}
+      <p>검색어: <strong>{{ query }}</strong></p>
+    {% endif %}
+    <form method="get" action="{{ url_for('search') }}">
+      <input name="q" value="{{ query or '' }}" placeholder="검색어">
+      <div class="row">
+        <select name="sort" class="inline">
+          <option value="newest" {% if sort=='newest' %}selected{% endif %}>최신순</option>
+          <option value="oldest" {% if sort=='oldest' %}selected{% endif %}>오래된순</option>
+          <option value="title" {% if sort=='title' %}selected{% endif %}>제목순</option>
+        </select>
+        <button type="submit" class="inline">검색</button>
+      </div>
+    </form>
+
+    <form method="post" action="{{ url_for('list_posts') }}">
+      <input name="title" placeholder="제목">
+      <textarea name="content" rows="3" placeholder="내용"></textarea>
+      <button type="submit">글쓰기</button>
+    </form>
+  </div>
+
+  {% for p in posts %}
+    <div class="card">
+      <h3 class="post-title"><a href="{{ url_for('post_detail', post_id=p['id']) }}">{{ p['title'] }}</a></h3>
+      <p class="small muted">작성자: {{ p['author'] }} · {{ p['created_at'] }}</p>
+      <p>{{ p['content']|nl2br }}</p>
+    </div>
+  {% else %}
+    <p>게시글이 없습니다.</p>
+  {% endfor %}
 {% endblock %}

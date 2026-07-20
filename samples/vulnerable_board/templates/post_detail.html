@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h2>{{ post['title'] }}</h2>
+    <p class="small muted">작성자: {{ post['author'] }} | {{ post['created_at'] }}</p>
+    <div>{{ content_html|safe }}</div>
+
+    {% if current_user and (current_user['is_admin'] or current_user['id'] == post['author_id']) %}
+    <details>
+      <summary>수정</summary>
+      <form method="post" action="{{ url_for('post_detail', post_id=post['id']) }}">
+        <input type="hidden" name="_method" value="PATCH">
+        <input name="title" placeholder="새 제목" value="{{ post['title'] }}">
+        <textarea name="content" rows="4">{{ post['content'] }}</textarea>
+        <button type="submit">저장</button>
+      </form>
+      <form method="post" action="{{ url_for('post_detail', post_id=post['id']) }}">
+        <input type="hidden" name="_method" value="DELETE">
+        <button type="submit">삭제</button>
+      </form>
+    </details>
+    {% endif %}
+
+    <hr>
+    <h3>댓글</h3>
+    {% for c in comments %}
+      <div class="comment"><strong>{{ c['author'] }}</strong>: {{ c['content'] }}</div>
+    {% else %}
+      <p class="muted">댓글이 없습니다.</p>
+    {% endfor %}
+
+    {% if current_user %}
+      <form method="post" action="{{ url_for('add_comment', post_id=post['id']) }}">
+        <textarea name="content" rows="3" placeholder="댓글"></textarea>
+        <button type="submit">등록</button>
+      </form>
+    {% else %}
+      <p class="muted">댓글은 로그인 후 작성할 수 있습니다.</p>
+    {% endif %}
+  </div>
+{% endblock %}

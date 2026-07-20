@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -253,26 +254,48 @@ def _parse_jsonl(stdout: str) -> List[Dict[str, Any]]:
     return [obj for obj in map(_parse_line, stdout.splitlines()) if obj is not None]
 
 
-def _looks_like_error_event(ev: Dict[str, Any]) -> bool:
-    """A codex JSONL event that carries a failure — as opposed to an agent message
-    or generated file/command output (which, for a SECURITY app, legitimately
-    contains phrases like 'rate limit' and must NOT trip rate-limit detection)."""
+# Item types whose payload is MODEL-controlled (shell commands the agent ran, files
+# it wrote, and their output = the generated project). Their text legitimately
+# contains '429', 'rate limit', etc., so it must NEVER feed rate-limit detection —
+# even when the item FAILED. A failing self-test command is a generation problem, not
+# a Codex rate limit. (See data/codex_transcripts/26: a failed command_execution whose
+# app code contained HTTP 429 was misread as a 429 rate limit and re-queued forever.)
+_MODEL_ITEM_TYPES = frozenset({
+    "command_execution", "local_shell_call", "function_call", "custom_tool_call",
+    "file_change", "patch_apply", "apply_patch", "mcp_tool_call", "web_search_call",
+})
+
+
+def _is_transport_error_event(ev: Dict[str, Any]) -> bool:
+    """True only for Codex's OWN transport/API/turn errors — the events that carry a
+    real rate-limit signal. A failed model tool call (command_execution, patch, …) is
+    excluded: its payload is the generated project, not Codex's error channel."""
+    item = ev.get("item")
+    if isinstance(item, dict) and str(item.get("type", "")).lower() in _MODEL_ITEM_TYPES:
+        return False
     t = str(ev.get("type", "")).lower()
     if "error" in t or "fail" in t:
         return True
     if ev.get("error"):
         return True
-    item = ev.get("item")
     if isinstance(item, dict) and str(item.get("status", "")).lower() in ("failed", "error"):
         return True
     return False
 
 
+def _signal_matches(sig: str, haystack: str) -> bool:
+    """Substring match, but bounded so a signal made only of digits (e.g. '429')
+    can't match inside a longer run of word chars (an id, offset, or timestamp like
+    'item_3429'). Real rate-limit text ('error 429', '429:', 'Rate limit') still hits."""
+    return re.search(r"(?<!\w)" + re.escape(sig) + r"(?!\w)", haystack) is not None
+
+
 def _hit_rate_limit(stdout: str, stderr: str, signals: Sequence[str]) -> Optional[str]:
-    """Match rate-limit signals ONLY in error channels: stderr, JSONL error events,
-    and non-JSONL stdout noise (crash/usage text). The generated app's code and the
-    agent's summary are EXCLUDED — otherwise a board app that implements 'rate
-    limiting' would be misread as a rate-limited generation and re-queued forever."""
+    """Match rate-limit signals ONLY in Codex's own error channels: stderr, transport/
+    API error events, and non-JSONL stdout noise (crash/usage text). The generated
+    app's code, the agent's summary, and failed shell-command output are EXCLUDED —
+    otherwise a board app that implements 'rate limiting' (or returns HTTP 429) would
+    be misread as a rate-limited generation and re-queued forever."""
     if not signals:
         return None
     parts: List[str] = [stderr or ""]
@@ -280,11 +303,11 @@ def _hit_rate_limit(stdout: str, stderr: str, signals: Sequence[str]) -> Optiona
         obj = _parse_line(line)
         if obj is None:
             parts.append(line)  # unparseable stdout = likely raw error/usage text
-        elif _looks_like_error_event(obj):
+        elif _is_transport_error_event(obj):
             parts.append(json.dumps(obj, ensure_ascii=False))
     haystack = "\n".join(parts).lower()
     for sig in signals:
-        if sig and sig in haystack:
+        if sig and _signal_matches(sig, haystack):
             return sig
     return None
 

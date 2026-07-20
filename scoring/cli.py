@@ -5,10 +5,9 @@ import argparse
 import json
 import sys
 
-from .aggregate import combine_scores
 from .config import load_config
+from .engine import combine_scores, run_dynamic, run_static
 from .shared.external_tools import missing_required_tools
-from .runner import run_dynamic, run_static
 
 
 def _load(config_path: str | None, dev: bool = False):
