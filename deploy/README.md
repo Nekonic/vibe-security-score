@@ -40,10 +40,14 @@ cd /opt/vibe-security-score
 sudo -u vibe uv sync --extra prod --no-dev
 ```
 
-## 3. 샌드박스 이미지 빌드 (참가자 앱 실행용)
+## 3. Docker 이미지 빌드
+
+참가자 앱을 격리 실행하는 **샌드박스** 이미지(채점 필수)와, 운영자 PoC 콘솔이 공격 코드를
+격리 실행하는 **공격** 이미지(결과 페이지의 PoC 데모용) 둘 다 빌드한다.
 
 ```bash
 sudo -u vibe docker build -t vibe-sec-sandbox:latest sandbox/
+sudo -u vibe docker build -f sandbox/attack/Dockerfile -t vibe-sec-attack:latest .
 ```
 
 ## 3.5 채점 외부 도구 (필수)
@@ -144,6 +148,8 @@ journalctl -u vibe-grader-worker -f                 # 워커 로그
   sudo -u vibe --preserve-env uv run python manage.py collectstatic --noinput
   sudo systemctl restart vibe-grader-web vibe-grader-worker
   ```
+  `sandbox/`(entrypoint·Dockerfile·sitecustomize) 또는 `sandbox/attack/`가 바뀐 업데이트면 해당
+  이미지를 다시 빌드한다(3장) — 재시작만으론 반영되지 않는다.
 - **Codex 세션 만료**: 워커가 감지해 `journalctl`에 `OPERATOR ALERT` 로그를 남긴다.
   `codex login`으로 재로그인한 뒤, 해당 제출을 **다시 제출**한다. (결과 페이지의 **재채점**은
   기존 생성 코드를 다시 채점할 뿐 Codex를 재호출하지 않으므로, 생성 자체가 실패해 코드가 없는
