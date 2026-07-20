@@ -4,11 +4,11 @@ from __future__ import annotations
 from typing import List, Optional
 
 from . import progress as _progress
-from . import registry
 from .aggregate import combine_scores
-from .config import Config, load_config
-from .models import CheckResult, GradeResult
 from .runner import run_static
+from ..checks import by_phase
+from ..config import Config, load_config
+from ..models import CheckResult, GradeResult
 
 
 def _flatten_findings(result: GradeResult) -> List[dict]:
@@ -58,7 +58,7 @@ def grade_submission(
     if dev:
         cfg.dev = True
     if not cfg.dev:
-        from .shared.external_tools import missing_required_tools
+        from ..shared.external_tools import missing_required_tools
 
         missing = missing_required_tools(cfg)
         if missing:
@@ -69,8 +69,8 @@ def grade_submission(
 
     # Progress: total checks across both phases, ticked as each completes so the
     # result page can show "몇 % · 어느 검사 중". Best-effort (never breaks grading).
-    n_static = len(registry.by_phase("static"))
-    n_dynamic = 0 if static_only else len(registry.by_phase("dynamic")) + 1  # +1 = CVE recompute
+    n_static = len(by_phase("static"))
+    n_dynamic = 0 if static_only else len(by_phase("dynamic")) + 1  # +1 = CVE recompute
     total = n_static + n_dynamic
     _state = {"done": 0}
 

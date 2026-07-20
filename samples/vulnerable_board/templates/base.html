@@ -1,20 +1,50 @@
 <!doctype html>
 <html lang="ko">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Board</title>
-  <style>
-    body{font-family:system-ui,sans-serif;max-width:880px;margin:32px auto;padding:0 16px;line-height:1.5}
-    nav{display:flex;gap:12px;margin-bottom:24px} input,textarea{display:block;width:100%;max-width:520px;margin:6px 0 12px;padding:8px}
-    button{padding:8px 12px}.post{border-top:1px solid #ddd;padding:14px 0}.muted{color:#666}
-  </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Flask Board</title>
+    <style>
+        body { font-family: Arial, Helvetica, sans-serif; margin: 0; background: #f4f7fb; }
+        header { background: #1f2937; color: #fff; padding: 12px 16px; }
+        main { max-width: 920px; margin: 0 auto; padding: 20px; }
+        .card { background: #fff; border: 1px solid #dce3ee; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .topnav a { color: #dbeafe; margin-right: 12px; text-decoration: none; }
+        .muted { color: #6b7280; }
+        .error { color: #b91c1c; }
+        .ok { color: #065f46; }
+        form { margin-top: 8px; }
+        input, textarea, button { padding: 8px; width: 100%; box-sizing: border-box; margin: 4px 0; }
+        .row { display: flex; gap: 8px; }
+        .inline { width: auto; }
+        .post-title { font-size: 1.2rem; margin: 0; }
+        .comment { padding: 8px; background: #f9fafb; border: 1px solid #e5e7eb; margin-bottom: 6px; }
+        .small { font-size: 0.9rem; }
+    </style>
 </head>
 <body>
-  <nav>
-    <a href="/posts">글</a><a href="/signup">가입</a><a href="/login">로그인</a><a href="/admin">관리</a>
-    <form action="/search" method="get"><input name="q" placeholder="검색"></form>
-  </nav>
-  {% block body %}{% endblock %}
+<header>
+  <div class="topnav">
+    <a href="{{ url_for('list_posts') }}">게시글</a>
+    <a href="{{ url_for('search') }}?q=">검색</a>
+    <a href="{{ url_for('signup') }}">회원가입</a>
+    <a href="{{ url_for('login') }}">로그인</a>
+    {% if current_user %}
+      <span class="muted">{{ current_user['username'] }}</span>
+      <form class="inline" method="post" action="{{ url_for('logout') }}" style="display:inline-block">
+        <button class="inline" type="submit">로그아웃</button>
+      </form>
+      <a href="{{ url_for('user_profile', user_id=current_user['id']) }}">프로필</a>
+      {% if current_user['is_admin'] %}
+        <a href="{{ url_for('admin_dashboard') }}">관리자</a>
+      {% endif %}
+    {% endif %}
+  </div>
+</header>
+<main>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if ok %}<p class="ok">{{ ok }}</p>{% endif %}
+    {% block content %}{% endblock %}
+</main>
 </body>
 </html>

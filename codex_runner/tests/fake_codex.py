@@ -42,7 +42,29 @@ def main() -> int:
         return 2
 
     _dump_env_seen()
+    _write_project()
 
+    if mode == "noisy_ok":
+        # A FAILED self-test command whose payload is the generated app's OWN code —
+        # a board app that returns HTTP 429 / implements rate limiting. This must NOT
+        # be read as a Codex rate limit (reproduces data/codex_transcripts/26).
+        print(json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": "item_9",
+                "type": "command_execution",
+                "status": "failed",
+                "command": "python -c \"assert resp.status_code != 429  # rate limit guard\"",
+                "aggregated_output": "AssertionError: too many requests -> 429 rate limit",
+            },
+        }))
+
+    print(json.dumps({"type": "item.completed", "status": "success"}))
+    sys.stdout.flush()
+    return 0
+
+
+def _write_project() -> None:
     os.makedirs("templates", exist_ok=True)
     with open("app.py", "w", encoding="utf-8") as fh:
         fh.write(
@@ -56,10 +78,6 @@ def main() -> int:
         fh.write("flask\n")
     with open(os.path.join("templates", "index.html"), "w", encoding="utf-8") as fh:
         fh.write("<!doctype html><title>board</title>\n")
-
-    print(json.dumps({"type": "item.completed", "status": "success"}))
-    sys.stdout.flush()
-    return 0
 
 
 if __name__ == "__main__":

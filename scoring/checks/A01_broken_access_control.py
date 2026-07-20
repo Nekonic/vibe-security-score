@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from ..shared.http import (
-    _body_text, _json_or_none, _looks_like_admin, _snip,
+    _body_text, _json_or_none, _looks_like_admin, _post_payload, _snip, create_post_id,
 )
 from ..shared.sources import _joined
 from .base import Check, _undecidable, result
@@ -216,6 +216,91 @@ def _reaches_admin(ctx, sess: requests.Session) -> Optional[str]:
     return None
 
 
+# ── object_authorization  (dynamic) — BOLA: can userB modify userA's post? ──
+def dynamic_object_authorization(check, ctx, cfg):
+    """userA writes a post; userA can edit it (positive control); userB must NOT.
+    A userB edit/delete that LANDS (verified by a fresh GET of the object, never
+    the write response) is broken object-level authorization."""
+    if ctx.userA is None or ctx.userB is None:
+        return _undecidable(check, cfg, "테스트 계정 부족으로 객체 인가 판정 불가")
+
+    tag = "bola-" + uuid.uuid4().hex[:10]
+    pid = create_post_id(ctx, ctx.userA.session, tag, tag)
+    if pid is None:
+        return _undecidable(check, cfg, "userA 글 생성/식별 실패로 판정 불가")
+
+    # Positive control: the owner can edit their own post. If not, the edit feature
+    # is absent/broken and we cannot fairly test the attacker — skip, don't accuse.
+    if not _edit_lands(ctx, ctx.userA.session, pid):
+        return _undecidable(check, cfg, "작성자 본인도 수정이 안 돼 판정 불가(수정 기능 없음/실패)")
+
+    attacker_text = "bola-atk-" + uuid.uuid4().hex[:8]
+    if _edit_lands(ctx, ctx.userB.session, pid, attacker_text):
+        return result(check, cfg, score=cfg.get("score_broken", 0), passed=False,
+                      reasons=[f"userB가 userA 글(id={pid})을 수정 → 객체 수준 인가 실패(BOLA)"],
+                      evidence=[_snip(f"userB PUT /posts/{pid} → 이후 GET에 공격자 내용 반영")])
+
+    if _delete_lands(ctx, ctx.userB.session, pid):
+        return result(check, cfg, score=cfg.get("score_broken", 0), passed=False,
+                      reasons=[f"userB가 userA 글(id={pid})을 삭제 → 객체 수준 인가 실패(BOLA)"],
+                      evidence=[_snip(f"userB DELETE /posts/{pid} → 글이 사라짐(404)")])
+
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip(f"userB의 글 {pid} 수정·삭제 시도 모두 차단됨")])
+
+
+def _edit_lands(ctx, sess, pid: int, new_text: Optional[str] = None) -> bool:
+    """PUT/PATCH the post, then confirm the change on a FRESH GET of the object
+    (not the write response — a rejected write may still echo the input)."""
+    new_text = new_text or ("owner-edit-" + uuid.uuid4().hex[:8])
+    payload = _post_payload(f"bola-edit-{new_text}", new_text)
+    for verb in (ctx.put, ctx.patch):
+        r = verb(sess, f"/posts/{pid}", payload)
+        if r is None or r.status_code >= 500:
+            continue
+        if new_text in _body_text(ctx.get(sess, f"/posts/{pid}")):
+            return True
+    return False
+
+
+def _delete_lands(ctx, sess, pid: int) -> bool:
+    """DELETE the post, judged solely by the object 404-ing afterward (a strong,
+    low-false-positive signal); a soft-delete that keeps 200 counts as blocked."""
+    before = ctx.get(sess, f"/posts/{pid}")
+    if before is None or before.status_code == 404:
+        return False
+    if ctx.delete(sess, f"/posts/{pid}") is None:
+        return False
+    after = ctx.get(sess, f"/posts/{pid}")
+    return after is not None and after.status_code == 404
+
+
+# ── admin_user_mgmt  (dynamic) — a normal user must not run admin user-management.
+def dynamic_admin_user_mgmt(check, ctx, cfg):
+    """PoC: userB calls the role-change endpoint on ITSELF, then checks whether it
+    now reaches /admin. Effect-based (an actual self-promotion), so a soft-deny 200
+    from the endpoint isn't a false hit. Non-destructive — touches no other account."""
+    if ctx.userB is None:
+        return _undecidable(check, cfg, "일반 사용자 세션 없음으로 판정 불가")
+    # If the admin area is already open to any user, that is access_control_admin's
+    # finding — don't double-judge (would double-penalize the same defect).
+    if _reaches_admin(ctx, ctx.userB.session) is not None:
+        return _undecidable(check, cfg, "관리자 페이지가 일반 사용자에게 이미 열려 별도 판정 불가")
+
+    uid = ctx.userB.user_id or _discover_user_id(ctx, ctx.userB)
+    if uid is None:
+        return _undecidable(check, cfg, "userB id 확인 불가로 판정 불가")
+
+    ctx.post(ctx.userB.session, f"/admin/users/{uid}/role", {"role": "admin", "is_admin": True})
+    reached = _reaches_admin(ctx, ctx.userB.session)
+    if reached is not None:
+        return result(check, cfg, score=cfg.get("score_exposed", 0), passed=False,
+                      reasons=[f"userB가 /admin/users/{uid}/role 로 스스로 관리자 승격 → 관리자 사용자관리 인가 실패"],
+                      evidence=[_snip(f"일반 사용자 역할변경 후 {reached} 관리자 접근 획득")])
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip("일반 사용자의 역할 변경 시도가 관리자 권한으로 이어지지 않음")])
+
+
 CHECKS = [
     Check("csrf_protection", "CSRF 보호", "static", check_csrf_protection),
     Check("ssrf_sink", "SSRF", "static", check_ssrf_sink),
@@ -224,4 +309,8 @@ CHECKS = [
           dynamic_access_control_admin),
     Check("privilege_escalation", "권한 상승(mass-assignment)", "dynamic",
           dynamic_privilege_escalation),
+    Check("object_authorization", "객체 인가(BOLA·글 수정/삭제)", "dynamic",
+          dynamic_object_authorization),
+    Check("admin_user_mgmt", "관리자 사용자관리 인가", "dynamic",
+          dynamic_admin_user_mgmt),
 ]

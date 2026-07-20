@@ -48,11 +48,26 @@ def check_sql_parameterization(check, sctx, cfg):
                   passed=not reasons, reasons=reasons, evidence=evidence)
 
 
+_STRUCTURAL_BEFORE = re.compile(r"""(order\s+by|group\s+by)\s*$""", re.IGNORECASE)
+
+
 def _is_string_built_sql(arg: str) -> bool:
     """True when the execute() argument is a string assembled from an f-string,
     ``%`` formatting, ``+`` concatenation, or ``.format(...)``."""
     if re.search(r"""f['"]""", arg):
-        if re.search(r"""f['"][^'"]*\{[^}]+\}""", arg, re.DOTALL):
+        # Flag only VALUE interpolation. Two interpolations are structural, not
+        # injection, because they land where ``?`` binding is impossible:
+        #   * ``{', '.join(cols)}`` — a column / ``SET a=?, b=?`` list (values still bound).
+        #   * ``ORDER BY {expr}`` / ``GROUP BY {expr}`` — an identifier position; even the
+        #     secure (whitelisted) sort MUST f-string it. Real ORDER BY injection is caught
+        #     authoritatively by the dynamic ``/posts?sort=`` probe, so flagging it here would
+        #     only false-positive on the safe whitelist pattern.
+        # Any OTHER brace (e.g. f"... = '{q}'") is a value interpolation → risky.
+        for m in re.finditer(r"\{([^{}]+)\}", arg):
+            if ".join(" in m.group(1):
+                continue
+            if _STRUCTURAL_BEFORE.search(arg[:m.start()].rstrip()):
+                continue
             return True
     if re.search(r"""['"][^'"]*['"]\s*\.\s*format\s*\(""", arg, re.DOTALL):
         return True

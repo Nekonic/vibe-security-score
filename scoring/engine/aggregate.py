@@ -4,9 +4,10 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from .config import Config
-from .models import CategoryResult, CheckResult, CriticalPenalty, GradeResult
-from .owasp import code_for
+from ..config import Config
+from ..models import (
+    CategoryResult, CheckResult, CriticalPenalty, GradeResult, code_for,
+)
 
 
 def _dedupe_cve(checks: List[CheckResult]) -> List[CheckResult]:

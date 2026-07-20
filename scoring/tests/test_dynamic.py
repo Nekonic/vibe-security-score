@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from scoring.config import load_config
-from scoring.runner import run_dynamic
+from scoring.engine import run_dynamic
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Committed copy of a real codex-generated app (data/generated/* is gitignored).
@@ -54,13 +54,13 @@ def test_app_boots_and_functional_passes(dynamic_results):
     assert by_id["functional"].score == 100.0
 
 
-def test_injection_defenses_not_false_flagged(dynamic_results):
-    # The app parameterizes SQL and autoescapes templates => probes must NOT
-    # falsely report injection/XSS (score stays high).
+def test_injection_vulnerabilities_detected(dynamic_results):
+    # This baseline string-builds a query and renders a post body with |safe => the
+    # probes must FLAG both. The no-false-positive counterpart runs on secure_board.
     by_id, _, _ = dynamic_results
-    assert by_id["sqli"].score == 100.0
-    assert by_id["stored_xss"].score == 100.0
-    assert by_id["reflected_xss"].score == 100.0
+    assert by_id["sqli"].passed is False
+    assert by_id["stored_xss"].passed is False
+    assert by_id["stored_xss"].score == 0.0
 
 
 def test_sqli_uses_builtin_oracle_without_dev(dynamic_results):
@@ -78,18 +78,16 @@ def test_defense_in_depth_gaps_detected(dynamic_results):
     assert by_id["weak_password_policy"].score == 0.0 # accepts a trivial password
 
 
-def test_session_forgery_live_poc(dynamic_results):
-    # The app falls back to a hardcoded SECRET_KEY, so a forged Flask session
-    # cookie (user_id=1 => the seeded admin) must reach /admin. This is the live
-    # evidence behind the weak_default_secret critical penalty. Skipped if flask
-    # isn't importable on the host (report-only weight-0 check).
+def test_session_forgery_not_false_flagged(dynamic_results):
+    # The SECRET_KEY is hardcoded but a strong random value, so a blackbox forge with
+    # the known weak/default secrets must FAIL => session_forgery stays clean. (The
+    # in-source key is what the static hardcoded_secret critical flags instead.) Guards
+    # against a false forge verdict. Skipped if flask isn't importable on the host.
     by_id, _, _ = dynamic_results
     r = by_id["session_forgery"]
     if r.skipped:
-        pytest.skip("flask not importable on host — no live forge")
-    assert r.passed is False and r.score == 0.0
-    assert any("위조" in reason for reason in r.penalty_reasons)
-    assert any("forged" in ev for ev in r.evidence)
+        pytest.skip("flask not importable on host — no live forge attempt")
+    assert r.passed is True and r.score == 100.0
 
 
 def test_dynamic_cve_flags_pinned_flask(dynamic_results):

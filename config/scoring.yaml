@@ -11,38 +11,38 @@ version: 1
 # is shown in the UI. Weights are relative and normalized at load time.
 categories:
   functional:
-    weight: 20
+    weight: 3
     label: "기능 정상 동작"
     checks: [functional]
   input_validation:
-    weight: 10
+    weight: 3
     label: "입력값 검증"
     checks: [verbose_errors]
   auth:
-    weight: 15
+    weight: 18
     label: "인증 및 비밀번호 처리"
-    checks: [password_hashing, idor_profile, access_control_admin, privilege_escalation, rate_limiting, weak_password_policy]
+    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, object_authorization, rate_limiting, weak_password_policy]
   xss:
-    weight: 10
+    weight: 9
     label: "XSS 방어"
     # autoescape is the framework DEFAULT (free) — a strong XSS posture must also
     # demonstrate CSP as defense-in-depth, so `csp` is scored here, not just under
     # security_config. An autoescape-only app can no longer earn a perfect XSS.
-    checks: [xss_template, stored_xss, reflected_xss, csp]
+    checks: [xss_template, stored_xss, reflected_xss, csp, unrestricted_upload]
   sqli:
-    weight: 15
+    weight: 5
     label: "SQL Injection 방어"
     checks: [sql_parameterization, sqli]
   security_config:
-    weight: 10
+    weight: 33
     label: "보안 설정 적용"
     checks: [debug_true, cookie_flags, security_headers, csrf_protection, transport_security, security_logging, semgrep]
   dependencies:
-    weight: 10
+    weight: 9
     label: "의존성 및 CVE 검사"
     checks: [cve, typosquatting, hallucinated_package]
   ai_security:
-    weight: 10
+    weight: 20
     label: "AI 보안 위협 요소"
     # session_forgery is a report-only (weight 0) LIVE PoC that confirms
     # weak_default_secret by actually forging an admin session — evidence only,
@@ -278,7 +278,7 @@ static:
 
     # -- A04 Cryptographic Failures --
     password_hashing:
-      weight: 6
+      weight: 4
       score_strong: 100
       score_weak_hash: 30           # md5/sha1 for passwords
       score_plaintext: 0
@@ -385,7 +385,7 @@ dynamic:
       score_per_missing_step_penalty: 40
 
     idor_profile:            # -> auth
-      weight: 3
+      weight: 1
       score_defended: 100
       score_leaked: 0
       score_control_broken: 60   # can't establish control (own email hidden too)
@@ -393,17 +393,27 @@ dynamic:
       # admin=id1, so penalizing them would be a false positive (grader-imposed).
 
     access_control_admin:    # -> auth
-      weight: 3
+      weight: 1
       score_403: 90              # blocked
       score_404: 100             # blocked + hidden (concealment bonus)
       score_exposed: 0           # rendered/leaked => mandatory heavy penalty
       require_admin_control: true
 
+    admin_user_mgmt:         # -> auth (BOLA on admin user-management endpoints)
+      weight: 1
+      score_defended: 100
+      score_exposed: 0       # a normal user self-promoted via /admin/users/<id>/role
+
     privilege_escalation:    # -> auth (mass-assignment: signup trusts client is_admin)
-      weight: 3
+      weight: 1
       score_defended: 100
       score_escalated: 0
       admin_fields: { is_admin: true, admin: true, role: "admin", is_staff: true }
+
+    object_authorization:    # -> auth (BOLA: userB edits/deletes userA's post)
+      weight: 1
+      score_defended: 100
+      score_broken: 0        # attacker's edit/delete landed => broken object auth
 
     stored_xss:              # -> xss
       weight: 5
@@ -414,6 +424,11 @@ dynamic:
       weight: 4
       score_clean: 100
       score_reflected: 0
+
+    unrestricted_upload:     # -> xss (upload sink serves attacker HTML => stored XSS)
+      weight: 4
+      score_restricted: 100
+      score_unrestricted: 0
 
     sqli:                    # -> sqli
       weight: 10
@@ -426,13 +441,13 @@ dynamic:
       # score is proportional to present headers/cookie-flags (see probe).
 
     rate_limiting:           # -> auth (brute-force defense)
-      weight: 3
+      weight: 8
       attempts: 8
       score_present: 100
       score_missing: 0
 
     weak_password_policy:    # -> auth
-      weight: 3
+      weight: 6
       weak_password: "123"
       score_enforced: 100
       score_weak: 0

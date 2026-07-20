@@ -15,7 +15,7 @@ from scoring.checks import A04_cryptographic_failures as crypto
 from scoring.checks import A03_supply_chain as dependencies
 from scoring.checks import sast
 from scoring.checks.A03_supply_chain import parse_requirements
-from scoring.runner import StaticContext
+from scoring.engine import StaticContext
 
 _HERE = os.path.dirname(__file__)
 _STUBS = os.path.join(_HERE, "stubs")
@@ -91,9 +91,8 @@ def test_osv_falls_back_to_local_snapshot_offline(base_config):
     r = dependencies.check_cve(reqs, dep_cfg, req_path, cfg)
     assert r.check_id == "cve"
     assert r.tool == ""              # fallback path, not the CLI
-    # Sample pins Flask==3.0.3 (one HIGH, -25) and Werkzeug==3.0.3 (one MEDIUM, -10)
-    # in the snapshot => 100 - 35.
-    assert r.score == 65.0
+    # Sample pins Flask==3.0.3 (one HIGH, -25) in the snapshot => 100 - 25.
+    assert r.score == 75.0
     assert any("Flask==3.0.3" in reason for reason in r.penalty_reasons)
 
 

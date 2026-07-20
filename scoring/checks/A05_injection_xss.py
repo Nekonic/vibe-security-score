@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 import requests
 
 from ..shared.http import (
-    _body_text, _is_html_response, _post_payload, _snip,
+    _body_text, _is_html_response, _post_payload, _snip, create_post_id,
 )
 from ..shared.sources import _balanced_arg, _joined
 from .base import Check, _undecidable, result
@@ -127,6 +127,41 @@ def dynamic_stored_xss(check, ctx, cfg):
             return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
                           reasons=[f"{path} 렌더에 XSS 페이로드가 이스케이프 없이 노출됨 → 저장형 XSS (payload={sig!r})"],
                           evidence=[_snip(f"{path}: …{body[max(0, at - 40): at + 100]}…")])
+
+    # Post-detail sink: rich-text / markdown rendering usually happens on the detail
+    # page (/posts/<id>), not the list — an app can escape the list yet render the body
+    # raw there (|safe, render_template_string, unsanitized markdown). Store every
+    # payload in one body and read it back on detail.
+    combined = " ".join(p for _m, p, _s in variants)
+    dpid = create_post_id(ctx, sess, "xssd-" + uuid.uuid4().hex[:8], combined)
+    if dpid is not None:
+        detail = ctx.get(sess, f"/posts/{dpid}", headers={"Accept": "text/html"})
+        if _is_html_response(detail):
+            dbody = _body_text(detail)
+            dhit = _find_unescaped(dbody, variants)
+            if dhit:
+                _dm, dsig = dhit
+                at = dbody.find(dsig)
+                return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                              reasons=[f"/posts/{dpid} 상세 본문 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS (payload={dsig!r})"],
+                              evidence=[_snip(f"/posts/{dpid}: …{dbody[max(0, at - 40): at + 100]}…")])
+
+    # Comment sink: comments are a second stored-XSS surface — an app can escape
+    # post bodies yet forget comments. Needs a post id; skip the pass if unavailable.
+    pid = create_post_id(ctx, sess, "xssc-" + uuid.uuid4().hex[:8], "xssc-" + uuid.uuid4().hex[:8])
+    if pid is not None:
+        for _m, payload, _s in variants:
+            ctx.post(sess, f"/posts/{pid}/comments", {"content": payload, "body": payload})
+        detail = ctx.get(sess, f"/posts/{pid}", headers={"Accept": "text/html"})
+        if _is_html_response(detail):
+            cbody = _body_text(detail)
+            chit = _find_unescaped(cbody, variants)
+            if chit:
+                _cm, csig = chit
+                at = cbody.find(csig)
+                return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                              reasons=[f"/posts/{pid} 댓글 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS(댓글) (payload={csig!r})"],
+                              evidence=[_snip(f"/posts/{pid} 댓글: …{cbody[max(0, at - 40): at + 100]}…")])
 
     note = "입력이 거부되어 저장 안됨" if rejected else "저장되었으나 출력 시 이스케이프됨"
     return result(check, cfg, score=cfg.get("score_escaped_or_rejected", 100), passed=True,

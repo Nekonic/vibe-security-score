@@ -4,7 +4,7 @@ A Check couples a check/probe function to its id, display label, execution phase
 and the config subtree that holds its tunables. Family functions never re-spell
 their own id/label/category/weight — they derive a CheckResult from the Check via
 ``result(...)`` (a decided verdict) or ``_undecidable(...)`` (could-not-test, so
-excluded from aggregation). The OWASP tag is derived later in ``scoring.owasp``.
+excluded from aggregation). The OWASP tag is derived later in ``scoring.models``.
 """
 from __future__ import annotations
 

@@ -1,9 +1,13 @@
-{% extends "base.html" %}{% block body %}
-<h1>가입</h1>
-<form method="post">
-  <input name="username" placeholder="username" required>
-  <input name="email" type="email" placeholder="email" required>
-  <input name="password" type="password" placeholder="password" required>
-  <button>가입</button>
-</form>
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h2>회원가입</h2>
+    <form method="post" action="{{ url_for('signup') }}">
+      <input name="username" placeholder="아이디">
+      <input name="email" placeholder="이메일" type="email">
+      <input name="password" placeholder="비밀번호" type="password">
+      <button type="submit">가입</button>
+    </form>
+    <p class="small muted">가입 성공 시 자동 로그인됩니다.</p>
+  </div>
 {% endblock %}

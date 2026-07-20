@@ -4,6 +4,7 @@ accounts, and response helpers. Probe verdicts themselves live in ``probes.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, Optional
 
 import requests
@@ -56,6 +57,28 @@ def _post_payload(title: str, content: str) -> Dict[str, Any]:
     # post is actually created regardless — otherwise create fails, functional
     # false-passes via a redirect, and stored_xss/sqli silently test nothing.
     return {"title": title, "content": content, "body": content, "text": content}
+
+
+def create_post_id(ctx, sess: requests.Session, title: str, content: str) -> Optional[int]:
+    """Create a post and return its id — from the create response JSON, else by
+    matching ``content`` (use a unique value) to a ``/posts/<id>`` link the listing
+    exposes (form apps that redirect). ``None`` if the id can't be pinned. Shared by
+    the BOLA and comment-XSS probes."""
+    r = ctx.post(sess, "/posts", _post_payload(title, content))
+    if r is None or r.status_code not in (200, 201):
+        return None
+    j = _json_or_none(r)
+    if isinstance(j, dict):
+        for key in ("id", "post_id", "pk"):
+            if isinstance(j.get(key), int):
+                return j[key]
+    listing = _body_text(ctx.get(sess, "/posts"))
+    if content not in listing:
+        return None
+    for pid in sorted({int(n) for n in re.findall(r"/posts/(\d+)", listing)}, reverse=True):
+        if content in _body_text(ctx.get(sess, f"/posts/{pid}")):
+            return pid
+    return None
 
 
 _LOGIN_FORM_MARKERS = ('type="password"', "type='password'", "type=password",
@@ -172,6 +195,36 @@ class DynamicContext:
             reseed=lambda: self._seed_csrf(sess, path),
         )
         self._desecure(sess)  # keep Secure cookies usable over the sandbox's HTTP
+        return r
+
+    def put(self, sess: requests.Session, path: str, data: Dict[str, Any]) -> Optional[requests.Response]:
+        return self._csrf_send("PUT", sess, path, data)
+
+    def patch(self, sess: requests.Session, path: str, data: Dict[str, Any]) -> Optional[requests.Response]:
+        return self._csrf_send("PATCH", sess, path, data)
+
+    def delete(self, sess: requests.Session, path: str,
+               data: Optional[Dict[str, Any]] = None) -> Optional[requests.Response]:
+        return self._csrf_send("DELETE", sess, path, data or {})
+
+    def _csrf_send(self, method: str, sess: requests.Session, path: str,
+                   data: Dict[str, Any]) -> Optional[requests.Response]:
+        """State-changing PUT/PATCH/DELETE with the session's CSRF token (same
+        discovery/retry as ``post``). Carrying the token means object-authorization
+        probing tests AUTHORIZATION on a CSRF-protected app, not CSRF."""
+        def _bound(url, **kw):
+            try:
+                return sess.request(method, url, timeout=self.http_timeout, **kw)
+            except requests.RequestException:
+                return None
+
+        r = csrf.post_with_csrf(
+            _bound, self._url(path), data,
+            get_token=lambda: self._csrf_for(sess),
+            set_token=lambda t: setattr(sess, "_csrf_token", t),
+            reseed=lambda: self._seed_csrf(sess, path),
+        )
+        self._desecure(sess)
         return r
 
 

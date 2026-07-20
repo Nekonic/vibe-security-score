@@ -19,7 +19,10 @@ def _path(config: Any, submission_id: str) -> str:
     rel = str(tmpl).format(submission_id=submission_id)
     if os.path.isabs(rel):
         return rel
-    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", rel))
+    # ``__file__`` is scoring/engine/progress.py — the data dir lives at the repo
+    # root, two levels up.
+    repo_root = os.path.join(os.path.dirname(__file__), "..", "..")
+    return os.path.normpath(os.path.join(repo_root, rel))
 
 
 def write(config: Any, submission_id: str, *, phase: str, done: int, total: int, label: str) -> None:

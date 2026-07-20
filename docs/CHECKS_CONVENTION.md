@@ -73,7 +73,7 @@ def result(check, cfg, *, score, passed, reasons=(), evidence=(), tool="", weigh
     )
 ```
 
-⚠ **cfg를 누가 찾나** — 러너가 `resolve_cfg(config, check)`로 넘긴다: `config[check.cfg_path][check.id]`.
+**cfg를 누가 찾나** — 러너가 `resolve_cfg(config, check)`로 넘긴다: `config[check.cfg_path][check.id]`.
 `cfg_path`가 ""면 phase에서 파생(`static.checks` / `dynamic.checks`). 다른 곳에 사는 것만 명시한다
 (외부 도구는 `cfg_path="tools", report_only=True`). **A03의 cve·typosquatting은 예외**: weight가
 `static.dependencies` 풀(22점)을 `_pool_split`으로 나눈 값이라, 어댑터가 config를 직접 읽어 pool-split
@@ -145,7 +145,7 @@ def _lockout_triggered(ctx, attempts) -> bool:      # 저수준 HTTP 반복은 �
 프로브 본문엔 순수 로직만. `try/except`는 러너 한 곳.
 
 ```python
-# scoring/runner.py — 동적 루프, 호출·래핑이 여기 한 곳
+# scoring/engine/runner.py — 동적 루프, 호출·래핑이 여기 한 곳
 elif c.standard:
     cfg = resolve_cfg(config, c)
     try:
