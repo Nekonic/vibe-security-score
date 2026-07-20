@@ -89,7 +89,7 @@ def dynamic_functional(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
         accepted = wrong_reachable and not wrong_is_form and not ctrl_is_form
         if accepted:
             step_ok["wrong_password_rejected"] = False
-            reasons.append(f"{ctx.userA.email}: 틀린 비밀번호가 수락됨 → 인증 취약")
+            reasons.append(f"{ctx.userA.username}: 틀린 비밀번호가 수락됨 → 인증 취약")
             evidence.append(_snip(f"wrong-pw login -> {wrong.status_code} (성공 페이지 반환): {_body_text(wrong)}"))
         else:
             evidence.append(_snip(
@@ -135,16 +135,16 @@ def dynamic_functional(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
 def dynamic_weak_password_policy(check, ctx, cfg):
     weak = str(cfg.get("weak_password", "123"))
     tag = uuid.uuid4().hex[:8]
-    uname, mail = f"weakpw-{tag}", f"weakpw-{tag}@test.com"
+    uname, phone = f"weakpw-{tag}", "010" + tag[:8].translate(str.maketrans("abcdef", "012345"))
     r = ctx.post(requests.Session(), "/signup",
-                 {"username": uname, "email": mail, "name": "Weak", "password": weak})
+                 {"username": uname, "phone": phone, "name": "Weak", "password": weak})
     # 2xx alone isn't acceptance — form apps re-render the signup form with HTTP 200
     # on a rejected password. Confirm the weak account was really created by logging
     # in with it; only a reached authenticated state proves no policy.
     accepted = False
     if r is not None and r.status_code in (200, 201):
         login = ctx.post(requests.Session(), "/login",
-                         {"username": uname, "email": mail, "password": weak})
+                         {"username": uname, "phone": phone, "password": weak})
         accepted = (
             login is not None and 200 <= login.status_code < 400
             and not _looks_like_login_form(_body_text(login))

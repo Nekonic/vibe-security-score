@@ -64,7 +64,7 @@ class Client:
         self.sess.headers.update({"Accept": _ACCEPT})
         self._csrf = ""
         self.username = None
-        self.email = None
+        self.phone = None
         self.password = "P@ssw0rd!"
         self.user_id = None
 
@@ -94,18 +94,18 @@ class Client:
         )
 
     # -- high level ----------------------------------------------------------
-    def signup(self, username=None, email=None, password="P@ssw0rd!", extra=None):
+    def signup(self, username=None, phone=None, password="P@ssw0rd!", extra=None):
         """Register (auto-random creds) then log in. ``extra`` injects extra
         fields (e.g. is_admin) to probe mass-assignment."""
         tag = uuid.uuid4().hex[:8]
         self.username = username or f"poc_{tag}"
-        self.email = email or f"poc_{tag}@poc.io"
+        self.phone = phone or ("010" + tag[:8].translate(str.maketrans("abcdef", "012345")))
         self.password = password
         try:
             self.get("/signup")  # seed CSRF from the signup form
         except Exception:
             pass
-        payload = {"username": self.username, "email": self.email,
+        payload = {"username": self.username, "phone": self.phone,
                    "name": self.username, "password": self.password}
         if extra:
             payload.update(extra)
@@ -121,7 +121,7 @@ class Client:
             self.get("/login")
         except Exception:
             pass
-        r = self.post("/login", {"username": self.username, "email": self.email,
+        r = self.post("/login", {"username": self.username, "phone": self.phone,
                                  "password": password or self.password})
         uid = _pick_id(r)
         if uid is not None:
@@ -130,15 +130,17 @@ class Client:
 
     def my_id(self):
         """Own user id: from the auth response if present, else probe
-        /users/1..10 for the row that shows our own email."""
+        /users/1..10 for the row that shows our own phone (digit-robust)."""
         if isinstance(self.user_id, int):
             return self.user_id
+        my_digits = "".join(c for c in (self.phone or "") if c.isdigit())
         for i in range(1, 11):
             try:
                 r = self.get(f"/users/{i}")
             except Exception:
                 continue
-            if r.status_code == 200 and self.email and self.email in _text(r):
+            body_digits = "".join(c for c in _text(r) if c.isdigit())
+            if r.status_code == 200 and my_digits and my_digits in body_digits:
                 self.user_id = i
                 return i
         return None

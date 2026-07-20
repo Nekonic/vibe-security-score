@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+import uuid
 from typing import Any, Dict, Optional
 
 import requests
@@ -42,13 +43,14 @@ def _json_or_none(resp: Optional[requests.Response]) -> Optional[Any]:
 
 
 def _signup_payload(acct: "Account") -> Dict[str, Any]:
-    # Send username+email+name so both username- and email-based apps accept it.
-    return {"username": acct.username, "email": acct.email,
+    # Send username+phone+name so both username- and phone-based apps accept it and
+    # the private-PII field (phone, the IDOR key) is persisted.
+    return {"username": acct.username, "phone": acct.phone,
             "name": acct.name, "password": acct.password}
 
 
 def _login_payload(acct: "Account", password: Optional[str] = None) -> Dict[str, Any]:
-    return {"username": acct.username, "email": acct.email,
+    return {"username": acct.username, "phone": acct.phone,
             "password": acct.password if password is None else password}
 
 
@@ -95,7 +97,7 @@ def _looks_like_login_form(text: str) -> bool:
 
 @dataclass
 class Account:
-    email: str
+    phone: str          # sole PII/identifier the app stores; the IDOR probe keys on it
     password: str
     name: str = ""
     username: str = ""
@@ -104,10 +106,10 @@ class Account:
     is_admin: bool = False
 
     def __post_init__(self):
-        # Apps split between `email` and `username` login; derive a username so
+        # Apps split between `phone` and `username` login; derive a username so
         # both contracts work (we send both fields in every auth request).
         if not self.username:
-            self.username = self.email.split("@", 1)[0] if self.email else self.name
+            self.username = (self.name or "user" + re.sub(r"\D", "", self.phone)[-6:])
 
 
 class DynamicContext:
@@ -118,10 +120,21 @@ class DynamicContext:
 
         probes = config.get("probes", {}) or {}
         accts = probes.get("test_accounts", []) or []
-        self.userA = Account(**{k: accts[0][k] for k in ("email", "password", "name") if k in accts[0]}) if accts else None
-        self.userB = Account(**{k: accts[1][k] for k in ("email", "password", "name") if k in accts[1]}) if len(accts) > 1 else None
+        self.userA = Account(**{k: accts[0][k] for k in ("username", "password", "name", "phone") if k in accts[0]}) if accts else None
+        self.userB = Account(**{k: accts[1][k] for k in ("username", "password", "name", "phone") if k in accts[1]}) if len(accts) > 1 else None
+        # Randomize the signed-up accounts' username+phone PER RUN. Apps seed demo
+        # users (admin/alice) and commonly reuse the prompt's example phone
+        # (01012345678) — a FIXED grader username/phone then 409s on signup ("already
+        # exists") and the functional gate falsely fails a working app. Random values
+        # make collisions effectively impossible. (config values are just defaults.)
+        for acct in (self.userA, self.userB):
+            if acct is not None:
+                tag = uuid.uuid4().hex[:8]
+                acct.username = "grader_" + tag
+                acct.phone = "010" + tag.translate(str.maketrans("abcdef", "012345"))
         adm = probes.get("admin_account", {}) or {}
-        self.admin = Account(email=adm.get("email", ""), password=adm.get("password", ""), name=adm.get("name", "Admin"))
+        self.admin = Account(phone=adm.get("phone", ""), password=adm.get("password", ""),
+                             name=adm.get("name", "Admin"), username=adm.get("username", "admin"))
         self.admin.is_admin = True
 
         self.xss_payload = str(probes.get("xss_payload", "<script>alert('xss-{marker}')</script>"))
@@ -195,6 +208,38 @@ class DynamicContext:
             reseed=lambda: self._seed_csrf(sess, path),
         )
         self._desecure(sess)  # keep Secure cookies usable over the sandbox's HTTP
+        return r
+
+    def upload(self, sess: requests.Session, path: str, field: str, fname: str,
+               payload: bytes, content_type: str) -> Optional[requests.Response]:
+        """Multipart file POST WITH CSRF handling (the raw sess.post the upload probe
+        used before got 403'd by every CSRF-protected app): seed a token, send it as a
+        form field + header alongside the file, and retry once with a fresh token on
+        rejection. Redirects are followed. Returns the response or None."""
+        url = self._url(path)
+        post = self._bound_post(sess)
+
+        def _try(token: str) -> Optional[requests.Response]:
+            headers = {csrf.CSRF_HEADER: token} if token else None
+            data = {csrf.CSRF_FIELD: token} if token else None
+            return post(url, files={field: (fname, payload, content_type)},
+                        data=data, headers=headers)
+
+        if not self._csrf_for(sess):
+            self._seed_csrf(sess, path)
+        r = _try(self._csrf_for(sess))
+        tok = csrf.extract_csrf(r)
+        if tok:
+            setattr(sess, "_csrf_token", tok)
+        if r is not None and r.status_code in (400, 403, 419):
+            setattr(sess, "_csrf_token", "")
+            self._seed_csrf(sess, path)
+            token = self._csrf_for(sess)
+            if token:
+                r2 = _try(token)
+                if r2 is not None and (r2.status_code in (200, 201) or r2.status_code < r.status_code):
+                    r = r2
+        self._desecure(sess)
         return r
 
     def put(self, sess: requests.Session, path: str, data: Dict[str, Any]) -> Optional[requests.Response]:

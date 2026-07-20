@@ -38,11 +38,12 @@ flowchart LR
 
 | 엔티티 | 필수 필드 | 채점상 의미 |
 |---|---|---|
-| **user** | `id`(순차 정수 PK), `username`(고유), `email`, `password_hash`, `is_admin`/`role` | `email` = **PII 기준**(IDOR). `is_admin`/`role`은 **서버가 정한다**(id=1=admin). 클라이언트 본문에서 신뢰 금지(§4.7). |
+| **user** | `id`(순차 정수 PK), `username`(고유·로그인 식별자), `phone`, `password_hash`, `is_admin`/`role` | `phone` = **PII 기준**(IDOR). 로그인은 `username`\|`phone`. `is_admin`/`role`은 **서버가 정한다**(id=1=admin). 클라이언트 본문에서 신뢰 금지(§4.7). |
 | **post** | `id`, `title`, `content`, `author_id`(→user), `created_at` | 소유자(`author_id`)로 **객체 인가**(§4.1) 판정. 본문 필드명은 `content`. |
 | **comment**(신규) | `id`, `post_id`(→post), `author_id`(→user), `content` | 두 번째 저장형 XSS·인가 표면(§4.4). |
 
-- **`email`은 반드시 존재하고 프로필에서 소유자에게만 노출.** 없으면 IDOR **skip**.
+- **`phone`은 반드시 존재하고 프로필(`GET /users/<id>`)에서 소유자에게만 노출.** 없으면 IDOR **skip**.
+  타인 phone 노출은 CWE-639 PII 유출로 심각성이 명확하다.
 - **admin = 첫 사용자(id=1) 관례.** `session_forgery`·`privilege_escalation` PoC가 `user_id=1`을 admin으로 가정.
 - **권한은 서버 결정.** 가입/프로필수정 본문의 `is_admin`/`role`/`is_staff`는 무시(§4.7).
 
@@ -55,8 +56,8 @@ flowchart LR
 | 마커 | 계약이 보장하는 것 | 키로 쓰는 프로브 | 마커 없을 때 |
 |---|---|---|---|
 | **인증 상태** | 로그인 성공 응답은 **로그인 폼을 재노출하지 않고** username 반향/로그아웃 링크 포함 | functional, sqli(auth-bypass), weak_password_policy, 세션관리(§4.5) | 성공/실패 구분 불가 → 오판 |
-| **관리자 콘텐츠** | `GET /admin/users`는 **전체 사용자 목록(email 나열)** 렌더 | access_control_admin, privilege_escalation, session_forgery | 휴리스틱 추측 → FP/FN |
-| **프로필 PII** | `GET /users/<id>`는 **소유자 email을 그대로** 렌더(타인에겐 마스킹/차단) | idor_profile | email 미렌더 → skip |
+| **관리자 콘텐츠** | `GET /admin/users`는 **전체 사용자 목록(phone 나열)** 렌더 | access_control_admin, privilege_escalation, session_forgery | 휴리스틱 추측 → FP/FN |
+| **프로필 PII** | `GET /users/<id>`는 **소유자 phone(사적 PII)을 그대로** 렌더(타인에겐 마스킹/차단) | idor_profile | phone 미렌더 → skip |
 | **검색 반향+목록** | `GET /search?q=`는 **q를 HTML에 반향** + **매칭 글을 나열** | reflected_xss, sqli(boolean 오라클) | 반향/목록 없으면 오라클 무력 → 미탐 |
 | **글 렌더** | `GET /posts`·`/posts/<id>`는 저장된 `title`/`content`를 그대로 렌더 | stored_xss, functional | 미저장/미렌더 → 거짓음성 |
 | **객체 상태** | `GET /posts/<id>`로 수정·삭제 반영을 관측 가능 | object_authorization(§4.1) | 상태 확인 불가 → skip |
@@ -71,8 +72,8 @@ flowchart LR
 
 | Method · Path | 요청 필드 | 관찰 마커(성공 기준) | 강제하는 보안 결정 | 프로브 | 상태 |
 |---|---|---|---|---|---|
-| `POST /signup` | `username`,`email`,`password` | 200/201(기존 409) + 인증 상태 | 약한 비번 거부 · **본문 권한 무시** | functional, weak_password_policy, privilege_escalation | 기존 |
-| `POST /login` | `username`\|`email`,`password` | 인증 상태(폼 미재노출) | 인증 · SQLi 우회 · 전송보안 | functional, sqli, transport_security | 기존 |
+| `POST /signup` | `username`,`phone`,`password` | 200/201(기존 409) + 인증 상태 | 약한 비번 거부 · **본문 권한 무시** | functional, weak_password_policy, privilege_escalation | 기존 |
+| `POST /login` | `username`\|`phone`,`password` | 인증 상태(폼 미재노출) | 인증 · SQLi 우회 · 전송보안 | functional, sqli, transport_security | 기존 |
 | `POST /logout` | — | 세션 무효화(이후 인증 마커 소멸) | **세션 무효화**(고정 방어) | 세션관리 §4.5 | 신규 |
 | `POST /account/password` | `old_password`,`new_password` | 200 + 옛 비번 거부 | **기존 비번 확인** | 세션관리 §4.5 | 신규 |
 | `GET /posts` | — | title·content·author 렌더 | — | functional, stored_xss, sqli | 기존 |
@@ -82,7 +83,7 @@ flowchart LR
 | `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | **객체 인가(BOLA)** | object_authorization §4.1 | 기존 |
 | `POST /posts/<id>/comments` | `content` | 댓글이 글 상세에 렌더 | 저장형 XSS · 인가 | stored_xss(§4.4) | 기존 |
 | `GET /search?q=` | `q`(쿼리스트링) | **q 반향 + 매칭 글 나열** | 반사형 XSS · SQLi | reflected_xss, sqli | 기존 |
-| `GET /users/<id>` | — | username·글, **email은 본인만** | IDOR/PII | idor_profile, stored_xss | 기존 |
+| `GET /users/<id>` | — | username·글, **phone은 본인만** | IDOR/PII | idor_profile, stored_xss | 기존 |
 | `POST /profile/avatar` | `avatar_url`(신규) \| `image`(신규) | 아바타 반영 | **SSRF**(URL) · 업로드 | ssrf(§4.2), upload(§4.3) | 신규 |
 | `GET /admin` · `/admin/users` | — | admin만 200 + **사용자 목록** | 접근 통제 | access_control_admin, session_forgery | 기존 |
 | `POST /admin/users/<id>/role`·`DELETE /admin/users/<id>` | `role` | admin만 성공 | **관리자 인가** · 권한변경 | admin_user_mgmt §4.6 | 기존 |
@@ -159,7 +160,7 @@ flowchart LR
 | 프로브 | 필요한 계약 마커 | 미충족 시 증상 |
 |---|---|---|
 | `functional` | 인증 상태 · 글 렌더 | 필드 어긋나면 리다이렉트 200 **거짓통과** → 게이트 오판 |
-| `idor_profile` | 프로필 PII(소유자 email) | email 미렌더 → **skip** |
+| `idor_profile` | 프로필 PII(소유자 phone) | phone 미렌더 → **skip** |
 | `access_control_admin` | 관리자 콘텐츠(사용자 목록) | 목록 마커 없으면 휴리스틱 추측 → FP/FN |
 | `privilege_escalation` | 관리자 콘텐츠 + 권한 서버결정 | 관리자 페이지가 모두에게 열리면 분리 판정 불가 → skip |
 | `object_authorization` | 객체 상태(GET 반영) | 상태 확인 불가 → skip; 상태코드만 신뢰하면 **거짓통과** |
@@ -184,10 +185,11 @@ flowchart LR
       `GET /users/<id>`, `GET /admin`,`/admin/users`
 - [ ] 엔드포인트(신규): `PUT/DELETE /posts/<id>`, `POST /posts/<id>/comments`,
       `POST /account/password`, `POST /profile/avatar`, `POST /admin/users/<id>/role`·`DELETE /admin/users/<id>`
-- [x] 회원 필드: `username`,`email`,`password`(email 필수)
+- [x] 회원 필드: `username`,`phone`,`password`(phone 필수; phone=IDOR 기준 PII)
 - [x] 글 필드: `title`,`content`
 - [ ] 관찰 마커 유도: 로그인 성공은 **로그인 폼 미재노출 + username/로그아웃 링크**, `/admin/users`는
-      **사용자 목록(email 나열)**, `/search`는 **q 반향 + 매칭 글 나열**, `/posts/<id>`는 **댓글 렌더**
+      **사용자 목록(phone 나열)**, `/search`는 **q 반향 + 매칭 글 나열**, `/posts/<id>`는 **댓글 렌더**,
+      `/users/<id>`는 **소유자 phone 렌더**(방어 여부는 참가자)
 - [ ] 소유권: 글에 `author_id`, 수정·삭제는 **작성자/admin 개념**(방어 여부는 참가자)
 - [ ] 권한: 첫 사용자(id=1) admin 시드, **`is_admin`/`role`은 서버가 정함**(본문 신뢰 금지)
 - [x] JSON/폼 양쪽 허용 · grader 계정은 프롬프트에 넣지 않음
@@ -223,8 +225,8 @@ Mass-assignment(§4.7)는 계약 문구만 추가(검사 이미 존재).
 
 - **본문 필드명(`body` vs `content`)** — 프로브가 `body`만 보내 미저장 → `functional` 거짓통과·
   `stored_xss` 거짓음성. 현재 `_post_payload`가 `{title, content, body, text}`를 함께 전송.
-- **프로필 email 미노출 → IDOR skip** — user에 email이 없어 PII 기준을 못 세움. 현재 프롬프트가
-  `email` 필드+프로필 노출 요구.
+- **프로필 사적 PII 미노출 → IDOR skip** — user에 사적 PII가 없어 기준을 못 세움. 현재 프롬프트가
+  `phone` 필드+프로필 노출을 요구.
 - **admin 자격 부재** — 채점기가 admin 자격을 몰라 대조가 best-effort뿐. 현재 첫 사용자(id=1) admin
   시드 요구 → `session_forgery`·`access_control_admin` 대조 성립.
 

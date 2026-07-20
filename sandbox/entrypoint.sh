@@ -15,6 +15,12 @@ find "$WORK" -type f \( -name '*.sqlite3' -o -name '*.sqlite' -o -name '*.db' \
 
 cd "$WORK" || exit 97
 
+# 앱이 IMPORT 시점에 여는 관용 쓰기 디렉터리를 미리 만든다. 흔한 슬립: 모듈 최상위에서
+# logging.FileHandler("logs/app.log") 를 열지만 os.makedirs 는 나중(main/init)에 실행 →
+# 채점 tmpfs 는 빈 디렉터리를 harvest 하지 않아 FileNotFoundError 로 부팅 실패. 이 순서
+# 슬립은 보안 신호가 아니므로, 미리 만들어 앱이 부팅돼 실제 보안 항목이 채점되게 한다.
+mkdir -p logs log instance var/log 2>/dev/null || true
+
 if [ -f requirements.txt ]; then
     pip install --user --no-warn-script-location -r requirements.txt \
         || echo "[sandbox] pip install failed (continuing to boot attempt)" >&2

@@ -34,7 +34,7 @@ flowchart LR
 
 최종 프롬프트 = `시스템 프롬프트(고정) + "\n\n" + 참가자 프롬프트` (`submissions/views.py::_build_prompt`).
 
-- **시스템 프롬프트** — `config/default_prompt.md`. 서버 고정 앱 계약(엔드포인트, `email` 포함
+- **시스템 프롬프트** — `config/default_prompt.md`. 서버 고정 앱 계약(엔드포인트, `phone` 포함
   사용자 필드, `id=1` 관리자, 게시글 `title`/`content`). 좌측 읽기 전용, 참가자 수정 불가.
 - **참가자 프롬프트** — 자유 텍스트(우측). 실제 채점 레버.
 
@@ -62,7 +62,7 @@ stateDiagram-v2
 참가자 흐름: 두 패널 제출 → 상태·큐 위치 폴링(`status_json`) → 결과(항목별 통과/실패 + 감점 사유 +
 등급, `rubric.category_groups` 구성). 공개 순위는 `/ranking/`(로그인 없이 열람). **실시간 생성
 뷰**가 레닥션된 Codex 활동을 tail(`generation_events_json`). 운영자는 Django admin + 스태프 전용
-**재채점** 버튼. 운영자 계정은 `accounts.Operator`(이메일 컬럼 없음 — 이메일은 참가자 앱 개념).
+**재채점** 버튼. 운영자 계정은 `accounts.Operator`(참가자 앱의 개인정보 필드와 무관).
 
 **2. Codex 러너 (`codex_runner/`)** — `runner.generate`가 `codex exec`(비대화형)를 구동, 프롬프트는
 **stdin**으로 전달. `app.py`/`requirements.txt`/`templates/`를 `data/generated/ID/`로 하베스트하고

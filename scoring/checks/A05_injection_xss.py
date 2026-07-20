@@ -21,14 +21,84 @@ _RENDER_STR = re.compile(r"""render_template_string\s*\(""")
 _SAFE_FILTER = re.compile(r"""\|\s*safe""")
 _AUTOESCAPE_OFF = re.compile(r"""autoescape\s*=\s*False""", re.IGNORECASE)
 _REQUEST_DATA = re.compile(r"""request\.|\bg\.|session\[""")
-# {{ x | safe }} disables autoescape. Exclude the common SAFE helpers (url_for,
-# csrf_token, config/url values) so marking those safe isn't a false positive; a
-# stored value like {{ post.content | safe }} is still flagged.
-_TPL_SAFE = re.compile(
-    r"""\{\{(?![^}]*(?:url_for|csrf|url_encode|tojson|config\.|\bg\.))[^}]*\|\s*safe[^}]*\}\}""",
-    re.IGNORECASE,
-)
+# {{ x | safe }} disables autoescape. Three carve-outs keep this from false-flagging:
+#  1) the common SAFE helpers (url_for/csrf/config/url values) — marking those safe is fine;
+#  2) a built-in escape filter BEFORE |safe — {{ x | e | replace('\n','<br>') | safe }} is the
+#     safe nl2br idiom: the value is HTML-escaped first, so |safe re-marks already-safe text;
+#  3) a CUSTOM filter BEFORE |safe whose Python definition escapes — e.g. a filter
+#     `escape_content` = Markup("<br>".join(escape(v).splitlines())): {{ c | escape_content | safe }}
+#     is the same idiom via a named filter. Only filters whose body actually escapes count.
+# A raw {{ post.content | safe }} (no escape before it) is still flagged.
+_BRACE_BLOCK = re.compile(r"""\{\{.*?\}\}""", re.DOTALL)
+_SAFE_IN_BLOCK = re.compile(r"""\|\s*safe\b""", re.IGNORECASE)
+_ESCAPE_FILTER = re.compile(r"""\|\s*(?:e|escape|forceescape)\b""", re.IGNORECASE)
+_SAFE_HELPERS = re.compile(r"""url_for|csrf|url_encode|tojson|config\.|\bg\.""", re.IGNORECASE)
 _TPL_AUTOESCAPE_OFF = re.compile(r"""\{%\s*autoescape\s+false\s*%\}""", re.IGNORECASE)
+
+# Custom-filter registration → the implementing function; and what "escapes" looks like.
+_FILTER_DECORATOR = re.compile(
+    r"""@\w+\.(?:template_filter|app_template_filter)\s*\(\s*(?:['"](?P<name>[^'"]+)['"])?\s*\)\s*\r?\n\s*def\s+(?P<fn>\w+)""",
+)
+_FILTER_ASSIGN = re.compile(
+    r"""\.filters\s*\[\s*['"](?P<name>[^'"]+)['"]\s*\]\s*=\s*(?P<fn>\w+)""",
+)
+# Flask's app.add_template_filter(fn, "name") / add_template_filter(fn) (name defaults
+# to the function name).
+_FILTER_ADD = re.compile(
+    r"""\.add_template_filter\s*\(\s*(?P<fn>\w+)\s*(?:,\s*(?:name\s*=\s*)?['"](?P<name>[^'"]+)['"])?""",
+)
+_ESCAPES_IN_BODY = re.compile(
+    r"""\bescape\s*\(|markupsafe|bleach\.clean|\.clean\s*\(|escape_silent""", re.IGNORECASE,
+)
+
+
+def _func_escapes(text: str, fn: str) -> bool:
+    """Does the module-level function ``fn`` HTML-escape in its body? Body = from its
+    ``def`` to the next top-level ``def``/EOF."""
+    m = re.search(r"^\s*def\s+" + re.escape(fn) + r"\b", text, re.MULTILINE)
+    if not m:
+        return False
+    rest = text[m.end():]
+    nxt = re.search(r"^def\s", rest, re.MULTILINE)
+    body = rest[:nxt.start()] if nxt else rest
+    return _ESCAPES_IN_BODY.search(body) is not None
+
+
+def _escaping_filter_names(sources) -> set:
+    """Names of custom Jinja filters whose implementation escapes — so `| name | safe`
+    is the safe escape-then-mark idiom, not a bypass."""
+    names = set()
+    for _path, text in sources:
+        for m in _FILTER_DECORATOR.finditer(text):
+            fn = m.group("fn")
+            if _func_escapes(text, fn):
+                names.add(m.group("name") or fn)
+        for m in _FILTER_ASSIGN.finditer(text):
+            if _func_escapes(text, m.group("fn")):
+                names.add(m.group("name"))
+        for m in _FILTER_ADD.finditer(text):
+            fn = m.group("fn")
+            if _func_escapes(text, fn):
+                names.add(m.group("name") or fn)
+    return names
+
+
+def _block_bypasses_escape(block: str, escaping_filters=()) -> bool:
+    """True only when a {{ ... }} block marks a value ``|safe`` WITHOUT escaping it
+    first (real autoescape bypass). Escape-before-safe (built-in or a known escaping
+    custom filter) and the SAFE helpers are not."""
+    m = _SAFE_IN_BLOCK.search(block)
+    if not m:
+        return False
+    if _SAFE_HELPERS.search(block):
+        return False
+    before = block[:m.start()]
+    if _ESCAPE_FILTER.search(before):
+        return False
+    for nm in escaping_filters:
+        if re.search(r"\|\s*" + re.escape(nm) + r"\b", before):
+            return False
+    return True
 
 
 def check_xss_template(check, sctx, cfg):
@@ -37,6 +107,7 @@ def check_xss_template(check, sctx, cfg):
 
     reasons: List[str] = []
     evidence: List[str] = []
+    escaping_filters = _escaping_filter_names(sctx.sources)
 
     for path, text in sctx.sources:
         for m in _RENDER_STR.finditer(text):
@@ -57,7 +128,7 @@ def check_xss_template(check, sctx, cfg):
 
     for path, text in sctx.templates:
         for i, line in enumerate(text.splitlines(), start=1):
-            if _TPL_SAFE.search(line):
+            if any(_block_bypasses_escape(b.group(0), escaping_filters) for b in _BRACE_BLOCK.finditer(line)):
                 reasons.append(f"{path}:{i} |safe 필터로 자동 이스케이프 우회")
                 evidence.append(f"{path}:{i}: {line.strip()}")
             if _TPL_AUTOESCAPE_OFF.search(line):

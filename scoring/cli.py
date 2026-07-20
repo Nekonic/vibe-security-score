@@ -48,8 +48,9 @@ def _cmd_static(app_dir: str, config_path: str | None, dev: bool = False) -> int
 def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     config = _load(config_path, dev)
     checks, functional_failed, boot_failed, boot_log = run_dynamic(app_dir, config)
-    if boot_failed and boot_log:
-        print("=== 부팅 실패 로그 ===\n" + boot_log + "\n", file=sys.stderr)
+    if boot_log:
+        header = "부팅 실패 로그" if boot_failed else "런타임 로그(기능 게이트 실패)"
+        print(f"=== {header} ===\n" + boot_log + "\n", file=sys.stderr)
     grade = combine_scores(
         checks, config, functional_failed=functional_failed, boot_failed=boot_failed
     )
