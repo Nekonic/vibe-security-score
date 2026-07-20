@@ -167,7 +167,7 @@ def _sqli_builtin_oracle(
         # (0) Auth-bypass SQLi: inject into /login; reaching an authenticated state
         # (no login form re-rendered) with a bogus password => injection.
         for pay in ctx.sqli_auth_bypass:
-            r = ctx.post(requests.Session(), "/login", {"username": pay, "email": pay, "password": "x"})
+            r = ctx.post(requests.Session(), "/login", {"username": pay, "phone": pay, "password": "x"})
             if r is not None and 200 <= r.status_code < 400 and not _looks_like_login_form(_body_text(r)):
                 injection = True
                 evidence.append(_snip(f"/login 인증우회 SQLi payload={pay!r} → 로그인 성공 상태 도달"))

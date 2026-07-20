@@ -156,6 +156,19 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
         func_result = functional.fn(ctx, {**dyn_cfg.get(functional.id, {}), "require": require})
         functional_failed = not func_result.passed
         checks: List[CheckResult] = [func_result]
+        # App booted but a required flow (signup/login/create_post) failed at RUNTIME —
+        # the generic 500 body hides the cause. Capture the container's own stderr so the
+        # operator sees the real reason (e.g. sqlite3.IntegrityError: NOT NULL user.created_at)
+        # instead of just "HTTP 500". Surfaced via the 4th return (Submission.boot_log).
+        runtime_log = ""
+        if functional_failed:
+            runtime_log = (box.logs(tail=60) or "").strip()
+            lines = runtime_log.splitlines()
+            errline = next((ln for ln in reversed(lines)
+                            if any(k in ln for k in ("Error", "Exception", "Traceback"))),
+                           lines[-1] if lines else "")
+            if errline and isinstance(getattr(func_result, "evidence", None), list):
+                func_result.evidence.append(f"컨테이너 런타임 로그: {errline[:200]}")
         if on_check:
             on_check(functional.label)
 
@@ -184,6 +197,6 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
         if on_check:
             on_check("의존성 CVE 재검사")
 
-        return checks, functional_failed, False, ""
+        return checks, functional_failed, False, runtime_log
     finally:
         cve_pool.shutdown(wait=True)

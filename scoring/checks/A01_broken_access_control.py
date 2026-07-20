@@ -70,50 +70,62 @@ def check_ssrf_sink(check, sctx, cfg):
 def dynamic_idor_profile(check, ctx, cfg):
     if ctx.userA is None or ctx.userB is None:
         return _undecidable(check, cfg, "테스트 계정 구성 부족으로 IDOR 판정 불가")
+    # IDOR keys on phone, a strictly private PII field: it must NOT appear to another
+    # user. userB reading userA's phone off the profile = CWE-639 PII leak.
+    if not ctx.userA.phone:
+        return _undecidable(check, cfg, "userA의 phone(사적 PII)이 없어 IDOR 판정 불가")
     if ctx.userA.user_id is None:
         ctx.userA.user_id = _discover_user_id(ctx, ctx.userA)
     if ctx.userA.user_id is None:
         return _undecidable(check, cfg, "userA의 id를 확인할 수 없어 IDOR 판정 불가")
 
+    phone = _digits(ctx.userA.phone)
     target = f"/users/{ctx.userA.user_id}"
-    # Control: userA sees own email on own profile.
+    # Control: userA sees own phone on own profile (digit-robust: apps may reformat).
     ctrl = ctx.get(ctx.userA.session, target)
     ctrl_body = _body_text(ctrl)
-    control_ok = ctrl is not None and ctrl.status_code == 200 and ctx.userA.email in ctrl_body
+    control_ok = ctrl is not None and ctrl.status_code == 200 and phone in _digits(ctrl_body)
     # Attack: userB reads userA's profile.
     atk = ctx.get(ctx.userB.session, target)
     atk_body = _body_text(atk)
     atk_code = atk.status_code if atk is not None else None
-    leaked = atk is not None and atk.status_code == 200 and ctx.userA.email in atk_body
+    leaked = atk is not None and atk.status_code == 200 and phone in _digits(atk_body)
 
     evidence = [_snip(f"userA self {target} -> {ctrl.status_code if ctrl else 'n/a'}: {ctrl_body}"),
                 _snip(f"userB attack {target} -> {atk_code}: {atk_body}")]
 
     if leaked:
         return result(check, cfg, score=cfg.get("score_leaked", 0), passed=False,
-                      reasons=[f"userB 세션으로 userA({ctx.userA.email}) 이메일 조회됨 → IDOR"],
+                      reasons=[f"userB 세션으로 userA({ctx.userA.phone}) 전화번호 조회됨 → IDOR/PII 노출"],
                       evidence=evidence)
     if not control_ok:
         return result(check, cfg, score=cfg.get("score_control_broken", 60), passed=False,
-                      reasons=["본인 이메일도 조회되지 않아 접근 통제 확인 불가(control broken)"],
+                      reasons=["본인 전화번호도 조회되지 않아 접근 통제 확인 불가(control broken)"],
                       evidence=evidence)
     # Defended: masked / 403 / 404 for the attacker. Sequential integer ids are NOT
     # penalized — the app contract (프롬프트) mandates them (id 순번 + admin=id1), so
     # they're a grader-imposed constraint, not a participant choice.
     return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
-                  evidence=[_snip(f"userB attack {target} -> {atk_code} (이메일 미노출/차단)")])
+                  evidence=[_snip(f"userB attack {target} -> {atk_code} (전화번호 미노출/차단)")])
+
+
+def _digits(s: str) -> str:
+    """Strip everything but digits so a phone match survives app-side reformatting
+    (spaces/dashes/parens/+)."""
+    return re.sub(r"\D", "", s or "")
 
 
 def _discover_user_id(ctx, acct) -> Optional[int]:
     """If login didn't return an id, probe /users/<n> with the account's own
-    session and match its email to find its id."""
-    if acct is None:
+    session and match its phone (digit-robust) to find its id."""
+    if acct is None or not acct.phone:
         return None
+    phone = _digits(acct.phone)
     for uid in range(1, 11):
         r = ctx.get(acct.session, f"/users/{uid}")
         if r is None or r.status_code != 200:
             continue
-        if acct.email and acct.email in _body_text(r):
+        if phone and phone in _digits(_body_text(r)):
             return uid
     return None
 
@@ -198,12 +210,12 @@ def dynamic_privilege_escalation(check, ctx, cfg):
 def _signup_login(ctx, extra: Dict[str, Any]) -> Optional[requests.Session]:
     sess = requests.Session()
     tag = uuid.uuid4().hex[:10]
-    creds = {"username": f"pe_{tag}", "email": f"pe_{tag}@test.com",
+    creds = {"username": f"pe_{tag}", "phone": "010" + tag[:8].translate(str.maketrans("abcdef", "012345")),
              "name": f"pe_{tag}", "password": "Booth!Secure2345"}
     su = ctx.post(sess, "/signup", {**creds, **extra})
     if su is None or su.status_code not in (200, 201, 409):
         return None
-    ctx.post(sess, "/login", {"username": creds["username"], "email": creds["email"],
+    ctx.post(sess, "/login", {"username": creds["username"], "phone": creds["phone"],
                               "password": creds["password"]})
     return sess
 
