@@ -59,7 +59,7 @@ stateDiagram-v2
     DONE --> QUEUED: 재채점(staff · Codex 미호출)
 ```
 
-참가자 흐름: 두 패널 제출 → 상태·큐 위치 폴링(`status_json`) → 결과(항목별 ✔/✘ + 감점 사유 +
+참가자 흐름: 두 패널 제출 → 상태·큐 위치 폴링(`status_json`) → 결과(항목별 통과/실패 + 감점 사유 +
 등급, `rubric.category_groups` 구성). 공개 순위는 `/ranking/`(로그인 없이 열람). **실시간 생성
 뷰**가 레닥션된 Codex 활동을 tail(`generation_events_json`). 운영자는 Django admin + 스태프 전용
 **재채점** 버튼. 운영자 계정은 `accounts.Operator`(이메일 컬럼 없음 — 이메일은 참가자 앱 개념).
@@ -72,13 +72,14 @@ stateDiagram-v2
 으로 읽어 `activity.py`가 **레닥션**(임시·호스트 경로, 명령 출력 제거)해 `events.jsonl`로 남긴다
 (결과 페이지가 읽기 전용 tail). 원본 `transcript.json`은 운영자 전용.
 
-**3. 채점 엔진 (`scoring/`)** — 순수 Python(Django 무의존), 단독 테스트 가능.
-`grade.py::grade_submission` = 정적 + 동적 → `aggregate.combine_scores` → 리포트. 흐름은 **단일
+**3. 채점 엔진 (`scoring/`)** — 순수 Python(Django 무의존), 단독 테스트 가능. 디렉터리는 개념별:
+`engine/`(실행)·`checks/`(규칙+레지스트리)·`shared/`(배관), root는 공개 표면(`config`·`models`·`cli`).
+`engine/grade.py::grade_submission` = 정적 + 동적 → `combine_scores` → 리포트. 흐름은 **단일
 등록부 → phase별 러너 → 검사(check)**.
 
-- **등록부 (`registry.py`)** — 정적 검사·동적 프로브를 `Check(id, label, phase, fn)`로 **한 번씩**
-  선언(OWASP 패밀리 순서). `by_phase("static"|"dynamic")`로 필터.
-- **러너 (`runner.py`)** — `run_static`(오프라인, `StaticContext` 조립). `run_dynamic`(컨테이너에
+- **등록부 (`checks/__init__.py`)** — 각 패밀리 모듈의 `CHECKS`를 OWASP 순서로 한 번씩 모아
+  `Check(id, label, phase, fn)` 리스트로 노출. `by_phase("static"|"dynamic")`로 필터.
+- **러너 (`engine/runner.py`)** — `run_static`(오프라인, `StaticContext` 조립). `run_dynamic`(컨테이너에
   앱 부팅 후 `requests`로 공격): `functional`이 먼저 실행돼 게이트를 구동하고 세션/id를 시드
   (틀린 비밀번호 거부는 상태 코드가 아니라 **인증 상태**로 판정 — 폼 앱은 실패 시 로그인 폼을
   200으로 재렌더), 이어서 나머지 프로브, 마지막에 `A03_supply_chain.dynamic_cve`(컨테이너
@@ -103,8 +104,9 @@ stateDiagram-v2
 - **공용 (`shared/`)** — `http`(DynamicContext·Account·CSRF·응답 헬퍼), `sources`, `sandbox`,
   `external_tools`(osv/gitleaks/semgrep), `sqlmap`.
 - **이름 규칙** — 정적 검사 `check_*`, 동적 프로브 `dynamic_*`, 컨텍스트 `StaticContext`/
-  `DynamicContext`. 정적은 `fn(sctx, cfg)`, 동적은 `fn(ctx, cfg)`; 러너가 phase로 분기하고
-  `functional`은 게이트 판정을 `CheckResult.passed`에 실어 균일하게 흐른다.
+  `DynamicContext`. 표준 검사는 `fn(check, ctx, cfg) → CheckResult`(정체성은 `Check`에서 파생,
+  예외 래핑은 러너가 소유). `functional`·`sqli`만 `standard=False`로 특수 호출. 규격은
+  [CHECKS_CONVENTION.md](CHECKS_CONVENTION.md).
 
 **4. 오케스트레이터 (`grader/submissions/orchestrator/`)** — 워커 하나(`run_worker`): **제한된 병렬
 생성**(`generation_concurrency`, 기본 5) → **제한된 병렬 채점**(`scoring_concurrency`) — 각자 스레드
@@ -140,12 +142,14 @@ flowchart TD
    | 검사 | 감점 | 검사 | 감점 |
    |---|---|---|---|
    | `sqli` | −25 | `weak_default_secret` | −15 |
-   | `debug_true` | −20 | `reflected_xss` | −12 |
-   | `access_control_admin` | −20 | `csrf_protection` | −6 |
-   | `stored_xss` | −18 | | |
+   | `debug_true` | −20 | `hardcoded_secret` | −15 (조건부) |
+   | `access_control_admin` | −20 | `reflected_xss` | −12 |
+   | `stored_xss` | −18 | `idor_profile` | −12 |
+   | | | `csrf_protection` | −6 |
 
-   `session_forgery`(weight 0)는 증거를 `weak_default_secret`에 접어 넣는다(이중 계상 없음).
-   각 감점은 결과 화면에 `severity` + `repro`를 동반.
+   조건부 — `hardcoded_secret`는 라이브 `session_forgery` PoC가 관리자 세션 위조를 실증했을 때만 치명으로
+   계상된다(그 외엔 정적 경미 지적). `session_forgery`(weight 0)는 증거를 `weak_default_secret`/
+   `hardcoded_secret`에 접어 넣어 이중 계상하지 않는다. 각 감점은 결과 화면에 `severity` + `repro` 동반.
 4. **게이트 상한** (감점 *후* 천장): 부팅 실패 → `0`; 기능 게이트 실패(회원가입/로그인/글작성) → `40`.
 
 **등급 밴드**: `미흡 ≥0` · `통과 ≥60` · `우수 ≥80` · `최고 ≥95`. PASS = 부팅/기능 실패 없음 **그리고**
@@ -156,10 +160,16 @@ flowchart TD
 
 | 카테고리 | 가중치 | 카테고리 | 가중치 |
 |---|---|---|---|
-| `functional` | 20 | `xss` | 10 |
-| `auth` | 15 | `security_config` | 10 |
-| `sqli` | 15 | `dependencies` | 10 |
-| `input_validation` | 10 | `ai_security` | 10 |
+| `security_config` | 33 | `xss` | 9 |
+| `ai_security` | 20 | `dependencies` | 9 |
+| `auth` | 18 | `sqli` | 5 |
+| `functional` | 3 | `input_validation` | 3 |
+
+가중치는 **능동적 하드닝**(보안 헤더·CSRF·쿠키·HSTS·시크릿·rate limiting·비번정책·CSP·로깅)에 쏠려 있다.
+프레임워크 기본값만으로 통과하는 검사(작동·기본 파라미터화·autoescape·기본 접근통제)는 비중이 낮고,
+`functional`은 사실상 **게이트**(가중치 3, 실패 시 40 상한). auth 안에서도 기본 접근통제(idor/admin/
+object_authorization 등)는 검사 가중치 1, 능동적 방어(rate_limiting 8·weak_password_policy 6)는 높다.
+그 결과 "아무것도 안 한" 앱은 낮게(≈10–30), 실제 방어를 구현해야 고득점.
 
 > 코드 위치(OWASP 패밀리, `checks/`)와 채점 버킷(config 카테고리)은 별개다. 집계는 파일 위치가
 > 아니라 config 매핑을 따르므로 둘은 독립적이다.
@@ -179,12 +189,14 @@ clean state로** 시작한다(앱은 부팅 시 자체 DB 생성). `sitecustomiz
 config/scoring.yaml            # 단일 채점 설정 (로직에 하드코딩 없음)
 config/default_prompt.md       # 고정 시스템 프롬프트(앱 스펙)
 scoring/                       # 채점 엔진 (순수 python)
-  grade.py                     # 진입점: 정적+동적 → 집계 → 리포트
-  runner.py                    # run_static / run_dynamic (registry를 phase로 실행)
-  registry.py                  # 모든 검사(Check) 단일 등록부 + by_phase()
-  aggregate.py config.py models.py owasp.py cli.py
-  checks/                      # OWASP 패밀리별 검사 (정적+동적+등록)
-    base.py                    # Check 데이터클래스
+  __init__.py cli.py config.py models.py   # 공개 표면: 계약(config·models·OWASP 태그)+진입점
+  engine/                      # 실행 파이프라인
+    grade.py                   # 진입점: 정적+동적 → 집계 → 리포트
+    runner.py                  # run_static / run_dynamic (checks를 phase로 실행)
+    aggregate.py progress.py
+  checks/                      # OWASP 패밀리별 검사 (정적+동적) + 단일 등록부
+    __init__.py                # CHECKS + by_phase()
+    base.py                    # Check 데이터클래스 + result/_undecidable
     A01_broken_access_control … A10_exceptional_conditions   # 파일명 = 패밀리 번호
     A05_injection_sql / A05_injection_xss, sast(OWASP 무소속)
   shared/                      # http(DynamicContext)·sources·sandbox·external_tools·sqlmap
@@ -202,5 +214,6 @@ deploy/                        # 프로덕션: gunicorn + systemd + nginx
 
 프로덕션 = Ubuntu, 의존성 **uv**, 웹 gunicorn + systemd(nginx 뒤), **PostgreSQL**(병렬 채점 쓰기).
 채점 도구(`osv-scanner`/`gitleaks`/`semgrep`/`sqlmap`)는 기본 모드 필수(`--dev`는 내장 오프라인
-검사 대체 — 개발용). 배포 검증은 `samples/vulnerable_board/` 채점으로(심어둔 `SECRET_KEY`, IDOR,
-저장형 XSS, 관리자 접근, SQLi가 모두 실점해야 정상). 전체 절차는 [deploy/README.md](../deploy/README.md).
+검사 대체 — 개발용). 배포 검증은 `samples/vulnerable_board/` 채점으로(심어둔 `SECRET_KEY`,
+`debug=True`, IDOR, 저장형 XSS, SQLi가 모두 실점해 최종 0점이면 정상). 전체 절차는
+[deploy/README.md](../deploy/README.md).

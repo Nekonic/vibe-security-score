@@ -1,7 +1,7 @@
 """Runners: gather inputs and execute every registered control by phase.
 
 The static phase is offline; the dynamic phase boots the app in a sandbox and
-attacks it over real HTTP. Both derive their check list from ``scoring.registry``.
+attacks it over real HTTP. Both derive their check list from ``scoring.checks``.
 On boot failure every dynamic probe still yields a scored-0 CheckResult so
 aggregation stays uniform — the ``boot_failed`` flag caps the final score.
 """
@@ -13,14 +13,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List, Optional
 
-from . import registry
-from .config import Config
-from .checks import A03_supply_chain as dependencies
-from .checks.base import resolve_cfg, _undecidable
-from .models import CheckResult
-from .shared.http import DynamicContext, _scored_zero
-from .shared.sandbox import Sandbox
-from .shared.sources import Source, _read_tree
+from ..checks import A03_supply_chain as dependencies, by_phase
+from ..checks.base import resolve_cfg, _undecidable
+from ..config import Config
+from ..models import CheckResult
+from ..shared.http import DynamicContext, _scored_zero
+from ..shared.sandbox import Sandbox
+from ..shared.sources import Source, _read_tree
 
 _PY_EXT = ".py"
 _HTML_EXTS = (".html", ".htm", ".jinja", ".jinja2", ".j2")
@@ -75,7 +74,7 @@ def run_static(app_dir: str, config: Config, on_check=None) -> List[CheckResult]
     )
     checks_cfg = config.static_checks
     results: List[CheckResult] = []
-    for c in registry.by_phase("static"):
+    for c in by_phase("static"):
         # Static exceptions are infrastructure errors — NOT swallowed (원칙 5 예외 ②).
         if c.standard:
             results.append(c.fn(c, sctx, resolve_cfg(config, c)))
@@ -102,7 +101,7 @@ def _boot_failed_checks(config: Config, reason: str) -> List[CheckResult]:
             skipped=True,
             penalty_reasons=[f"앱 부팅 실패로 동적 검사 불가: {reason}"],
         )
-        for c in registry.by_phase("dynamic")
+        for c in by_phase("dynamic")
     ]
 
 
@@ -147,9 +146,9 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
         ctx = DynamicContext(box.base_url, config)
         # Feed hardcoded SECRET_KEY literals to session_forgery so it forges with the
         # app's ACTUAL key (a live PoC proving a hardcoded secret is exploitable).
-        from .checks.A04_cryptographic_failures import extract_hardcoded_secrets
+        from ..checks.A04_cryptographic_failures import extract_hardcoded_secrets
         ctx.source_secrets = extract_hardcoded_secrets(_gather_sources(app_dir))
-        dynamic_checks = registry.by_phase("dynamic")
+        dynamic_checks = by_phase("dynamic")
         # functional runs first (drives the gate + seeds sessions); rest follow.
         functional = next(c for c in dynamic_checks if c.id == "functional")
         rest = [c for c in dynamic_checks if c.id != "functional"]

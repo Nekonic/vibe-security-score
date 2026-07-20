@@ -10,14 +10,14 @@ import os
 
 import pytest
 
-from scoring.aggregate import combine_scores
+from scoring.engine import combine_scores
 from scoring.config import load_config
 from scoring.checks import A04_cryptographic_failures as crypto
 from scoring.checks import A02_security_misconfiguration as misconfig
 from scoring.checks import A03_supply_chain as dc
 from scoring.checks import A05_injection_sql as sql_ctl
 from scoring.checks import A05_injection_xss as xss_ctl
-from scoring.runner import StaticContext, run_static
+from scoring.engine import StaticContext, run_static
 
 
 def _by_id(module, cid):
@@ -85,22 +85,26 @@ def test_cookie_flags_credits_flask_default_httponly(gen_results):
     assert any("Secure" in reason for reason in r.penalty_reasons)
 
 
-def test_weak_default_secret_flagged(gen_results):
-    # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback.
-    r = gen_results["weak_default_secret"]
-    assert r.passed is False and r.score == 0.0
+def test_hardcoded_secret_flagged(gen_results):
+    # SECRET_KEY is hardcoded in app.py => flagged. The literal is a strong random
+    # value (not a known dev/default token), so weak_default_secret separately passes.
+    assert gen_results["hardcoded_secret"].passed is False
+    assert gen_results["hardcoded_secret"].score == 0.0
+    assert gen_results["weak_default_secret"].score == 100.0
 
 
 def test_security_logging_missing(gen_results):
     assert gen_results["security_logging"].passed is False
 
 
-def test_injection_and_hashing_pass(gen_results):
-    # A competent generated app gets these right => full marks.
+def test_injection_flagged_hashing_passes(gen_results):
+    # This baseline hashes passwords (good) but string-builds a query and renders a
+    # post body with |safe (bad) => the injection statics flag it, hashing stays full.
     assert gen_results["password_hashing"].score == 100.0
-    assert gen_results["sql_parameterization"].score == 100.0
-    assert gen_results["xss_template"].score == 100.0
-    assert gen_results["hardcoded_secret"].score == 100.0  # secret read from env
+    assert gen_results["sql_parameterization"].passed is False
+    assert gen_results["sql_parameterization"].score == 20.0
+    assert gen_results["xss_template"].passed is False
+    assert gen_results["xss_template"].score == 65.0
 
 
 def test_cve_flags_pinned_flask(gen_results):
@@ -139,11 +143,14 @@ def test_csp_is_bucketed_into_xss(gen_results):
 
 
 def test_critical_penalties_subtract_from_final(config, gen_results):
-    # debug=True (RCE), weak_default_secret (auth bypass), missing CSRF are
-    # app-wide-exploitable => they come straight off the final score, not averaged.
+    # debug=True (RCE) and missing CSRF are app-wide-exploitable => they come
+    # straight off the final score, not averaged. (hardcoded_secret is NOT critical
+    # here: its key is strong, so the live session-forgery PoC can't confirm it — it
+    # stays a minor static finding by design.)
     grade = combine_scores(list(gen_results.values()), config)
     hit = {p.check_id: p.penalty for p in grade.critical_penalties}
-    assert "debug_true" in hit and "weak_default_secret" in hit and "csrf_protection" in hit
+    assert "debug_true" in hit and "csrf_protection" in hit
+    assert "hardcoded_secret" not in hit
     assert grade.raw_score > grade.score
     assert abs((grade.raw_score - sum(hit.values())) - grade.score) < 0.01
     # Each penalty carries a severity + repro so the deduction is defensible.
