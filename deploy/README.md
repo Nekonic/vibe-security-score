@@ -24,9 +24,13 @@ root(`sudo`)로 한다.
 
 ## 0. 사전 패키지
 
+`python3-venv`/`python3-pip`는 **Codex 생성용**이다 — 모델이 앱을 자체 테스트하려면 임시 작업
+디렉터리에 venv를 만들고 `requirements.txt`를 설치해야 하는데, Ubuntu 시스템 python엔 pip·ensurepip이
+빠져 있어(별도 패키지) 이게 없으면 설치가 실패하고 실행 안 해본 코드가 나온다.
+
 ```bash
 sudo apt update
-sudo apt install -y docker.io postgresql nginx git curl
+sudo apt install -y docker.io postgresql nginx git curl python3-venv python3-pip
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh
 ```
 

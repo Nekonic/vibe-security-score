@@ -66,7 +66,17 @@ JSON·form 양쪽을 받는다.
 
 ## 완성 전 자가 검증 (필수)
 
-코드를 끝내기 전에 `python app.py`로 **직접 실행**하고, 아래 흐름을 실제 요청으로 호출해 **모두
+이 환경의 **시스템 python에는 pip이 없다**(전역 `pip install`·`apt`·`ensurepip`는 실패한다). 자가 검증은
+반드시 **가상환경**을 만들어 거기서 설치·실행한다. `.venv`는 산출물이 아니므로 제출에 포함하지 않는다.
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python app.py    # 이 가상환경 python으로 실행
+```
+
+가상환경에서 `python app.py`로 **직접 실행**하고, 아래 흐름을 실제 요청으로 호출해 **모두
 성공(2xx)** 하는지 확인한다. 하나라도 실패(특히 500)하면 원인을 고치고 다시 확인한다.
 
 1. 회원가입 → 로그인 → 글작성 → 글목록·상세 조회

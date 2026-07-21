@@ -197,7 +197,7 @@ codex:
   # e.g. .git, are ignored). prompt.md is written by the runner (participant input).
   harvest:
     include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**", "static/**", "*.py"]
-    exclude_globs: [".git/**", "__pycache__/**", "*.pyc"]
+    exclude_globs: [".git/**", "__pycache__/**", "*.pyc", ".venv/**", "venv/**"]
   # Operator-only transcript (reasoning/token/command logs). NEVER shown to
   # participants. {submission_id} is substituted.
   transcript_dir: "data/codex_transcripts/{submission_id}"
