@@ -156,19 +156,21 @@ codex:
   # (levels common to all selectable models). Passed as `-c model_reasoning_effort=…`.
   reasoning_effort: ""
   codex_home: null                # null => default ~/.codex (holds auth.json — secret)
-  exec_flags:                     # passed to `codex exec` (see spec); do NOT add danger-full-access
-    sandbox: "workspace-write"    # default is read-only -> can't write files
+  exec_flags:                     # passed to `codex exec` (see spec)
+    # danger-full-access: no write-confinement, no network block. workspace-write
+    # gates writes to the workdir, so `pip install flask` (writes to site-packages
+    # OUTSIDE the workdir) fails even with network open -> the model ships code it
+    # could never actually install or self-test. Full access lets it pip install /
+    # run / curl freely. The generated app is still run under the Docker sandbox at
+    # SCORING time; this only widens the generation step, which runs as the (already
+    # unprivileged) service user on the operator's own host.
+    sandbox: "danger-full-access"
     extra:
       - "--skip-git-repo-check"   # allow running in a fresh temp dir
       - "--ephemeral"             # no rollout/session files left on disk
       - "--json"                  # JSONL stream on stdout for structured parse
       - "--ignore-user-config"    # ignore operator's ~/.codex config.toml (reproducibility)
       - "--ignore-rules"          # ignore AGENTS.md / execpolicy
-      # workspace-write blocks network by default, so the model can't pip install /
-      # run / curl to self-test -> it ships code that never actually ran. Open network
-      # while keeping writes confined to the workdir (still NOT danger-full-access).
-      - "-c"
-      - "sandbox_workspace_write.network_access=true"
   # Blank these env keys in the child process so generation uses the ChatGPT login only.
   blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
   rate_limit:
