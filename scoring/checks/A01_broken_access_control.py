@@ -81,17 +81,15 @@ def dynamic_idor_profile(check, ctx, cfg):
 
     phone = _digits(ctx.userA.phone)
     target = f"/users/{ctx.userA.user_id}"
-    # Control: userA sees own phone on own profile (digit-robust: apps may reformat).
-    ctrl = ctx.get(ctx.userA.session, target)
-    ctrl_body = _body_text(ctrl)
-    control_ok = ctrl is not None and ctrl.status_code == 200 and phone in _digits(ctrl_body)
-    # Attack: userB reads userA's profile.
-    atk = ctx.get(ctx.userB.session, target)
-    atk_body = _body_text(atk)
-    atk_code = atk.status_code if atk is not None else None
-    leaked = atk is not None and atk.status_code == 200 and phone in _digits(atk_body)
+    # Control: userA sees own phone on own profile. Attack: userB reads userA's.
+    # Both probe the HTML surface AND the JSON representation (see _reads_phone) —
+    # apps commonly keep phone (private PII) out of the rendered profile page and
+    # only return it via JSON, so an HTML-only read mis-scored a correctly
+    # access-controlled app "control broken" and also missed JSON-only PII leaks.
+    control_ok, ctrl_code, ctrl_body = _reads_phone(ctx, ctx.userA.session, target, phone)
+    leaked, atk_code, atk_body = _reads_phone(ctx, ctx.userB.session, target, phone)
 
-    evidence = [_snip(f"userA self {target} -> {ctrl.status_code if ctrl else 'n/a'}: {ctrl_body}"),
+    evidence = [_snip(f"userA self {target} -> {ctrl_code}: {ctrl_body}"),
                 _snip(f"userB attack {target} -> {atk_code}: {atk_body}")]
 
     if leaked:
@@ -99,6 +97,17 @@ def dynamic_idor_profile(check, ctx, cfg):
                       reasons=[f"userB 세션으로 userA({ctx.userA.phone}) 전화번호 조회됨 → IDOR/PII 노출"],
                       evidence=evidence)
     if not control_ok:
+        # Couldn't confirm the phone is exposed to its owner on any surface. If the
+        # attacker got an explicit denial (401/403/404), access control is
+        # demonstrably enforced (or there is simply no phone-leaking surface to
+        # exploit) — credit the defense rather than docking a working app. Only the
+        # murky case (attacker got 200 but no phone, owner couldn't show it either)
+        # stays "control broken".
+        if atk_code in (401, 403, 404):
+            return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                          reasons=["본인 전화번호가 프로필에 노출되지 않아 대조군은 못 세웠으나 "
+                                   f"공격자 접근이 차단됨(HTTP {atk_code}) → 접근 통제 정상"],
+                          evidence=evidence)
         return result(check, cfg, score=cfg.get("score_control_broken", 60), passed=False,
                       reasons=["본인 전화번호도 조회되지 않아 접근 통제 확인 불가(control broken)"],
                       evidence=evidence)
@@ -115,17 +124,32 @@ def _digits(s: str) -> str:
     return re.sub(r"\D", "", s or "")
 
 
+def _reads_phone(ctx, sess, target, phone):
+    """GET ``target`` and report whether ``phone``'s digits appear in a 200 body.
+    Tries the default (HTML) surface first, then the JSON representation
+    (``Accept: application/json``) — apps often keep phone out of the rendered page
+    but return it in JSON. Returns ``(matched, status_code, body_text)`` for the
+    response that decided it (the last one tried if none matched)."""
+    last_code: Optional[int] = None
+    last_body = ""
+    for headers in (None, {"Accept": "application/json"}):
+        r = ctx.get(sess, target, headers=headers)
+        last_code = r.status_code if r is not None else None
+        last_body = _body_text(r)
+        if last_code == 200 and phone and phone in _digits(last_body):
+            return True, last_code, last_body
+    return False, last_code, last_body
+
+
 def _discover_user_id(ctx, acct) -> Optional[int]:
     """If login didn't return an id, probe /users/<n> with the account's own
-    session and match its phone (digit-robust) to find its id."""
+    session and match its phone (digit-robust, HTML+JSON) to find its id."""
     if acct is None or not acct.phone:
         return None
     phone = _digits(acct.phone)
     for uid in range(1, 11):
-        r = ctx.get(acct.session, f"/users/{uid}")
-        if r is None or r.status_code != 200:
-            continue
-        if phone and phone in _digits(_body_text(r)):
+        ok, _, _ = _reads_phone(ctx, acct.session, f"/users/{uid}", phone)
+        if ok:
             return uid
     return None
 
