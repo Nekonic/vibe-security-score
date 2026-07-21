@@ -173,6 +173,12 @@ codex:
       - "--ignore-rules"          # ignore AGENTS.md / execpolicy
   # Blank these env keys in the child process so generation uses the ChatGPT login only.
   blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
+  # Extra env injected into the codex child process (and the shell commands the model
+  # runs to self-test the app). PIP_BREAK_SYSTEM_PACKAGES lets `pip install` succeed on
+  # PEP 668 "externally-managed" pythons (Ubuntu/Debian/Homebrew) that otherwise reject
+  # every install with exit 1 -> without it the model can't install Flask or run the app.
+  child_env:
+    PIP_BREAK_SYSTEM_PACKAGES: "1"
   rate_limit:
     # Case-insensitive signals in stderr / JSONL error events => RateLimitError.
     signals:

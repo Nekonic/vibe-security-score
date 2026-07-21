@@ -91,6 +91,10 @@ def _scrubbed_env(config: Config) -> Dict[str, str]:
     codex_home = config.get("codex.codex_home", None)
     if codex_home:
         env["CODEX_HOME"] = str(codex_home)
+    # Extra env for the child (and the shell commands the model runs to self-test),
+    # e.g. PIP_BREAK_SYSTEM_PACKAGES so `pip install` works on PEP 668 pythons.
+    for key, value in (config.get("codex.child_env", {}) or {}).items():
+        env[str(key)] = str(value)
     return env
 
 
