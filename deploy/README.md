@@ -27,16 +27,26 @@ curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/
 
 ## 1. 사용자 + 코드
 
+서비스 계정(홈 = 코드 경로)을 만들고 저장소를 그 안에 클론한다. `useradd -m`은 홈을 스켈레톤
+(`.bashrc` 등)으로 채워 이후 `git clone`이 "not empty"로 실패하므로 **쓰지 않는다** — root로 클론한
+뒤 소유권을 넘긴다(`/opt`는 root만 쓸 수 있어 클론 자체를 vibe로 하면 디렉터리 생성이 막힌다).
+
 ```bash
-sudo useradd -r -m -d /opt/vibe-security-score -s /bin/bash vibe
+sudo useradd -r -s /bin/bash -d /opt/vibe-security-score vibe
 sudo usermod -aG docker vibe
-sudo -u vibe git clone https://github.com/Nekonic/vibe-security-score.git /opt/vibe-security-score
+sudo git clone https://github.com/Nekonic/vibe-security-score.git /opt/vibe-security-score
+sudo chown -R vibe:vibe /opt/vibe-security-score
 cd /opt/vibe-security-score
 ```
 
 ## 2. 파이썬 환경 (uv)
 
+저장소의 `.python-version`이 **Python 3.12**를 고정한다 — psycopg 같은 바이너리 휠이 확실히 있는
+버전이다. 시스템 파이썬이 3.13/3.14면 그 휠이 아직 없어 `psycopg` 설치가 조용히 누락되고
+마이그레이션이 `ModuleNotFoundError: psycopg`로 깨진다. uv가 3.12를 내려받아 venv를 만든다.
+
 ```bash
+sudo -u vibe uv python install 3.12
 sudo -u vibe uv sync --extra prod --no-dev
 ```
 
@@ -80,18 +90,24 @@ SQL
 ```bash
 sudo cp deploy/vibe-grader.env.example /etc/vibe-grader.env
 sudo chown vibe:vibe /etc/vibe-grader.env && sudo chmod 600 /etc/vibe-grader.env
-sudoedit /etc/vibe-grader.env      # SECRET_KEY, ALLOWED_HOSTS, DB 비밀번호 등 수정
+vi /etc/vibe-grader.env      # SECRET_KEY, ALLOWED_HOSTS, DB 비밀번호 등 수정
 ```
-`DJANGO_SECRET_KEY` 생성: `python -c "import secrets; print(secrets.token_urlsafe(64))"`
+`DJANGO_SECRET_KEY` 생성: `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`
 
 ## 6. DB 마이그레이션 · 정적 파일 · 관리자 계정
 
+`vibe` 셸을 열어 env 파일을 **셸 안에서 직접** 로드한다. `sudo --preserve-env`는 기본 sudoers
+정책(`env_reset`)에 막혀 무시되므로, 바깥 셸에서 `source`한 값이 vibe 프로세스로 넘어가지 않는다
+(그대로 두면 DB 설정이 안 실려 sqlite 기본값으로 마이그레이트된다). env 파일은 vibe 소유라 vibe가 읽는다.
+
 ```bash
-set -a && source /etc/vibe-grader.env && set +a
+sudo -u vibe bash        # 이하 명령은 vibe 셸 안에서 실행
+set -a; source /etc/vibe-grader.env; set +a
 cd /opt/vibe-security-score/grader
-sudo -u vibe --preserve-env uv run python manage.py migrate
-sudo -u vibe --preserve-env uv run python manage.py collectstatic --noinput
-sudo -u vibe --preserve-env uv run python manage.py createsuperuser
+uv run python3 manage.py migrate
+uv run python3 manage.py collectstatic --noinput
+uv run python3 manage.py createsuperuser
+exit
 ```
 
 ## 7. Codex 로그인 (코드 생성 인증)
@@ -143,9 +159,10 @@ journalctl -u vibe-grader-worker -f                 # 워커 로그
   ```bash
   cd /opt/vibe-security-score && sudo -u vibe git pull
   sudo -u vibe uv sync --extra prod --no-dev
-  set -a && source /etc/vibe-grader.env && set +a
-  cd grader && sudo -u vibe --preserve-env uv run python manage.py migrate
-  sudo -u vibe --preserve-env uv run python manage.py collectstatic --noinput
+  sudo -u vibe bash -c 'set -a; source /etc/vibe-grader.env; set +a; \
+    cd /opt/vibe-security-score/grader && \
+    uv run python3 manage.py migrate && \
+    uv run python3 manage.py collectstatic --noinput'
   sudo systemctl restart vibe-grader-web vibe-grader-worker
   ```
   `sandbox/`(entrypoint·Dockerfile·sitecustomize) 또는 `sandbox/attack/`가 바뀐 업데이트면 해당
