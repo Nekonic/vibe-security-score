@@ -89,20 +89,20 @@ stateDiagram-v2
 
   | 파일 | 검사 |
   |---|---|
-  | `A01_broken_access_control` | CSRF · SSRF · IDOR · 관리자 접근 |
+  | `A01_broken_access_control` | CSRF · SSRF · IDOR · 관리자 접근·사용자관리 · 객체인가(BOLA) · 권한상승 |
   | `A02_security_misconfiguration` | debug · 보안 헤더 · 전송 보안 |
   | `A03_supply_chain` | CVE · 타이포스쿼팅 · 환각 패키지 · 전이 CVE |
   | `A04_cryptographic_failures` | 시크릿 · 해싱 · 쿠키 플래그 · 세션 위조 · gitleaks |
   | `A05_injection_sql` / `A05_injection_xss` | SQLi · 저장형/반사형 XSS · CSP |
   | `A06_insecure_design` | rate limiting |
   | `A07_authentication_failures` | 기능 게이트 · 약한 비번 정책 |
-  | `A08_integrity_failures` | 안전하지 않은 역직렬화 |
+  | `A08_integrity_failures` | 안전하지 않은 역직렬화 · 임의 파일 업로드 |
   | `A09_logging_failures` | 보안 로깅 |
   | `A10_exceptional_conditions` | 상세 오류 노출 |
   | `sast` | semgrep (OWASP 무소속 · 리포트 전용) |
 
-- **공용 (`shared/`)** — `http`(DynamicContext·Account·CSRF·응답 헬퍼), `sources`, `sandbox`,
-  `external_tools`(osv/gitleaks/semgrep), `sqlmap`.
+- **공용 (`shared/`)** — `http`(DynamicContext·Account·응답 헬퍼), `csrf`(그레이더 프로브와 공격
+  컨테이너가 공유하는 단일 CSRF 소스), `sources`, `sandbox`, `external_tools`(osv/gitleaks/semgrep), `sqlmap`.
 - **이름 규칙** — 정적 검사 `check_*`, 동적 프로브 `dynamic_*`, 컨텍스트 `StaticContext`/
   `DynamicContext`. 표준 검사는 `fn(check, ctx, cfg) → CheckResult`(정체성은 `Check`에서 파생,
   예외 래핑은 러너가 소유). `functional`·`sqli`만 `standard=False`로 특수 호출. 규격은
@@ -160,16 +160,15 @@ flowchart TD
 
 | 카테고리 | 가중치 | 카테고리 | 가중치 |
 |---|---|---|---|
-| `security_config` | 33 | `xss` | 9 |
-| `ai_security` | 20 | `dependencies` | 9 |
-| `auth` | 18 | `sqli` | 5 |
-| `functional` | 3 | `input_validation` | 3 |
+| `functional` | 20 | `security_config` | 10 |
+| `sqli` | 15 | `dependencies` | 10 |
+| `auth` | 15 | `ai_security` | 10 |
+| `xss` | 10 | `input_validation` | 10 |
 
-가중치는 **능동적 하드닝**(보안 헤더·CSRF·쿠키·HSTS·시크릿·rate limiting·비번정책·CSP·로깅)에 쏠려 있다.
-프레임워크 기본값만으로 통과하는 검사(작동·기본 파라미터화·autoescape·기본 접근통제)는 비중이 낮고,
-`functional`은 사실상 **게이트**(가중치 3, 실패 시 40 상한). auth 안에서도 기본 접근통제(idor/admin/
-object_authorization 등)는 검사 가중치 1, 능동적 방어(rate_limiting 8·weak_password_policy 6)는 높다.
-그 결과 "아무것도 안 한" 앱은 낮게(≈10–30), 실제 방어를 구현해야 고득점.
+카테고리 안에서 검사별 가중치(`static.checks[*].weight`·`dynamic.checks[*].weight`)는 **능동적
+하드닝**에 쏠려 있다: 프레임워크 기본값으로 공짜인 검사(기본 접근통제 idor/admin/object_authorization
+등 weight 1)보다, 앱이 직접 구현해야 하는 방어(rate_limiting 8·weak_password_policy 6·보안 헤더 10·
+CSRF 12·쿠키 플래그 8·CSP 6)에 높은 weight를 준다. `functional`은 게이트도 겸한다(실패 시 40 상한).
 
 > 코드 위치(OWASP 패밀리, `checks/`)와 채점 버킷(config 카테고리)은 별개다. 집계는 파일 위치가
 > 아니라 config 매핑을 따르므로 둘은 독립적이다.
@@ -199,7 +198,7 @@ scoring/                       # 채점 엔진 (순수 python)
     base.py                    # Check 데이터클래스 + result/_undecidable
     A01_broken_access_control … A10_exceptional_conditions   # 파일명 = 패밀리 번호
     A05_injection_sql / A05_injection_xss, sast(OWASP 무소속)
-  shared/                      # http(DynamicContext)·sources·sandbox·external_tools·sqlmap
+  shared/                      # http(DynamicContext)·csrf·sources·sandbox·external_tools·sqlmap
 codex_runner/                  # codex exec 래퍼 + 활동 레닥션 (+ smoke.py dev 테스트)
 grader/                        # Django 프로젝트(패키지 grader/core/); 앱: submissions, accounts
   submissions/orchestrator/    # DB 큐 백엔드 + 파이프라인 (run_worker가 구동)

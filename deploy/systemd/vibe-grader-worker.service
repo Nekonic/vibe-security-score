@@ -1,5 +1,5 @@
 [Unit]
-Description=vibe-security-score pipeline worker (serial generation -> parallel scoring)
+Description=vibe-security-score pipeline worker (parallel generation -> parallel scoring)
 After=network.target postgresql.service docker.service
 Wants=postgresql.service
 Requires=docker.service
@@ -12,6 +12,8 @@ Group=vibe
 SupplementaryGroups=docker
 WorkingDirectory=/opt/vibe-security-score/grader
 EnvironmentFile=/etc/vibe-grader.env
+# Unbuffered stdout so `journalctl -u vibe-grader-worker -f` streams live.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/vibe-security-score/.venv/bin/python manage.py run_worker
 Restart=always
 RestartSec=5

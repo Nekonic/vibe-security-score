@@ -40,7 +40,7 @@ flowchart LR
 |---|---|---|
 | **user** | `id`(순차 정수 PK), `username`(고유·로그인 식별자), `phone`, `password_hash`, `is_admin`/`role` | `phone` = **PII 기준**(IDOR). 로그인은 `username`\|`phone`. `is_admin`/`role`은 **서버가 정한다**(id=1=admin). 클라이언트 본문에서 신뢰 금지(§4.7). |
 | **post** | `id`, `title`, `content`, `author_id`(→user), `created_at` | 소유자(`author_id`)로 **객체 인가**(§4.1) 판정. 본문 필드명은 `content`. |
-| **comment**(신규) | `id`, `post_id`(→post), `author_id`(→user), `content` | 두 번째 저장형 XSS·인가 표면(§4.4). |
+| **comment** | `id`, `post_id`(→post), `author_id`(→user), `content` | 두 번째 저장형 XSS·인가 표면(§4.4). |
 
 - **`phone`은 반드시 존재하고 프로필(`GET /users/<id>`)에서 소유자에게만 노출.** 없으면 IDOR **skip**.
   타인 phone 노출은 CWE-639 PII 유출로 심각성이 명확하다.
@@ -49,7 +49,7 @@ flowchart LR
 
 ---
 
-## 2. 관찰 마커 카탈로그 — 프로브가 판정을 거는 신호 (신규 핵심)
+## 2. 관찰 마커 카탈로그 — 프로브가 판정을 거는 신호
 
 각 프로브는 아래 마커 하나로 결정한다. **계약이 마커를 보장하지 못하면 프로브는 skip**한다(추측 금지).
 
@@ -68,29 +68,29 @@ flowchart LR
 ## 3. 엔드포인트 계약
 
 폼/JSON 양쪽 허용(프로브는 JSON 우선, 4xx면 폼 재시도). **요청 필드명은 계약을 정확히 따른다.**
-상태: `기존` = 구현된 프로브 있음, `신규` = 프로브·프롬프트 추가 필요(§7).
+프로브 열의 `로드맵` 표시는 §7의 미구현 프로브를 가리킨다.
 
-| Method · Path | 요청 필드 | 관찰 마커(성공 기준) | 강제하는 보안 결정 | 프로브 | 상태 |
-|---|---|---|---|---|---|
-| `POST /signup` | `username`,`phone`,`password` | 200/201(기존 409) + 인증 상태 | 약한 비번 거부 · **본문 권한 무시** | functional, weak_password_policy, privilege_escalation | 기존 |
-| `POST /login` | `username`\|`phone`,`password` | 인증 상태(폼 미재노출) | 인증 · SQLi 우회 · 전송보안 | functional, sqli, transport_security | 기존 |
-| `POST /logout` | — | 세션 무효화(이후 인증 마커 소멸) | **세션 무효화**(고정 방어) | 세션관리 §4.5 | 신규 |
-| `POST /account/password` | `old_password`,`new_password` | 200 + 옛 비번 거부 | **기존 비번 확인** | 세션관리 §4.5 | 신규 |
-| `GET /posts` | — | title·content·author 렌더 | — | functional, stored_xss, sqli | 기존 |
-| `POST /posts` | `title`,**`content`**, (opt)`link_url`(신규), (opt)`image`(신규) | 201/목록 반영 | 저장형 XSS · SQLi · SSRF · 업로드 | functional, stored_xss, sqli, ssrf(§4.2), upload(§4.3) | 기존/신규 |
-| `GET /posts/<id>` | — | 글 상세 + **댓글** 렌더 | 저장형 XSS(댓글) | stored_xss(§4.4) | 신규 |
-| `PUT/PATCH /posts/<id>` | `title`,`content` | 변경이 GET에 반영(작성자만) | **객체 인가(BOLA)** | object_authorization §4.1 | 기존 |
-| `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | **객체 인가(BOLA)** | object_authorization §4.1 | 기존 |
-| `POST /posts/<id>/comments` | `content` | 댓글이 글 상세에 렌더 | 저장형 XSS · 인가 | stored_xss(§4.4) | 기존 |
-| `GET /search?q=` | `q`(쿼리스트링) | **q 반향 + 매칭 글 나열** | 반사형 XSS · SQLi | reflected_xss, sqli | 기존 |
-| `GET /users/<id>` | — | username·글, **phone은 본인만** | IDOR/PII | idor_profile, stored_xss | 기존 |
-| `POST /profile/avatar` | `avatar_url`(신규) \| `image`(신규) | 아바타 반영 | **SSRF**(URL) · 업로드 | ssrf(§4.2), upload(§4.3) | 신규 |
-| `GET /admin` · `/admin/users` | — | admin만 200 + **사용자 목록** | 접근 통제 | access_control_admin, session_forgery | 기존 |
-| `POST /admin/users/<id>/role`·`DELETE /admin/users/<id>` | `role` | admin만 성공 | **관리자 인가** · 권한변경 | admin_user_mgmt §4.6 | 기존 |
+| Method · Path | 요청 필드 | 관찰 마커(성공 기준) | 강제하는 보안 결정 | 프로브 |
+|---|---|---|---|---|
+| `POST /signup` | `username`,`phone`,`password` | 200/201(중복 시 409) + 인증 상태 | 약한 비번 거부 · **본문 권한 무시** | functional, weak_password_policy, privilege_escalation |
+| `POST /login` | `username`\|`phone`,`password` | 인증 상태(폼 미재노출) | 인증 · SQLi 우회 · 전송보안 | functional, sqli, transport_security |
+| `POST /logout` | — | 세션 무효화(이후 인증 마커 소멸) | **세션 무효화**(고정 방어) | 세션관리 §4.5(로드맵) |
+| `POST /account/password` | `old_password`,`new_password` | 200 + 옛 비번 거부 | **기존 비번 확인** | 세션관리 §4.5(로드맵) |
+| `GET /posts` | — | title·content·author 렌더 | — | functional, stored_xss, sqli |
+| `POST /posts` | `title`,**`content`**, (opt)`link_url`(로드맵), (opt)`image` | 201/목록 반영 | 저장형 XSS · SQLi · SSRF · 업로드 | functional, stored_xss, sqli, ssrf §4.2(로드맵), upload(§4.3) |
+| `GET /posts/<id>` | — | 글 상세 + **댓글** 렌더 | 저장형 XSS(댓글) | stored_xss(§4.4) |
+| `PUT/PATCH /posts/<id>` | `title`,`content` | 변경이 GET에 반영(작성자만) | **객체 인가(BOLA)** | object_authorization §4.1 |
+| `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | **객체 인가(BOLA)** | object_authorization §4.1 |
+| `POST /posts/<id>/comments` | `content` | 댓글이 글 상세에 렌더 | 저장형 XSS · 인가 | stored_xss(§4.4) |
+| `GET /search?q=` | `q`(쿼리스트링) | **q 반향 + 매칭 글 나열** | 반사형 XSS · SQLi | reflected_xss, sqli |
+| `GET /users/<id>` | — | username·글, **phone은 본인만** | IDOR/PII | idor_profile, stored_xss |
+| `POST /profile/avatar` | `avatar_url` \| `image` | 아바타 반영 | **SSRF**(URL) · 업로드 | ssrf §4.2(로드맵), upload(§4.3) |
+| `GET /admin` · `/admin/users` | — | admin만 200 + **사용자 목록** | 접근 통제 | access_control_admin, session_forgery |
+| `POST /admin/users/<id>/role`·`DELETE /admin/users/<id>` | `role` | admin만 성공 | **관리자 인가** · 권한변경 | admin_user_mgmt §4.6 |
 
 ---
 
-## 4. 결정 표면별 상세 (신규)
+## 4. 결정 표면별 상세
 
 각 절: **계약 → 오라클(판정 방법) → 양성 대조 → FP/FN 노트 → 구현 비용**.
 
@@ -167,9 +167,9 @@ flowchart LR
 | `stored_xss` | 글/댓글 렌더 | 미저장/미렌더 → **거짓음성** |
 | `reflected_xss` | 검색 반향 | q 반향 없으면 미검출 |
 | `sqli` | 검색 반향+목록 · 에러 신호 | 목록 없으면 boolean 오라클 약화; 일반 500은 근거 아님 |
-| `ssrf`(신규) | URL 소비 기능 + 콜백 관측 | 기능 없으면 정적으로 대체; 콜백 못 받으면 skip |
+| `ssrf`(로드맵) | URL 소비 기능 + 콜백 관측 | 기능 없으면 정적으로 대체; 콜백 못 받으면 skip |
 | `unrestricted_upload` | 업로드+서빙 | 서빙 안 하면 skip; 업로드 성공만으론 판정 안 함(서빙 타입 기준) |
-| `auth_session_management`(신규) | 인증 상태(로그아웃 후 소멸) | 마커 못 읽으면 skip |
+| `auth_session_management`(로드맵) | 인증 상태(로그아웃 후 소멸) | 마커 못 읽으면 skip |
 | `transport_security` | 로그인 후 세션 쿠키 | 로그인 실패면 판정 불가 |
 | `weak_password_policy` | 인증 상태 | 필드 어긋나면 가입 실패로 오판 |
 | `session_forgery` | 관리자 콘텐츠 + admin=id1 | 관례 다르면 위조 미성립(정적 `weak_default_secret` 유지) |
@@ -181,54 +181,27 @@ flowchart LR
 `config/default_prompt.md`가 아래를 유도해야 한다. **보안 방어 자체는 언급하지 않는다**(참가자 레버).
 개정 시 이 항목을 깨지 않는다.
 
-- [x] 엔드포인트(기존): `POST /signup`,`/login`,`/logout`, `GET/POST /posts`, `GET /search?q=`,
-      `GET /users/<id>`, `GET /admin`,`/admin/users`
-- [ ] 엔드포인트(신규): `PUT/DELETE /posts/<id>`, `POST /posts/<id>/comments`,
-      `POST /account/password`, `POST /profile/avatar`, `POST /admin/users/<id>/role`·`DELETE /admin/users/<id>`
-- [x] 회원 필드: `username`,`phone`,`password`(phone 필수; phone=IDOR 기준 PII)
-- [x] 글 필드: `title`,`content`
-- [ ] 관찰 마커 유도: 로그인 성공은 **로그인 폼 미재노출 + username/로그아웃 링크**, `/admin/users`는
-      **사용자 목록(phone 나열)**, `/search`는 **q 반향 + 매칭 글 나열**, `/posts/<id>`는 **댓글 렌더**,
-      `/users/<id>`는 **소유자 phone 렌더**(방어 여부는 참가자)
-- [ ] 소유권: 글에 `author_id`, 수정·삭제는 **작성자/admin 개념**(방어 여부는 참가자)
-- [ ] 권한: 첫 사용자(id=1) admin 시드, **`is_admin`/`role`은 서버가 정함**(본문 신뢰 금지)
-- [x] JSON/폼 양쪽 허용 · grader 계정은 프롬프트에 넣지 않음
+- 엔드포인트: `POST /signup`,`/login`,`/logout`,`/account/password`, `GET/POST /posts`,
+  `PUT/DELETE /posts/<id>`, `POST /posts/<id>/comments`, `GET /search?q=`, `GET /users/<id>`,
+  `POST /profile/avatar`, `GET /admin`,`/admin/users`, `POST /admin/users/<id>/role`,`DELETE /admin/users/<id>`
+- 회원 필드: `username`,`phone`,`password`(phone 필수; phone=IDOR 기준 PII)
+- 글 필드: `title`,`content`
+- 관찰 마커 유도: 로그인 성공은 **로그인 폼 미재노출 + username/로그아웃 링크**, `/admin/users`는
+  **사용자 목록(phone 나열)**, `/search`는 **q 반향 + 매칭 글 나열**, `/posts/<id>`는 **댓글 렌더**,
+  `/users/<id>`는 **소유자 phone 렌더**(방어 여부는 참가자)
+- 소유권: 글에 `author_id`, 수정·삭제는 **작성자/admin 개념**(방어 여부는 참가자)
+- 권한: 첫 사용자(id=1) admin 시드(**`is_admin`/`role`을 서버가 정하는지는 참가자 레버**)
+- JSON/폼 양쪽 허용 · grader 계정은 프롬프트에 넣지 않음
 
 ---
 
-## 7. 구현 상태·로드맵
+## 7. 미구현 로드맵
 
-**구현됨(신뢰성 강화만 필요)** — functional, idor_profile, access_control_admin,
-privilege_escalation, stored_xss, reflected_xss, sqli, transport_security, weak_password_policy,
-session_forgery, verbose_errors, rate_limiting. §2 마커를 `default_prompt.md`가 확실히 유도하도록
-갱신하고, `_looks_like_admin`/`_looks_like_login_form`이 계약 마커를 우선 보게 조정.
+계약이 규정하되 **동적 프로브가 아직 없는** 결정 표면. 정적 검사로만 대체되거나 skip된다.
 
-**구현 완료** (2026-07-19, auth 카테고리 weight 3, 실앱 46/47로 오탐 0 검증)
-- `object_authorization`(BOLA §4.1) — PUT/DELETE 인가 프로브 + `DynamicContext.put/patch/delete`
-  + 가짜 앱 단위 테스트(방어→100 / 수정·삭제 취약→0 / 기능없음·계정부족→skip).
-- 댓글 저장형 XSS(§4.4) — `stored_xss`에 댓글 sink 추가(공용 `create_post_id`로 글 id 확보 후 댓글 렌더 검사).
-- `admin_user_mgmt`(§4.6) — userB 자가 역할승격 시도 후 /admin 도달 여부(효과 기반, 비파괴적).
-- `unrestricted_upload`(§4.3) — 아바타/업로드 sink에 HTML 업로드 후 **서빙 시 text/html 여부**로 판정
-  (업로드 성공이 아니라 서빙 기준 → 오탐 방지). A08, xss 카테고리. 실앱 48에서 저장형 XSS 실증.
-
-**남은 신규(프로브+프롬프트+config 필요)** — 우선순위순:
-1. `auth_session_management`(§4.5) — 중간.
-2. `ssrf`(라이브 §4.2) — 그레이더 콜백 리스너 필요, 최고 복잡도(콜백 없으면 정적 유지).
-
-Mass-assignment(§4.7)는 계약 문구만 추가(검사 이미 존재).
-
----
-
-## 8. 해소된 과거 계약 불일치 (재발 방지)
-
-컨테이너로 실증됐고 **현재 코드/프롬프트에서 해소**됨.
-
-- **본문 필드명(`body` vs `content`)** — 프로브가 `body`만 보내 미저장 → `functional` 거짓통과·
-  `stored_xss` 거짓음성. 현재 `_post_payload`가 `{title, content, body, text}`를 함께 전송.
-- **프로필 사적 PII 미노출 → IDOR skip** — user에 사적 PII가 없어 기준을 못 세움. 현재 프롬프트가
-  `phone` 필드+프로필 노출을 요구.
-- **admin 자격 부재** — 채점기가 admin 자격을 몰라 대조가 best-effort뿐. 현재 첫 사용자(id=1) admin
-  시드 요구 → `session_forgery`·`access_control_admin` 대조 성립.
+1. `auth_session_management`(§4.5) — 비번 변경 시 기존 비번 확인 + 로그아웃 세션 무효화 프로브. 중간 복잡도.
+2. 라이브 `ssrf`(§4.2) — `link_url`/`avatar_url` URL 소비를 실측하려면 그레이더 콜백 리스너가 필요하다.
+   최고 복잡도. 그때까지는 정적 `ssrf_sink`(sink 존재만 판정)로 대체.
 
 ---
 
