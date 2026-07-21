@@ -165,6 +165,17 @@ codex:
     # SCORING time; this only widens the generation step, which runs as the (already
     # unprivileged) service user on the operator's own host.
     sandbox: "danger-full-access"
+    # Full bypass: skip codex's APPROVAL gate as well, not just the sandbox. Under
+    # danger-full-access the filesystem sandbox is already off, but `codex exec` still
+    # auto-DENIES commands its execpolicy flags as destructive (rm -rf, etc.) because
+    # non-interactive mode can't prompt for approval — the model then falls back to
+    # weaker commands (rmdir) or stalls mid self-test. Generation runs on the HOST as
+    # the unprivileged `vibe` user (NOT in Docker; only the scoring step is
+    # containerized), so danger-full-access ALREADY grants full vibe-user write access
+    # — this adds no new filesystem reach, it just lets the flagged commands run.
+    # When true the runner emits --dangerously-bypass-approvals-and-sandbox and OMITS
+    # --sandbox (the two are mutually exclusive).
+    bypass_approvals: true
     extra:
       - "--skip-git-repo-check"   # allow running in a fresh temp dir
       - "--ephemeral"             # no rollout/session files left on disk

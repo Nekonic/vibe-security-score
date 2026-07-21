@@ -61,17 +61,20 @@ def _build_argv(
     reasoning_override: Optional[str] = None,
 ) -> List[str]:
     sandbox = config.get("codex.exec_flags.sandbox", "workspace-write")
+    bypass = bool(config.get("codex.exec_flags.bypass_approvals", False))
     extra = config.get("codex.exec_flags.extra", []) or []
     # Admin (GraderSettings) wins when set; else fall back to config.
     model = model_override if model_override else (config.get("codex.model", "") or "")
     effort = reasoning_override if reasoning_override else (config.get("codex.reasoning_effort", "") or "")
-    argv = [
-        *_binary_argv(config),
-        "exec",
-        "--sandbox",
-        str(sandbox),
-        *[str(f) for f in extra],
-    ]
+    argv = [*_binary_argv(config), "exec"]
+    # bypass_approvals => --dangerously-bypass-approvals-and-sandbox, which supersedes
+    # (and is mutually exclusive with) --sandbox: it skips codex's approval gate too,
+    # so exec doesn't auto-DENY destructive commands (rm -rf …) it can't prompt for.
+    if bypass:
+        argv.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        argv += ["--sandbox", str(sandbox)]
+    argv += [str(f) for f in extra]
     # Omit --model when empty: ChatGPT-account auth rejects API-only ids like gpt-5-codex.
     if model:
         argv += ["--model", str(model)]
