@@ -313,9 +313,13 @@ static:
     # Scored in the XSS rubric category. autoescape alone (framework default) is
     # table-stakes; a CSP that constrains script sources must be demonstrated.
     csp:
-      weight: 6
+      # CSP is XSS defense-in-depth, so it ranks BELOW the actual exploit probes
+      # (stored_xss 5 / reflected_xss 4) rather than above them, and a miss keeps
+      # partial credit — an app that is autoescape-clean and passes the live XSS
+      # probes shouldn't lose the whole XSS bucket over one absent header.
+      weight: 3
       score_present: 100
-      score_missing: 0
+      score_missing: 40
 
     # -- A04 Cryptographic Failures (session cookie hardening) --
     cookie_flags:

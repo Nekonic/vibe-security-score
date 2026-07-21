@@ -130,9 +130,11 @@ def test_checks_are_bucketed_by_config(gen_results):
 
 def test_csp_missing_flagged(gen_results):
     # autoescape alone (framework default) must not earn a perfect XSS: the app
-    # sets no Content-Security-Policy, so the csp defense-in-depth check is 0.
+    # sets no Content-Security-Policy, so the csp defense-in-depth check fails.
+    # A miss keeps partial credit (score_missing=40) since CSP is defense-in-depth,
+    # not an exploit — but it still does not pass.
     r = gen_results["csp"]
-    assert r.passed is False and r.score == 0.0
+    assert r.passed is False and r.score == 40.0
 
 
 def test_csp_is_bucketed_into_xss(gen_results):
