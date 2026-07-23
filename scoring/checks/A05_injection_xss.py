@@ -16,6 +16,28 @@ from ..shared.sources import _balanced_arg, _joined
 from .base import Check, _undecidable, result
 
 
+def _csp_blocks_inline_script(resp) -> bool:
+    """True if the response's CSP would block a ``javascript:`` URI / inline script.
+    Inline scripts (and javascript: URIs) run only when script-src — or default-src as
+    its fallback — allows 'unsafe-inline'. A policy present without 'unsafe-inline'
+    therefore neutralizes the click-to-run link_url vector."""
+    try:
+        csp = (resp.headers.get("Content-Security-Policy") or "").lower()
+    except Exception:
+        return False
+    if not csp:
+        return False
+    directive = None
+    for name in ("script-src-elem", "script-src", "default-src"):
+        m = re.search(name + r"\s+([^;]+)", csp)
+        if m:
+            directive = m.group(1)
+            break
+    if directive is None:
+        return False  # no script/default directive governs scripts → not blocked
+    return "unsafe-inline" not in directive
+
+
 # ── xss_template  (static) ─────────────────────────────────────────────────
 _RENDER_STR = re.compile(r"""render_template_string\s*\(""")
 _SAFE_FILTER = re.compile(r"""\|\s*safe""")
@@ -253,7 +275,12 @@ def dynamic_stored_xss(check, ctx, cfg):
                 ubody,
                 re.IGNORECASE,
             )
-            if href:
+            # A `javascript:` URI executes as inline script, so a CSP whose script-src
+            # (or default-src fallback) omits 'unsafe-inline' BLOCKS it in a compliant
+            # browser — the click-to-run vector is neutralized. Flagging it then as an
+            # unmitigated CRITICAL stored-XSS (−18, auto-runs on render) overstates a
+            # click-required, CSP-blocked defect. Only fail when the CSP does NOT stop it.
+            if href and not _csp_blocks_inline_script(udetail):
                 return result(
                     check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
                     reasons=[f"/posts/{upid}의 link_url이 javascript: href로 렌더됨 → 클릭형 저장 XSS"],

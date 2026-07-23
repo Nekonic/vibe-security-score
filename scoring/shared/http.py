@@ -99,11 +99,41 @@ def create_comment_id(ctx, sess: requests.Session, pid: int, content: str) -> Op
         for key in ("id", "comment_id", "pk"):
             if isinstance(j.get(key), int):
                 return j[key]
+    # JSON post-detail: match the just-posted comment by its unique content and read
+    # its id. Many apps render comments as plain text (no /comments/<id> edit link) and
+    # omit the id from the create response, yet expose comments[].id via JSON — without
+    # this the BOLA probe can't pin a cid and wrongly reports "no comment feature".
+    cid = _comment_id_from_json(
+        _json_or_none(ctx.get(sess, f"/posts/{pid}", headers={"Accept": "application/json"})),
+        content,
+    )
+    if cid is not None:
+        return cid
     detail = _body_text(ctx.get(sess, f"/posts/{pid}"))
     if content not in detail:
         return None
     ids = sorted({int(n) for n in re.findall(r"/comments/(\d+)", detail)}, reverse=True)
     return ids[0] if ids else None
+
+
+def _comment_id_from_json(data: Any, content: str) -> Optional[int]:
+    """Find the id of the comment whose content matches ``content`` in a JSON post
+    detail. Accepts ``{"comments": [...]}``, ``{"post": {"comments": [...]}}`` or a
+    bare list; matches on content so we never grab the wrong comment."""
+    if isinstance(data, dict):
+        items = data.get("comments")
+        if items is None and isinstance(data.get("post"), dict):
+            items = data["post"].get("comments")
+    else:
+        items = data
+    if not isinstance(items, list):
+        return None
+    for it in items:
+        if isinstance(it, dict) and content in str(it.get("content", "")):
+            for key in ("id", "comment_id", "pk"):
+                if isinstance(it.get(key), int):
+                    return it[key]
+    return None
 
 
 _LOGIN_FORM_MARKERS = ('type="password"', "type='password'", "type=password",
@@ -260,10 +290,17 @@ class DynamicContext:
         if tok:
             setattr(sess, "_csrf_token", tok)
         if r is not None and r.status_code in (400, 403, 419):
+            # 400 here is usually a VALIDATION reject (bad file type), not a CSRF
+            # failure. Blanking the token then failing to re-seed one would 403 every
+            # later upload in this probe (the positive-control image included) and make
+            # a working, restricted upload look like "no upload feature". Keep the prior
+            # token as a fallback so a validation-400 can't poison the session.
+            prev = self._csrf_for(sess)
             setattr(sess, "_csrf_token", "")
             self._seed_csrf(sess, path)
-            token = self._csrf_for(sess)
+            token = self._csrf_for(sess) or prev
             if token:
+                setattr(sess, "_csrf_token", token)
                 r2 = _try(token)
                 if r2 is not None and (r2.status_code in (200, 201) or r2.status_code < r.status_code):
                     r = r2

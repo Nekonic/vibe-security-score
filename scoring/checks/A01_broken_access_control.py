@@ -46,6 +46,33 @@ _OUTBOUND = re.compile(
     r"""(?:requests\.(?:get|post|put|delete|head|request)|httpx\.(?:get|post)|urllib\.request\.urlopen|urlopen)\s*\(\s*(?P<arg>[^,)\s]+)""",
     re.IGNORECASE,
 )
+# An SSRF guard: the enclosing function validates the target against private/loopback/
+# reserved address ranges (or a host allow-list) before the fetch. When present we
+# defer to the dynamic `ssrf` probe (which actually calls back) instead of hard-failing
+# a careful implementation on a heuristic — the static sink can't see the guard.
+_SSRF_GUARD = re.compile(
+    r"""is_private|is_loopback|is_reserved|is_link_local|is_multicast"""
+    r"""|ip_address\s*\(|ip_network\s*\(|getaddrinfo\s*\("""
+    r"""|allow_?list|allowed_hosts|ALLOWED_HOSTS""",
+    re.IGNORECASE,
+)
+_DEF_LINE = re.compile(r"""(?m)^([ \t]*)(?:async\s+)?(?:def|class)\s""")
+
+
+def _enclosing_func_body(text: str, pos: int) -> str:
+    """Source of the function/method enclosing character offset ``pos`` — from its
+    ``def`` line to the next def/class at the same-or-shallower indent."""
+    starts = [m for m in _DEF_LINE.finditer(text) if m.start() <= pos]
+    if not starts:
+        return ""
+    d = starts[-1]
+    indent = len(d.group(1))
+    end = len(text)
+    for m in _DEF_LINE.finditer(text, d.end()):
+        if len(m.group(1)) <= indent:
+            end = m.start()
+            break
+    return text[d.start():end]
 
 
 def check_ssrf_sink(check, sctx, cfg):
@@ -59,13 +86,18 @@ def check_ssrf_sink(check, sctx, cfg):
             if re.fullmatch(r"[A-Z_][A-Z0-9_]*", arg):
                 continue  # ALL_CAPS module constant (e.g. API_URL) => not user input
             lineno = text.count("\n", 0, m.start()) + 1
+            if _SSRF_GUARD.search(_enclosing_func_body(text, m.start())):
+                evidence.append(f"{path}:{lineno}: SSRF 가드(사설/loopback IP 차단) 확인 → 정적 sink 억제, 동적 ssrf에 위임")
+                continue  # guarded fetch — the dynamic ssrf probe is the real judge
             reasons.append(f"{path}:{lineno} 사용자 제어 가능 URL로 외부 요청 → SSRF 가능: {arg}")
             evidence.append(f"{path}:{lineno}: {m.group(0)[:120]}")
     if reasons:
         return result(check, cfg, score=cfg.get("score_sink", 0), passed=False,
                       reasons=reasons, evidence=evidence)
-    # No outbound sink at all is the common (safe) case for a board app.
-    return result(check, cfg, score=cfg.get("score_no_sink", 100), passed=True)
+    # No unguarded sink: either no outbound fetch at all (common, safe) or every fetch
+    # is behind an SSRF guard (evidence records which) — pass and let dynamic ssrf judge.
+    return result(check, cfg, score=cfg.get("score_no_sink", 100), passed=True,
+                  evidence=evidence)
 
 
 # ── idor_profile  (dynamic) ────────────────────────────────────────────────

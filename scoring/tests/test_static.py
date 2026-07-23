@@ -17,6 +17,7 @@ from scoring.checks import A02_security_misconfiguration as misconfig
 from scoring.checks import A03_supply_chain as dc
 from scoring.checks import A05_injection_sql as sql_ctl
 from scoring.checks import A05_injection_xss as xss_ctl
+from scoring.checks import A01_broken_access_control as ac
 from scoring.engine import StaticContext, run_static
 
 
@@ -278,6 +279,77 @@ def test_clean_cookie_flags_full(config):
                                   _sctx(sources=_clean_sources()),
                                   config.static_checks["cookie_flags"])
     assert r.passed is True and r.score == 100.0
+
+
+_SECURE_OFF_SOURCE = '''
+from flask import Flask, session
+app = Flask(__name__)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = False
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+'''
+
+
+def test_cookie_flags_secure_false_not_credited(config):
+    # The NAME SESSION_COOKIE_SECURE appears, but it is set to False — the flag is
+    # OFF. Crediting it (score 100) is a false positive; only HttpOnly + SameSite count.
+    r = crypto.check_cookie_flags(
+        _by_id(crypto, "cookie_flags"),
+        _sctx(sources=[("app.py", _SECURE_OFF_SOURCE)]),
+        config.static_checks["cookie_flags"])
+    assert r.passed is False
+    assert r.score < 100.0
+    assert any("Secure" in reason for reason in r.penalty_reasons)
+
+
+def test_cookie_flags_samesite_none_not_credited(config):
+    src = _SECURE_OFF_SOURCE.replace('"Lax"', "None").replace(
+        'SESSION_COOKIE_SECURE"] = False', 'SESSION_COOKIE_SECURE"] = True')
+    r = crypto.check_cookie_flags(
+        _by_id(crypto, "cookie_flags"),
+        _sctx(sources=[("app.py", src)]),
+        config.static_checks["cookie_flags"])
+    assert r.passed is False
+    assert any("SameSite" in reason for reason in r.penalty_reasons)
+
+
+# ---- ssrf_sink: guard-aware suppression -----------------------------------
+_SSRF_GUARDED = '''
+import ipaddress, socket, urllib.request
+from urllib.parse import urlparse
+
+def fetch_preview(url):
+    host = urlparse(url).hostname
+    for info in socket.getaddrinfo(host, 80):
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_reserved:
+            return None
+    return urllib.request.urlopen(url).read()
+'''
+
+_SSRF_UNGUARDED = '''
+import urllib.request
+
+def fetch_preview(url):
+    return urllib.request.urlopen(url).read()
+'''
+
+
+def test_ssrf_sink_suppressed_when_guarded(config):
+    # An outbound fetch whose enclosing function validates the target against
+    # private/loopback ranges must NOT be flagged — defer to the dynamic ssrf probe.
+    r = ac.check_ssrf_sink(_by_id(ac, "ssrf_sink"),
+                           _sctx(sources=[("app.py", _SSRF_GUARDED)]),
+                           config.static_checks["ssrf_sink"])
+    assert r.passed is True and r.score == 100.0
+
+
+def test_ssrf_sink_flagged_when_unguarded(config):
+    r = ac.check_ssrf_sink(_by_id(ac, "ssrf_sink"),
+                           _sctx(sources=[("app.py", _SSRF_UNGUARDED)]),
+                           config.static_checks["ssrf_sink"])
+    assert r.passed is False and r.score == 0.0
+    assert any("SSRF" in reason for reason in r.penalty_reasons)
 
 
 def test_clean_security_headers_full(config):
