@@ -1,8 +1,8 @@
 """Static-analysis unit tests.
 
-The fixture is a REAL codex-generated app (data/generated/7): modern Flask that
-gets the injection/hashing basics right but omits defense-in-depth (CSRF, headers,
-cookie flags, secret hygiene, logging) — exactly the gaps the rubric must catch.
+The fixture is a committed copy of ``data/generated/1``, produced from the current
+default prompt. It gets the injection/hashing basics right but omits several
+defense-in-depth controls (CSRF, headers, cookie flags, secret hygiene, logging).
 """
 from __future__ import annotations
 
@@ -59,10 +59,9 @@ def test_all_expected_checks_present(gen_results):
         assert cid in gen_results, f"missing check {cid}"
 
 
-def test_debug_true_flagged(gen_results):
+def test_debug_false_not_flagged(gen_results):
     r = gen_results["debug_true"]
-    assert r.passed is False and r.score == 0.0
-    assert any("debug=True" in reason for reason in r.penalty_reasons)
+    assert r.passed is True and r.score == 100.0
 
 
 def test_csrf_missing_flagged(gen_results):
@@ -97,14 +96,15 @@ def test_security_logging_missing(gen_results):
     assert gen_results["security_logging"].passed is False
 
 
-def test_injection_flagged_hashing_passes(gen_results):
-    # This baseline hashes passwords (good) but string-builds a query and renders a
-    # post body with |safe (bad) => the injection statics flag it, hashing stays full.
+def test_injection_and_hashing_basics_pass(gen_results):
+    # This baseline hashes passwords, parameterizes user-controlled SQL values, and
+    # leaves Jinja autoescaping enabled. The f-string query fragment is selected from
+    # an internal sort allow-list, so the static checks should not false-positive it.
     assert gen_results["password_hashing"].score == 100.0
-    assert gen_results["sql_parameterization"].passed is False
-    assert gen_results["sql_parameterization"].score == 20.0
-    assert gen_results["xss_template"].passed is False
-    assert gen_results["xss_template"].score == 65.0
+    assert gen_results["sql_parameterization"].passed is True
+    assert gen_results["sql_parameterization"].score == 100.0
+    assert gen_results["xss_template"].passed is True
+    assert gen_results["xss_template"].score == 100.0
 
 
 def test_cve_flags_pinned_flask(gen_results):
@@ -145,13 +145,13 @@ def test_csp_is_bucketed_into_xss(gen_results):
 
 
 def test_critical_penalties_subtract_from_final(config, gen_results):
-    # debug=True (RCE) and missing CSRF are app-wide-exploitable => they come
-    # straight off the final score, not averaged. (hardcoded_secret is NOT critical
-    # here: its key is strong, so the live session-forgery PoC can't confirm it — it
-    # stays a minor static finding by design.)
+    # Missing CSRF is app-wide-exploitable, so it comes straight off the final score
+    # instead of being averaged. debug=False is clean. hardcoded_secret is not
+    # critical in a static-only result because no live session-forgery PoC confirmed it.
     grade = combine_scores(list(gen_results.values()), config)
     hit = {p.check_id: p.penalty for p in grade.critical_penalties}
-    assert "debug_true" in hit and "csrf_protection" in hit
+    assert "debug_true" not in hit
+    assert "csrf_protection" in hit
     assert "hardcoded_secret" not in hit
     assert grade.raw_score > grade.score
     assert abs((grade.raw_score - sum(hit.values())) - grade.score) < 0.01

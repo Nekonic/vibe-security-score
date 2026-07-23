@@ -1,0 +1,9 @@
+body {font-family: Arial, sans-serif; background:#f7f7f9; margin:0;}
+.layout {max-width:900px; margin:0 auto; padding:16px; background:#fff; min-height:100vh;}
+header {display:flex; justify-content:space-between; gap:12px; align-items:center;}
+nav {display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+a {text-decoration:none}
+.err{color:#b00020}.ok{color:#0a7a0a}
+.inline{display:inline}.preserve{white-space:pre-wrap;background:#f2f2f2;padding:12px;}
+.thumb{max-width:200px; display:block; margin:8px 0;}
+.comment{border-bottom:1px solid #ddd; padding:6px 0;}

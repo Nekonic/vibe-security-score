@@ -234,6 +234,32 @@ def dynamic_stored_xss(check, ctx, cfg):
                               reasons=[f"/posts/{pid} 댓글 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS(댓글) (payload={csig!r})"],
                               evidence=[_snip(f"/posts/{pid} 댓글: …{cbody[max(0, at - 40): at + 100]}…")])
 
+    # URL-bearing fields are a distinct HTML attribute sink. Escaping quotes does
+    # not neutralize a ``javascript:`` scheme placed intact in href/src. Exercise
+    # the contract's link_url field and require the dangerous scheme to appear in
+    # an actual href attribute, rather than merely as escaped text.
+    url_marker = uuid.uuid4().hex[:10]
+    js_url = f"javascript:alert('xss-{url_marker}')"
+    upid = create_post_id(
+        ctx, sess, "xssu-" + url_marker, "url-xss-" + url_marker,
+        extra={"link_url": js_url, "url": js_url},
+    )
+    if upid is not None:
+        udetail = ctx.get(sess, f"/posts/{upid}", headers={"Accept": "text/html"})
+        if _is_html_response(udetail):
+            ubody = _body_text(udetail)
+            href = re.search(
+                r"href\s*=\s*[\"']\s*javascript:[^\"']*" + re.escape(url_marker),
+                ubody,
+                re.IGNORECASE,
+            )
+            if href:
+                return result(
+                    check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                    reasons=[f"/posts/{upid}의 link_url이 javascript: href로 렌더됨 → 클릭형 저장 XSS"],
+                    evidence=[_snip(href.group(0))],
+                )
+
     note = "입력이 거부되어 저장 안됨" if rejected else "저장되었으나 출력 시 이스케이프됨"
     return result(check, cfg, score=cfg.get("score_escaped_or_rejected", 100), passed=True,
                   evidence=[_snip(f"XSS 방어됨 ({note}); {len(variants)}종 페이로드 검증")])

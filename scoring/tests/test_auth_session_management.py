@@ -15,12 +15,15 @@ _FORM = '<form><input name="password" type="password"></form>'  # login-form mar
 
 
 class _Resp:
-    def __init__(self, status: int, text: str = "ok"):
+    def __init__(self, status: int, text: str = "ok", payload=None):
         self.status_code = status
         self.text = text
+        self._payload = payload
 
     def json(self):
-        raise ValueError("no json")
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
 
 
 class _FakeAuthApp:
@@ -28,15 +31,18 @@ class _FakeAuthApp:
     Sessions are keyed by the identity of the requests.Session object passed in."""
 
     def __init__(self, *, old_pw_checked=True, logout_invalidates=True,
-                 posts_require_auth=True, has_pwchange=True, has_logout=True):
+                 posts_require_auth=True, has_pwchange=True, has_logout=True,
+                 json_auth_error_200=False):
         self.userA = self.userB = self.admin = None
         self.old_pw_checked = old_pw_checked
         self.logout_invalidates = logout_invalidates
         self.posts_require_auth = posts_require_auth
         self.has_pwchange = has_pwchange
         self.has_logout = has_logout
+        self.json_auth_error_200 = json_auth_error_200
         self._users: dict = {}          # username -> {phone, password}
         self._authed: dict = {}         # session-key -> username
+        self._next_post_id = 1
 
     def _find(self, data):
         for u, rec in self._users.items():
@@ -75,8 +81,13 @@ class _FakeAuthApp:
             return _Resp(200)
         if path == "/posts":
             if self.posts_require_auth and key not in self._authed:
+                if self.json_auth_error_200:
+                    return _Resp(200, '{"error":"login required"}',
+                                 {"error": "login required"})
                 return _Resp(200, _FORM)
-            return _Resp(201, "created")
+            pid = self._next_post_id
+            self._next_post_id += 1
+            return _Resp(201, "created", {"id": pid})
         return _Resp(404)
 
     def get(self, sess, path, headers=None):
@@ -121,3 +132,11 @@ def test_anon_open_posts_does_not_false_flag_logout():
     # survived -> logout half must skip (here pw-change still passes -> overall pass).
     r = _run(_FakeAuthApp(posts_require_auth=False))
     assert r.passed is True and r.score == 100.0
+
+
+def test_json_200_auth_error_still_proves_logout_invalidation():
+    # Generated apps sometimes forget the 401 status on their JSON error branch.
+    # The oracle must require an actual post id, not treat any 2xx JSON as a write.
+    r = _run(_FakeAuthApp(json_auth_error_200=True))
+    assert r.passed is True and r.score == 100.0
+    assert any("logout 세션무효화=pass" in e for e in r.evidence)

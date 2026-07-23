@@ -59,8 +59,19 @@ _GIF_1x1 = bytes.fromhex(
 )
 
 
+def _active_upload_is_executable(resp, marker: str, kind: str) -> bool:
+    ctype = resp.headers.get("Content-Type", "").lower()
+    disposition = resp.headers.get("Content-Disposition", "").lower()
+    body = _body_text(resp)
+    return (
+        marker in body
+        and kind in ctype
+        and "attachment" not in disposition
+    )
+
+
 def dynamic_unrestricted_upload(check, ctx, cfg):
-    """Upload an HTML file to the avatar/upload sink, then fetch where it is served.
+    """Upload active HTML/SVG to the avatar/upload sink, then fetch where served.
     Vulnerable only if the server returns it with an HTML content-type and the payload
     intact — judged on how the file is SERVED (a stored-but-sanitized or
     attachment/`text/plain`-served file is not a false positive). If the HTML is
@@ -71,19 +82,47 @@ def dynamic_unrestricted_upload(check, ctx, cfg):
         return _undecidable(check, cfg, "업로더 세션 없음으로 판정 불가")
     sess = ctx.userA.session
     marker = uuid.uuid4().hex[:10]
+    html_marker = f"UPXSS-{marker}"
     located = _upload_and_fetch(ctx, sess, f"poc-{marker}.html",
-                                f"<script>UPXSS-{marker}</script>".encode(), "text/html")
+                                f"<script>{html_marker}</script>".encode(), "text/html")
+    safe_evidence = []
     if located is not None:
         url, resp = located
         ctype = resp.headers.get("Content-Type", "").lower()
-        if f"UPXSS-{marker}" in _body_text(resp) and "html" in ctype:
+        if _active_upload_is_executable(resp, html_marker, "html"):
             return result(check, cfg, score=cfg.get("score_unrestricted", 0), passed=False,
                           reasons=[f"업로드한 HTML이 {url}에서 text/html로 그대로 서빙됨 → 임의 파일 업로드/저장형 XSS"],
                           evidence=[_snip(f"{url} ({ctype}): {_body_text(resp)[:120]}")])
-        return result(check, cfg, score=cfg.get("score_restricted", 100), passed=True,
-                      evidence=[_snip(f"업로드 HTML이 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})")])
+        safe_evidence.append(_snip(
+            f"업로드 HTML이 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})"
+        ))
 
-    # HTML was rejected (or its served URL wasn't discoverable). Positive control: a
+    # SVG is commonly allow-listed as an "image" but can carry script/event
+    # handlers when served inline as image/svg+xml and opened directly.
+    sm = uuid.uuid4().hex[:10]
+    svg_marker = f"UPSVG-{sm}"
+    svg_payload = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(\'{svg_marker}\')">'
+        "<rect width=\"1\" height=\"1\"/></svg>"
+    ).encode()
+    svg = _upload_and_fetch(ctx, sess, f"poc-{sm}.svg", svg_payload, "image/svg+xml")
+    if svg is not None:
+        url, resp = svg
+        ctype = resp.headers.get("Content-Type", "").lower()
+        if _active_upload_is_executable(resp, svg_marker, "svg"):
+            return result(check, cfg, score=cfg.get("score_unrestricted", 0), passed=False,
+                          reasons=[f"스크립트 가능한 SVG가 {url}에서 image/svg+xml로 인라인 서빙됨 → 저장형 XSS"],
+                          evidence=[_snip(f"{url} ({ctype}): {_body_text(resp)[:160]}")])
+        safe_evidence.append(_snip(
+            f"업로드 SVG가 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})"
+        ))
+
+    if safe_evidence:
+        return result(check, cfg, score=cfg.get("score_restricted", 100), passed=True,
+                      evidence=safe_evidence)
+
+    # Active files were rejected (or their served URLs weren't discoverable). A
+    # positive control with a real image distinguishes restriction from no upload.
     # legit image must upload AND serve for us to conclude a working, restricted upload.
     m2 = uuid.uuid4().hex[:10]
     img = _upload_and_fetch(ctx, sess, f"poc-{m2}.gif", _GIF_1x1, "image/gif")

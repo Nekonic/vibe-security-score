@@ -159,6 +159,7 @@ def _sqli_builtin_oracle(
     ctx: DynamicContext, cfg: Dict[str, Any], weight: float, label: str, note: str
 ) -> CheckResult:
     try:
+        tool = "" if note.startswith("--dev:") else "sqlmap+requests"
         sess = ctx.userA.session if ctx.userA is not None else requests.Session()
         evidence: List[str] = [_snip(f"path=requests-oracle ({note})")]
         injection = False
@@ -229,19 +230,21 @@ def _sqli_builtin_oracle(
                 check_id="sqli", category="dynamic", label=label,
                 score=float(cfg.get("score_injection", 0)), weight=weight, passed=False,
                 penalty_reasons=["/search 또는 /posts?sort= 에서 SQL 인젝션 성공 → 매개변수 바인딩 미적용"],
-                evidence=evidence,
+                evidence=evidence, tool=tool,
             )
         if error_leak:
             return CheckResult(
                 check_id="sqli", category="dynamic", label=label,
                 score=float(cfg.get("score_error_leak", 40)), weight=weight, passed=False,
                 penalty_reasons=["완전한 인젝션은 아니나 SQL 오류/스택트레이스가 응답에 노출됨"],
-                evidence=evidence,
+                evidence=evidence, tool=tool,
             )
         return CheckResult(
             check_id="sqli", category="dynamic", label=label,
             score=float(cfg.get("score_no_injection", 100)), weight=weight, passed=True,
-            penalty_reasons=[], evidence=[_snip("boolean 차등/오류 노출 모두 없음 → 인젝션 미발견")],
+            penalty_reasons=[],
+            evidence=evidence + [_snip("boolean 차등/오류 노출 모두 없음 → 인젝션 미발견")],
+            tool=tool,
         )
     except Exception as exc:  # pragma: no cover
         return _scored_zero("sqli", label, weight, f"SQLi 프로브 예외: {exc}")

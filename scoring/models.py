@@ -122,6 +122,8 @@ OWASP_BY_CHECK: Dict[str, str] = {
     "admin_user_mgmt": "A01",
     "csrf_protection": "A01",
     "ssrf_sink": "A01",
+    "ssrf": "A01",
+    "comment_authorization": "A01",
     # A02 Security Misconfiguration
     "debug_true": "A02",
     "security_headers": "A02",
@@ -149,6 +151,7 @@ OWASP_BY_CHECK: Dict[str, str] = {
     # A07 Authentication Failures
     "functional": "A07",
     "weak_password_policy": "A07",
+    "auth_session_management": "A07",
     # A08 Software or Data Integrity Failures
     "insecure_deserialization": "A08",
     "unrestricted_upload": "A08",

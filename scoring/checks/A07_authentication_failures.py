@@ -11,7 +11,7 @@ import requests
 from ..models import CheckResult
 from ..shared.http import (
     DynamicContext, _body_text, _json_or_none, _login_payload, _looks_like_login_form,
-    _post_payload, _signup_payload, _snip,
+    _post_payload, _signup_payload, _snip, create_post_id,
 )
 from .base import Check, _undecidable, result
 
@@ -206,11 +206,15 @@ def _sm_login_ok(ctx, uname, phone, pw) -> bool:
 
 
 def _sm_can_create(ctx, sess) -> bool:
-    """Effect-based auth oracle: an authed session can create a post."""
-    r = ctx.post(sess, "/posts",
-                 _post_payload("sm-" + uuid.uuid4().hex[:6], "b-" + uuid.uuid4().hex[:6]))
-    return (r is not None and r.status_code in (200, 201)
-            and not _looks_like_login_form(_body_text(r)))
+    """Effect-based auth oracle: prove that a post was actually created.
+
+    A generated app may return ``200 {"error": "login required"}`` for an
+    unauthorized JSON request. Status/login-form checks alone would misread that as
+    a successful write and turn a valid logout into ``skip``. ``create_post_id``
+    requires an id or verifies the unique marker in the resulting listing/detail.
+    """
+    tag = uuid.uuid4().hex[:8]
+    return create_post_id(ctx, sess, "sm-" + tag, "b-" + tag) is not None
 
 
 def _probe_old_password_check(ctx) -> str:
