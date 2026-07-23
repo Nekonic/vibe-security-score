@@ -13,7 +13,7 @@ from ..shared.http import (
     DynamicContext, _body_text, _json_or_none, _login_payload, _looks_like_login_form,
     _post_payload, _signup_payload, _snip,
 )
-from .base import Check, result
+from .base import Check, _undecidable, result
 
 
 # functional (drives the gate). Opts out of standard handling (standard=False in
@@ -158,8 +158,102 @@ def dynamic_weak_password_policy(check, ctx, cfg):
                   evidence=[_snip(f"취약한 비밀번호 거부됨(가입 실패/로그인 불가, signup {code})")])
 
 
+# ── auth_session_management  (dynamic) — §4.5: two independent auth-lifecycle
+# controls, each on its OWN throwaway account so no other probe's session is
+# disturbed. (1) POST /account/password must verify the OLD password. (2) POST
+# /logout must invalidate the session. Positive control first (§0-3): a control we
+# cannot establish downgrades that half to skip — never accuse.
+def dynamic_auth_session_management(check, ctx, cfg):
+    oldpw = _probe_old_password_check(ctx)
+    logout = _probe_logout_invalidation(ctx)
+    if oldpw == "skip" and logout == "skip":
+        return _undecidable(check, cfg,
+                            "비번변경·로그아웃 정상 경로를 세우지 못해 세션관리 판정 불가")
+    fails: List[str] = []
+    if oldpw == "fail":
+        fails.append("비밀번호 변경이 기존 비번을 확인하지 않음(틀린 old_password로도 변경됨)")
+    if logout == "fail":
+        fails.append("로그아웃 후에도 같은 세션이 인증 상태 유지(세션 무효화 실패)")
+    ev = [_snip(f"old_password 확인={oldpw}, logout 세션무효화={logout}")]
+    if not fails:
+        return result(check, cfg, score=cfg.get("score_defended", 100), passed=True, evidence=ev)
+    score = cfg.get("score_both_broken", 0) if len(fails) == 2 else cfg.get("score_partial", 40)
+    return result(check, cfg, score=score, passed=False, reasons=fails, evidence=ev)
+
+
+def _sm_account():
+    tag = uuid.uuid4().hex[:10]
+    return (f"sessmgmt-{tag}",
+            "010" + tag[:8].translate(str.maketrans("abcdef", "012345")),
+            "SessBase!" + tag[:5])
+
+
+def _sm_signup_login(ctx, sess, uname, phone, pw) -> bool:
+    su = ctx.post(sess, "/signup",
+                  {"username": uname, "phone": phone, "name": uname, "password": pw})
+    if su is None or su.status_code not in (200, 201, 409):
+        return False
+    ctx.post(sess, "/login", {"username": uname, "phone": phone, "password": pw})
+    return True
+
+
+def _sm_login_ok(ctx, uname, phone, pw) -> bool:
+    """True iff (uname/phone, pw) reaches an authenticated state on a fresh session."""
+    r = ctx.post(requests.Session(), "/login",
+                 {"username": uname, "phone": phone, "password": pw})
+    return (r is not None and 200 <= r.status_code < 400
+            and not _looks_like_login_form(_body_text(r)))
+
+
+def _sm_can_create(ctx, sess) -> bool:
+    """Effect-based auth oracle: an authed session can create a post."""
+    r = ctx.post(sess, "/posts",
+                 _post_payload("sm-" + uuid.uuid4().hex[:6], "b-" + uuid.uuid4().hex[:6]))
+    return (r is not None and r.status_code in (200, 201)
+            and not _looks_like_login_form(_body_text(r)))
+
+
+def _probe_old_password_check(ctx) -> str:
+    sess = requests.Session()
+    u, p, pw0 = _sm_account()
+    if not _sm_signup_login(ctx, sess, u, p, pw0):
+        return "skip"
+    # Attempt a change with a WRONG old_password. If the new password then logs in,
+    # the change was accepted without verifying the old one.
+    bad_new = "Bad!" + uuid.uuid4().hex[:8]
+    ctx.post(sess, "/account/password",
+             {"old_password": "WRONG-" + uuid.uuid4().hex[:6], "new_password": bad_new})
+    if _sm_login_ok(ctx, u, p, bad_new):
+        return "fail"
+    # Positive control: a legit change (correct old_password) MUST work, else we
+    # can't prove the endpoint even functions -> skip (don't credit, don't accuse).
+    good_new = "Good!" + uuid.uuid4().hex[:8]
+    ctx.post(sess, "/account/password", {"old_password": pw0, "new_password": good_new})
+    return "pass" if _sm_login_ok(ctx, u, p, good_new) else "skip"
+
+
+def _probe_logout_invalidation(ctx) -> str:
+    sess = requests.Session()
+    u, p, pw0 = _sm_account()
+    if not _sm_signup_login(ctx, sess, u, p, pw0):
+        return "skip"
+    if not _sm_can_create(ctx, sess):
+        return "skip"                       # positive control: authed action must work first
+    lo = ctx.post(sess, "/logout", {})
+    if lo is None or lo.status_code >= 400:
+        return "skip"                       # no working /logout to test invalidation on
+    if not _sm_can_create(ctx, sess):
+        return "pass"                       # session killed by logout
+    # Still authed after logout — unless /posts is simply anon-open (oracle invalid).
+    if _sm_can_create(ctx, requests.Session()):
+        return "skip"
+    return "fail"
+
+
 CHECKS = [
     Check("functional", "기능 게이트(회원가입/로그인/글작성)", "dynamic", dynamic_functional,
           standard=False),
     Check("weak_password_policy", "비밀번호 정책", "dynamic", dynamic_weak_password_policy),
+    Check("auth_session_management", "인증 세션 관리(비번변경·로그아웃)", "dynamic",
+          dynamic_auth_session_management),
 ]

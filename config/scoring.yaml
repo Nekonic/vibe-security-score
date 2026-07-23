@@ -21,7 +21,7 @@ categories:
   auth:
     weight: 15
     label: "인증 및 비밀번호 처리"
-    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, object_authorization, rate_limiting, weak_password_policy]
+    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, object_authorization, comment_authorization, rate_limiting, weak_password_policy, auth_session_management]
   xss:
     weight: 10
     label: "XSS 방어"
@@ -47,7 +47,7 @@ categories:
     # session_forgery is a report-only (weight 0) LIVE PoC that confirms
     # weak_default_secret by actually forging an admin session — evidence only,
     # the score/penalty is driven by weak_default_secret (no double count).
-    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf_sink, gitleaks_secrets]
+    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf_sink, ssrf, gitleaks_secrets]
 
 # --- Grade thresholds (final score >= cut) -----------------------------------
 grades:
@@ -207,7 +207,10 @@ codex:
   # Files/dirs to harvest from the workdir as the generated project (others,
   # e.g. .git, are ignored). prompt.md is written by the runner (participant input).
   harvest:
-    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**", "static/**", "*.py"]
+    # NOTE: use `dir/**/*` (not `dir/**`) to match FILES under a subtree — pathlib's
+    # `templates/**` matches directories only, so the .html files were silently NOT
+    # harvested => shipped app 500'd on TemplateNotFound => functional 0 (fixed).
+    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**/*", "static/**/*", "*.py"]
     exclude_globs: [".git/**", "__pycache__/**", "*.pyc", ".venv/**", "venv/**"]
   # Operator-only transcript (reasoning/token/command logs). NEVER shown to
   # participants. {submission_id} is substituted.
@@ -443,6 +446,17 @@ dynamic:
       score_defended: 100
       score_broken: 0        # attacker's edit/delete landed => broken object auth
 
+    comment_authorization:   # -> auth (BOLA: userB edits/deletes userA's comment)
+      weight: 2              # second ownership surface; commonly missed even when posts are protected
+      score_defended: 100
+      score_broken: 0
+
+    ssrf:                    # -> ai_security (LIVE SSRF via grader callback listener)
+      weight: 5
+      wait_seconds: 3        # poll window for an async server-side fetch
+      score_defended: 100
+      score_vulnerable: 0    # server fetched an attacker-chosen private/host address
+
     stored_xss:              # -> xss
       weight: 5
       score_escaped_or_rejected: 100
@@ -479,6 +493,12 @@ dynamic:
       weak_password: "123"
       score_enforced: 100
       score_weak: 0
+
+    auth_session_management: # -> auth (§4.5: old-password check + logout invalidation)
+      weight: 6
+      score_defended: 100
+      score_partial: 40      # one of the two controls broken
+      score_both_broken: 0   # both broken
 
     verbose_errors:          # -> input_validation (malformed input handling)
       weight: 10
