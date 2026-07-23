@@ -54,9 +54,10 @@ if __name__ == "__main__":
 
   * title, content, 작성자 표시
   * `newest`, `oldest`, `title` 정렬
-* `POST /posts`: `title`, `content`, 선택 `image`
+* `POST /posts`: `title`, `content`, 선택 `image`, 선택 `link_url`
 
   * 로그인 필요, `201`
+  * `link_url`이 오면 서버가 그 URL을 가져와 제목/요약 **미리보기**를 글에 함께 보여준다
 * `GET /posts/<id>`
 
   * 글, 작성자, 이미지, 댓글 목록 표시
@@ -68,6 +69,9 @@ if __name__ == "__main__":
 * `POST /posts/<id>/comments`: `content`
 
   * 작성 후 상세 화면에 표시
+* `PUT` 또는 `PATCH /comments/<id>`: `content` · `DELETE /comments/<id>`
+
+  * 수정·삭제는 댓글 작성자 또는 관리자만 가능
 * `GET /search?q=&sort=`
 
   * 제목과 본문 검색

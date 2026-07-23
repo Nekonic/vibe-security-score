@@ -20,6 +20,7 @@ from ..models import CheckResult
 from ..shared.http import DynamicContext, _scored_zero
 from ..shared.sandbox import Sandbox
 from ..shared.sources import Source, _read_tree
+from ..shared.ssrf_callback import SSRFCallback
 
 _PY_EXT = ".py"
 _HTML_EXTS = (".html", ".htm", ".jinja", ".jinja2", ".j2")
@@ -142,12 +143,26 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
     # with the probe sequence to hide its ~6s behind the HTTP work.
     cve_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dyn-cve")
     cve_future = cve_pool.submit(dependencies.dynamic_cve, box, config)
+    ssrf_cb = None
     try:
         ctx = DynamicContext(box.base_url, config)
         # Feed hardcoded SECRET_KEY literals to session_forgery so it forges with the
         # app's ACTUAL key (a live PoC proving a hardcoded secret is exploitable).
         from ..checks.A04_cryptographic_failures import extract_hardcoded_secrets
         ctx.source_secrets = extract_hardcoded_secrets(_gather_sources(app_dir))
+        # Live SSRF: start a grader callback listener and hand the probe the address
+        # the container reaches the host at (bridge gateway). If either is unavailable
+        # (no docker gateway / bind failed), the ssrf probe skips → static fallback.
+        ssrf_cb = SSRFCallback().__enter__()
+        if ssrf_cb.port is not None:
+            # host.docker.internal (--add-host) reaches the host on Docker Desktop AND
+            # Linux; the raw bridge gateway IP is a second private target (Linux + apps
+            # that filter by hostname string but not resolved IP).
+            gateway = box.host_gateway()
+            hosts = [h for h in ("host.docker.internal", gateway) if h]
+            if hosts:
+                ctx.ssrf_callback = ssrf_cb
+                ctx.ssrf_hosts = hosts
         dynamic_checks = by_phase("dynamic")
         # functional runs first (drives the gate + seeds sessions); rest follow.
         functional = next(c for c in dynamic_checks if c.id == "functional")
@@ -199,4 +214,6 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
 
         return checks, functional_failed, False, runtime_log
     finally:
+        if ssrf_cb is not None:
+            ssrf_cb.__exit__(None, None, None)
         cve_pool.shutdown(wait=True)

@@ -83,6 +83,26 @@ def create_post_id(ctx, sess: requests.Session, title: str, content: str) -> Opt
     return None
 
 
+def create_comment_id(ctx, sess: requests.Session, pid: int, content: str) -> Optional[int]:
+    """Post a comment on ``pid`` and return its id — from the create response JSON,
+    else from a ``/comments/<id>`` reference the post-detail page renders (edit/delete
+    link). ``content`` must be unique. ``None`` if the id can't be pinned. Used by the
+    comment-authorization (BOLA) probe."""
+    r = ctx.post(sess, f"/posts/{pid}/comments", {"content": content, "body": content})
+    if r is None or r.status_code not in (200, 201):
+        return None
+    j = _json_or_none(r)
+    if isinstance(j, dict):
+        for key in ("id", "comment_id", "pk"):
+            if isinstance(j.get(key), int):
+                return j[key]
+    detail = _body_text(ctx.get(sess, f"/posts/{pid}"))
+    if content not in detail:
+        return None
+    ids = sorted({int(n) for n in re.findall(r"/comments/(\d+)", detail)}, reverse=True)
+    return ids[0] if ids else None
+
+
 _LOGIN_FORM_MARKERS = ('type="password"', "type='password'", "type=password",
                        'name="password"', "name='password'")
 
@@ -146,6 +166,11 @@ class DynamicContext:
         # session_forgery forges with these too, so a HARDCODED key is proven
         # forgeable (the grader knows its exact value), not just statically flagged.
         self.source_secrets: list = []
+        # Live SSRF probe wiring (set by run_dynamic when a callback listener is up;
+        # ssrf_hosts = private/host addresses the container can reach the grader at
+        # — host.docker.internal (portable) + the bridge gateway IP. Empty => skip).
+        self.ssrf_callback = None
+        self.ssrf_hosts: List[str] = []
         self.dev = bool(getattr(config, "dev", False))  # gate real CLI tools (sqlmap)
         self.sqlmap_cfg = dict(config.get("tools.sqlmap", {}) or {})
         # Endpoints that hand out a CSRF token (JSON body / form / <meta>), tried in

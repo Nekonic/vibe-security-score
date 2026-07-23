@@ -69,6 +69,10 @@ class Sandbox:
             "docker", "run", "-d",
             "--name", self.container_name,
             "-p", f"{self.host_port}:{self.app_port}",
+            # Let the container reach a grader listener on the host (SSRF callback).
+            # host-gateway resolves to the bridge gateway (a PRIVATE range) — exactly
+            # the kind of address a proper SSRF filter must block.
+            "--add-host", "host.docker.internal:host-gateway",
             "-e", "APP_DIR=/app",
             "-e", "DATABASE=/work/app.db",
             "-v", f"{mount_src}:/app:ro",
@@ -113,6 +117,21 @@ class Sandbox:
             return proc.returncode == 0 and proc.stdout.strip() == "true"
         except Exception:
             return False
+
+    def host_gateway(self) -> Optional[str]:
+        """The bridge gateway IP the container uses to reach the host — the address a
+        grader-side SSRF callback listener is reachable at from inside the app. ``None``
+        if it can't be resolved (then the live SSRF probe skips → static fallback)."""
+        try:
+            proc = subprocess.run(
+                ["docker", "inspect", "-f",
+                 "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}", self.container_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            ip = (proc.stdout or "").strip()
+            return ip or None
+        except Exception:
+            return None
 
     def pip_freeze(self) -> str:
         """Resolved (transitive) package versions actually installed in the running

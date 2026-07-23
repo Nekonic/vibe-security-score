@@ -4,13 +4,15 @@ sink static checks, plus the IDOR and admin access-control probes.
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from ..shared.http import (
-    _body_text, _json_or_none, _looks_like_admin, _post_payload, _snip, create_post_id,
+    _body_text, _json_or_none, _looks_like_admin, _post_payload, _snip,
+    create_comment_id, create_post_id,
 )
 from ..shared.sources import _joined
 from .base import Check, _undecidable, result
@@ -311,6 +313,124 @@ def _delete_lands(ctx, sess, pid: int) -> bool:
     return after is not None and after.status_code == 404
 
 
+# ── ssrf  (dynamic) — LIVE server-side request forgery. Hand the app a callback URL
+# on the container's host-gateway (a PRIVATE address); if the server fetches it, the
+# callback fires => it makes outbound requests to attacker-chosen private/host targets
+# with no egress filtering. Effect-based (a real fetch landed), not a static sink guess.
+def dynamic_ssrf(check, ctx, cfg):
+    cb = getattr(ctx, "ssrf_callback", None)
+    hosts = list(getattr(ctx, "ssrf_hosts", []) or [])
+    if cb is None or not hosts or getattr(cb, "port", None) is None:
+        return _undecidable(check, cfg,
+                            "SSRF 콜백 리스너 미가동으로 판정 불가(정적 ssrf_sink로 대체)")
+    if ctx.userA is None:
+        return _undecidable(check, cfg, "테스트 계정 부족으로 SSRF 판정 불가")
+
+    # Submit one distinct callback URL per reachable host (host.docker.internal + the
+    # bridge gateway IP). URL-consuming surfaces: post link preview + avatar-by-URL.
+    accepted = False
+    tokens: List[str] = []
+    for host in hosts:
+        token = "ssrf-" + uuid.uuid4().hex[:12]
+        tokens.append(token)
+        cb_url = cb.url_for(token, host)
+        r = ctx.post(ctx.userA.session, "/posts",
+                     {**_post_payload(f"ssrf-{token}", f"ssrf-{token}"), "link_url": cb_url, "url": cb_url})
+        accepted = accepted or (r is not None and r.status_code in (200, 201))
+        r2 = ctx.post(ctx.userA.session, "/profile/avatar", {"avatar_url": cb_url})
+        accepted = accepted or (r2 is not None and r2.status_code in (200, 201))
+
+    # The fetch may be async; poll the callback briefly for ANY submitted token.
+    deadline = time.monotonic() + float(cfg.get("wait_seconds", 3))
+    while time.monotonic() < deadline:
+        if any(cb.was_hit(t) for t in tokens):
+            return result(check, cfg, score=cfg.get("score_vulnerable", 0), passed=False,
+                          reasons=["서버가 공격자 지정 사설/호스트 주소를 가져옴 → SSRF(사설 대역 미차단)"],
+                          evidence=[_snip("link_url/avatar_url 제출 → 그레이더 콜백 히트: 서버측 요청 확인")])
+        time.sleep(0.2)
+
+    if not accepted:
+        return _undecidable(check, cfg,
+                            "link_url/avatar_url URL 소비 기능이 없어 SSRF 판정 불가(정적 ssrf_sink로 대체)")
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip("사설/호스트 대역 콜백이 호출되지 않음 → 서버측 URL 소비 없음/차단됨")])
+
+
+# ── comment_authorization  (dynamic) — BOLA on the SECOND ownership surface:
+# comment edit/delete. A common slip is enforcing ownership on posts but forgetting
+# it on comments. Two independent sub-surfaces (edit, delete), each with its own
+# fresh comment + positive control; a surface the app doesn't implement is skipped
+# (§0-3/4), never accused. Only if BOTH surfaces are skip is the whole check skip.
+def dynamic_comment_authorization(check, ctx, cfg):
+    if ctx.userA is None or ctx.userB is None:
+        return _undecidable(check, cfg, "테스트 계정 부족으로 댓글 인가 판정 불가")
+    tag = "cbola-" + uuid.uuid4().hex[:10]
+    pid = create_post_id(ctx, ctx.userA.session, tag, tag)
+    if pid is None:
+        return _undecidable(check, cfg, "글 생성/식별 실패로 댓글 인가 판정 불가")
+
+    edit = _comment_edit_bola(ctx, pid)
+    dele = _comment_delete_bola(ctx, pid)
+    if edit == "broken" or dele == "broken":
+        which = "수정" if edit == "broken" else "삭제"
+        return result(check, cfg, score=cfg.get("score_broken", 0), passed=False,
+                      reasons=[f"userB가 userA 댓글을 {which} → 댓글 객체 인가 실패(BOLA)"],
+                      evidence=[_snip(f"comment {which} BOLA: edit={edit}, delete={dele}")])
+    if edit == "skip" and dele == "skip":
+        return _undecidable(check, cfg, "댓글 수정·삭제 기능이 없어(대조군 없음) 판정 불가")
+    return result(check, cfg, score=cfg.get("score_defended", 100), passed=True,
+                  evidence=[_snip(f"userB 댓글 수정·삭제 시도 차단됨 (edit={edit}, delete={dele})")])
+
+
+def _comment_edit_bola(ctx, pid: int) -> str:
+    marker = "cedit-" + uuid.uuid4().hex[:10]
+    cid = create_comment_id(ctx, ctx.userA.session, pid, marker)
+    if cid is None:
+        return "skip"
+    # Positive control: owner can edit own comment. If not, edit isn't a feature -> skip.
+    if not _comment_edit_lands(ctx, ctx.userA.session, pid, cid):
+        return "skip"
+    atk = "cedit-atk-" + uuid.uuid4().hex[:8]
+    return "broken" if _comment_edit_lands(ctx, ctx.userB.session, pid, cid, atk) else "defended"
+
+
+def _comment_delete_bola(ctx, pid: int) -> str:
+    marker = "cdel-" + uuid.uuid4().hex[:10]
+    cid = create_comment_id(ctx, ctx.userA.session, pid, marker)
+    if cid is None:
+        return "skip"
+    # Attacker deletes first (while the comment exists). If its unique text disappears
+    # from the post detail, the delete landed => broken.
+    if _comment_delete_lands(ctx, ctx.userB.session, pid, cid, marker):
+        return "broken"
+    # Confirm the delete feature exists at all via the owner (control). If the owner
+    # also can't delete, there's no delete feature to test -> skip (don't credit).
+    return "defended" if _comment_delete_lands(ctx, ctx.userA.session, pid, cid, marker) else "skip"
+
+
+def _comment_edit_lands(ctx, sess, pid: int, cid: int, new_text: Optional[str] = None) -> bool:
+    """PUT/PATCH the comment, then confirm the new text on a FRESH GET of the post
+    detail (not the write response — a rejected write may still echo the input)."""
+    new_text = new_text or ("cowner-" + uuid.uuid4().hex[:8])
+    for verb in (ctx.put, ctx.patch):
+        r = verb(sess, f"/comments/{cid}", {"content": new_text, "body": new_text})
+        if r is None or r.status_code >= 500:
+            continue
+        if new_text in _body_text(ctx.get(sess, f"/posts/{pid}")):
+            return True
+    return False
+
+
+def _comment_delete_lands(ctx, sess, pid: int, cid: int, marker: str) -> bool:
+    """DELETE the comment, judged by its unique text disappearing from the post
+    detail (a strong, low-false-positive signal)."""
+    if marker not in _body_text(ctx.get(sess, f"/posts/{pid}")):
+        return False  # not present to begin with — can't judge a deletion
+    if ctx.delete(sess, f"/comments/{cid}") is None:
+        return False
+    return marker not in _body_text(ctx.get(sess, f"/posts/{pid}"))
+
+
 # ── admin_user_mgmt  (dynamic) — a normal user must not run admin user-management.
 def dynamic_admin_user_mgmt(check, ctx, cfg):
     """PoC: userB calls the role-change endpoint on ITSELF, then checks whether it
@@ -339,7 +459,8 @@ def dynamic_admin_user_mgmt(check, ctx, cfg):
 
 CHECKS = [
     Check("csrf_protection", "CSRF 보호", "static", check_csrf_protection),
-    Check("ssrf_sink", "SSRF", "static", check_ssrf_sink),
+    Check("ssrf_sink", "SSRF(정적 sink)", "static", check_ssrf_sink),
+    Check("ssrf", "SSRF(라이브 콜백)", "dynamic", dynamic_ssrf),
     Check("idor_profile", "IDOR(타인 프로필 조회)", "dynamic", dynamic_idor_profile),
     Check("access_control_admin", "접근 통제(관리자 페이지)", "dynamic",
           dynamic_access_control_admin),
@@ -347,6 +468,8 @@ CHECKS = [
           dynamic_privilege_escalation),
     Check("object_authorization", "객체 인가(BOLA·글 수정/삭제)", "dynamic",
           dynamic_object_authorization),
+    Check("comment_authorization", "객체 인가(BOLA·댓글 수정/삭제)", "dynamic",
+          dynamic_comment_authorization),
     Check("admin_user_mgmt", "관리자 사용자관리 인가", "dynamic",
           dynamic_admin_user_mgmt),
 ]

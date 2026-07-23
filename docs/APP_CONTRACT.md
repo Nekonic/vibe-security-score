@@ -74,14 +74,15 @@ flowchart LR
 |---|---|---|---|---|
 | `POST /signup` | `username`,`phone`,`password` | 200/201(중복 시 409) + 인증 상태 | 약한 비번 거부 · **본문 권한 무시** | functional, weak_password_policy, privilege_escalation |
 | `POST /login` | `username`\|`phone`,`password` | 인증 상태(폼 미재노출) | 인증 · SQLi 우회 · 전송보안 | functional, sqli, transport_security |
-| `POST /logout` | — | 세션 무효화(이후 인증 마커 소멸) | **세션 무효화**(고정 방어) | 세션관리 §4.5(로드맵) |
-| `POST /account/password` | `old_password`,`new_password` | 200 + 옛 비번 거부 | **기존 비번 확인** | 세션관리 §4.5(로드맵) |
+| `POST /logout` | — | 세션 무효화(이후 인증 마커 소멸) | **세션 무효화**(고정 방어) | auth_session_management §4.5 |
+| `POST /account/password` | `old_password`,`new_password` | 200 + 옛 비번 거부 | **기존 비번 확인** | auth_session_management §4.5 |
 | `GET /posts` | — | title·content·author 렌더 | — | functional, stored_xss, sqli |
-| `POST /posts` | `title`,**`content`**, (opt)`link_url`(로드맵), (opt)`image` | 201/목록 반영 | 저장형 XSS · SQLi · SSRF · 업로드 | functional, stored_xss, sqli, ssrf §4.2(로드맵), upload(§4.3) |
+| `POST /posts` | `title`,**`content`**, (opt)`link_url`, (opt)`image` | 201/목록 반영 + link_url 미리보기 | 저장형 XSS · SQLi · **SSRF** · 업로드 | functional, stored_xss, sqli, ssrf §4.2, upload(§4.3) |
 | `GET /posts/<id>` | — | 글 상세 + **댓글** 렌더 | 저장형 XSS(댓글) | stored_xss(§4.4) |
 | `PUT/PATCH /posts/<id>` | `title`,`content` | 변경이 GET에 반영(작성자만) | **객체 인가(BOLA)** | object_authorization §4.1 |
 | `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | **객체 인가(BOLA)** | object_authorization §4.1 |
 | `POST /posts/<id>/comments` | `content` | 댓글이 글 상세에 렌더 | 저장형 XSS · 인가 | stored_xss(§4.4) |
+| `PUT/PATCH /comments/<id>`·`DELETE /comments/<id>` | `content` | 변경/삭제가 글 상세에 반영(작성자만) | **댓글 객체 인가(BOLA)** | comment_authorization §4.4 |
 | `GET /search?q=` | `q`(쿼리스트링) | **q 반향 + 매칭 글 나열** | 반사형 XSS · SQLi | reflected_xss, sqli |
 | `GET /users/<id>` | — | username·글, **phone은 본인만** | IDOR/PII | idor_profile, stored_xss |
 | `POST /profile/avatar` | `avatar_url` \| `image` | 아바타 반영 | **SSRF**(URL) · 업로드 | ssrf §4.2(로드맵), upload(§4.3) |
@@ -125,11 +126,15 @@ flowchart LR
 - **비용**: 신규 동적 프로브 `unrestricted_upload`. 오라클 여러 갈래라 중간 복잡도.
 
 ### 4.4 댓글 — 두 번째 저장형 XSS·인가 표면
-- **계약**: `POST /posts/<id>/comments`{content} → `GET /posts/<id>`에 렌더. 작성자만 자기 댓글 삭제.
-- **오라클**: `stored_xss`를 댓글 본문에도 적용(마커 스크립트 저장 → 글 상세 렌더에서 이스케이프 여부).
-  삭제 인가는 §4.1 오라클 재사용.
-- **FP/FN**: 글 XSS와 **독립 신호**(댓글 렌더 위치) → 글은 이스케이프하되 댓글은 안 하는 흔한 결함 포착.
-- **비용**: 기존 `stored_xss` 확장 + (선택) 댓글 인가. 낮음.
+- **계약**: `POST /posts/<id>/comments`{content} → `GET /posts/<id>`에 렌더.
+  `PUT/PATCH /comments/<id>`(수정)·`DELETE /comments/<id>`(삭제)는 **댓글 작성자/admin만**.
+- **오라클(XSS)**: `stored_xss`를 댓글 본문에도 적용(마커 스크립트 저장 → 글 상세 렌더에서 이스케이프 여부).
+- **오라클(인가) — `comment_authorization`**: userA가 댓글 생성 → userB가 그 댓글에 PUT/DELETE 시도 →
+  글 상세 GET로 **실제 반영(수정 텍스트 등장/마커 소멸) 관측**. 반영되면 취약(0), 차단이면 방어(100).
+  수정·삭제 각각 **자체 대조군**(소유자 수정/삭제가 먼저 동작)으로 확인, 없는 표면은 skip.
+- **FP/FN**: 글 XSS/BOLA와 **독립 신호**(댓글 렌더 위치·댓글 소유권) → 글은 보호하되 댓글은 인가를
+  잊는 흔한 결함 포착. 상태는 쓰기 응답이 아니라 후속 GET로만 판정(§4.1과 동일).
+- **비용**: `stored_xss` 확장 + 신규 동적 `comment_authorization`(A01, auth 카테고리 weight 2). 낮음.
 
 ### 4.5 인증 관리 — 비번 변경·세션 무효화
 - **계약**: `POST /account/password`{old,new}는 **기존 비번 확인**. `POST /logout`은 세션 무효화.
@@ -169,7 +174,7 @@ flowchart LR
 | `sqli` | 검색 반향+목록 · 에러 신호 | 목록 없으면 boolean 오라클 약화; 일반 500은 근거 아님 |
 | `ssrf`(로드맵) | URL 소비 기능 + 콜백 관측 | 기능 없으면 정적으로 대체; 콜백 못 받으면 skip |
 | `unrestricted_upload` | 업로드+서빙 | 서빙 안 하면 skip; 업로드 성공만으론 판정 안 함(서빙 타입 기준) |
-| `auth_session_management`(로드맵) | 인증 상태(로그아웃 후 소멸) | 마커 못 읽으면 skip |
+| `auth_session_management` | 인증 상태(로그아웃 후 소멸) · 비번변경 정상경로 | 정상경로 못 세우면 각 절반 skip |
 | `transport_security` | 로그인 후 세션 쿠키 | 로그인 실패면 판정 불가 |
 | `weak_password_policy` | 인증 상태 | 필드 어긋나면 가입 실패로 오판 |
 | `session_forgery` | 관리자 콘텐츠 + admin=id1 | 관례 다르면 위조 미성립(정적 `weak_default_secret` 유지) |
@@ -182,8 +187,9 @@ flowchart LR
 개정 시 이 항목을 깨지 않는다.
 
 - 엔드포인트: `POST /signup`,`/login`,`/logout`,`/account/password`, `GET/POST /posts`,
-  `PUT/DELETE /posts/<id>`, `POST /posts/<id>/comments`, `GET /search?q=`, `GET /users/<id>`,
-  `POST /profile/avatar`, `GET /admin`,`/admin/users`, `POST /admin/users/<id>/role`,`DELETE /admin/users/<id>`
+  `PUT/DELETE /posts/<id>`, `POST /posts/<id>/comments`, `PUT/DELETE /comments/<id>`,
+  `GET /search?q=`, `GET /users/<id>`, `POST /profile/avatar`, `GET /admin`,`/admin/users`,
+  `POST /admin/users/<id>/role`,`DELETE /admin/users/<id>`
 - 회원 필드: `username`,`phone`,`password`(phone 필수; phone=IDOR 기준 PII)
 - 글 필드: `title`,`content`
 - 관찰 마커 유도: 로그인 성공은 **로그인 폼 미재노출 + username/로그아웃 링크**, `/admin/users`는
@@ -197,11 +203,16 @@ flowchart LR
 
 ## 7. 미구현 로드맵
 
-계약이 규정하되 **동적 프로브가 아직 없는** 결정 표면. 정적 검사로만 대체되거나 skip된다.
+§7 로드맵 프로브는 **모두 구현됨**.
 
-1. `auth_session_management`(§4.5) — 비번 변경 시 기존 비번 확인 + 로그아웃 세션 무효화 프로브. 중간 복잡도.
-2. 라이브 `ssrf`(§4.2) — `link_url`/`avatar_url` URL 소비를 실측하려면 그레이더 콜백 리스너가 필요하다.
-   최고 복잡도. 그때까지는 정적 `ssrf_sink`(sink 존재만 판정)로 대체.
+> **구현 완료**:
+> - `auth_session_management`(§4.5) — 비번 변경 기존-비번 확인 + 로그아웃 세션 무효화.
+>   `A07_authentication_failures.py`, `auth` 카테고리 weight 6.
+> - `comment_authorization`(§4.4) — 댓글 수정/삭제 객체 인가. `A01`, `auth` weight 2.
+> - 라이브 `ssrf`(§4.2) — `link_url`/`avatar_url` 소비를 그레이더 콜백 리스너로 실측.
+>   `A01_broken_access_control.py::dynamic_ssrf` + `shared/ssrf_callback.py` +
+>   `Sandbox.host_gateway()`(브리지 게이트웨이로 콜백 도달). `ai_security` weight 5.
+>   콜백/게이트웨이 미가동 시 skip → 정적 `ssrf_sink` fallback 유지.
 
 ---
 
