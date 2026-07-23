@@ -21,7 +21,7 @@ categories:
   auth:
     weight: 15
     label: "인증 및 비밀번호 처리"
-    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, object_authorization, comment_authorization, rate_limiting, weak_password_policy, auth_session_management]
+    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, rate_limiting, weak_password_policy, auth_session_management]
   xss:
     weight: 10
     label: "XSS 방어"
@@ -47,7 +47,7 @@ categories:
     # session_forgery is a report-only (weight 0) LIVE PoC that confirms
     # weak_default_secret by actually forging an admin session — evidence only,
     # the score/penalty is driven by weak_default_secret (no double count).
-    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf_sink, ssrf, gitleaks_secrets]
+    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf, gitleaks_secrets]
 
 # --- Grade thresholds (final score >= cut) -----------------------------------
 grades:
@@ -388,12 +388,12 @@ static:
       score_partial: 50
       score_none: 0
 
-    # -- A01 Broken Access Control (SSRF folded in for 2025) --
-    ssrf_sink:
-      weight: 2
-      # Outbound fetch with a user-controlled URL. No sink (common) => safe.
-      score_no_sink: 100
-      score_sink: 0
+    # NOTE: the static `ssrf_sink` check was REMOVED. Spotting an outbound fetch with a
+    # non-literal URL cannot tell a guarded implementation from an exploitable one
+    # without dataflow analysis, so it either false-flagged careful apps or (if the
+    # guard was credited) missed real bypasses. SSRF is judged ONLY by the dynamic
+    # `ssrf` probe below, which fails an app solely on a real callback it actually
+    # received — a false positive there is impossible.
 
   dependencies:                     # A03 Software Supply Chain Failures
     weight: 22                      # total pool; split across cve + typosquatting below
@@ -452,15 +452,14 @@ dynamic:
       score_escalated: 0
       admin_fields: { is_admin: true, admin: true, role: "admin", is_staff: true }
 
-    object_authorization:    # -> auth (BOLA: userB edits/deletes userA's post)
-      weight: 1
-      score_defended: 100
-      score_broken: 0        # attacker's edit/delete landed => broken object auth
-
-    comment_authorization:   # -> auth (BOLA: userB edits/deletes userA's comment)
-      weight: 2              # second ownership surface; commonly missed even when posts are protected
-      score_defended: 100
-      score_broken: 0
+    # NOTE: the object-level authorization (BOLA) probes `object_authorization` (post
+    # edit/delete) and `comment_authorization` (comment edit/delete) were REMOVED. Both
+    # had to pin a post/comment id and land an owner "positive control" before they
+    # could attack, so an app that simply didn't expose those ids in a shape the probe
+    # recognized was judged on grader-side discovery failures instead of on its real
+    # authorization — accusing or skipping for the wrong reason. Admin/function-level
+    # authorization is still covered by access_control_admin + admin_user_mgmt, and
+    # object-level PII exposure by idor_profile.
 
     ssrf:                    # -> ai_security (LIVE SSRF via grader callback listener)
       weight: 5

@@ -55,7 +55,7 @@ def test_all_expected_checks_present(gen_results):
     for cid in ("hardcoded_secret", "debug_true", "password_hashing",
                 "sql_parameterization", "xss_template", "csp", "cookie_flags",
                 "security_headers", "csrf_protection", "weak_default_secret",
-                "insecure_deserialization", "security_logging", "ssrf_sink",
+                "insecure_deserialization", "security_logging",
                 "cve", "typosquatting"):
         assert cid in gen_results, f"missing check {cid}"
 
@@ -313,43 +313,13 @@ def test_cookie_flags_samesite_none_not_credited(config):
     assert any("SameSite" in reason for reason in r.penalty_reasons)
 
 
-# ---- ssrf_sink: guard-aware suppression -----------------------------------
-_SSRF_GUARDED = '''
-import ipaddress, socket, urllib.request
-from urllib.parse import urlparse
-
-def fetch_preview(url):
-    host = urlparse(url).hostname
-    for info in socket.getaddrinfo(host, 80):
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_reserved:
-            return None
-    return urllib.request.urlopen(url).read()
-'''
-
-_SSRF_UNGUARDED = '''
-import urllib.request
-
-def fetch_preview(url):
-    return urllib.request.urlopen(url).read()
-'''
-
-
-def test_ssrf_sink_suppressed_when_guarded(config):
-    # An outbound fetch whose enclosing function validates the target against
-    # private/loopback ranges must NOT be flagged — defer to the dynamic ssrf probe.
-    r = ac.check_ssrf_sink(_by_id(ac, "ssrf_sink"),
-                           _sctx(sources=[("app.py", _SSRF_GUARDED)]),
-                           config.static_checks["ssrf_sink"])
-    assert r.passed is True and r.score == 100.0
-
-
-def test_ssrf_sink_flagged_when_unguarded(config):
-    r = ac.check_ssrf_sink(_by_id(ac, "ssrf_sink"),
-                           _sctx(sources=[("app.py", _SSRF_UNGUARDED)]),
-                           config.static_checks["ssrf_sink"])
-    assert r.passed is False and r.score == 0.0
-    assert any("SSRF" in reason for reason in r.penalty_reasons)
+# ---- ssrf: no STATIC ssrf check exists ------------------------------------
+# The static `ssrf_sink` check was removed: a non-literal URL in an outbound fetch
+# can't be told apart from a guarded one without dataflow analysis, so it produced
+# false accusations. SSRF is judged only by the live-callback dynamic probe.
+def test_no_static_ssrf_check_registered():
+    assert not any(c.id == "ssrf_sink" for c in ac.CHECKS)
+    assert not any(c.id == "ssrf" and c.phase == "static" for c in ac.CHECKS)
 
 
 def test_clean_security_headers_full(config):

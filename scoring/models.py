@@ -118,12 +118,9 @@ OWASP_BY_CHECK: Dict[str, str] = {
     "idor_profile": "A01",
     "access_control_admin": "A01",
     "privilege_escalation": "A01",
-    "object_authorization": "A01",
     "admin_user_mgmt": "A01",
     "csrf_protection": "A01",
-    "ssrf_sink": "A01",
     "ssrf": "A01",
-    "comment_authorization": "A01",
     # A02 Security Misconfiguration
     "debug_true": "A02",
     "security_headers": "A02",

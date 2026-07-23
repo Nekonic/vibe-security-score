@@ -36,7 +36,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 class SSRFCallback:
     """Context manager: starts a background HTTP listener, exposes ``url_for`` /
     ``was_hit``. Never raises on start failure — ``port is None`` then and the probe
-    treats a missing callback as 'undecidable' (falls back to static ssrf_sink)."""
+    treats a missing callback as 'undecidable' (skips — never accuses)."""
 
     def __init__(self) -> None:
         self._srv: Optional[http.server.ThreadingHTTPServer] = None

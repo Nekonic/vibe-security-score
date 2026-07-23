@@ -3,7 +3,8 @@
 Pins FP/FN WITHOUT Docker: an app that fetches the attacker-supplied private
 callback URL scores 0; one that accepts link_url but does NOT fetch (or blocks the
 private target) scores 100; an app with no URL-consuming feature, or a run without a
-callback listener, SKIPS (falls back to the static ssrf_sink) — never accuses.
+callback listener, SKIPS — never accuses. There is no static SSRF fallback: the live
+callback is the ONLY SSRF signal, so an app is failed solely on a callback it made.
 """
 from __future__ import annotations
 
