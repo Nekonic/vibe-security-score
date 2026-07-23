@@ -84,6 +84,11 @@ sudo vi /etc/vibe-grader.env      # SECRET_KEY, ALLOWED_HOSTS, DB 비밀번호 �
 ```
 - `DJANGO_DB_PASSWORD` = 3장에서 정한 Postgres `vibe` 롤 비밀번호와 동일해야 한다.
 - `DJANGO_SECRET_KEY` 생성: `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`
+- **fail-closed**: `DJANGO_DEBUG=0`인데 `DJANGO_SECRET_KEY`가 비었거나(개발용 기본값) `DJANGO_ALLOWED_HOSTS`가
+  비어 있으면 서버가 **부팅을 거부**한다. 반대로 실 `DJANGO_SECRET_KEY`를 넣고 `DJANGO_DEBUG=0`을 깜빡하면
+  역시 거부한다 — env 누락이 조용히 보안 다운그레이드로 이어지지 않도록 하기 위함.
+- `DJANGO_DEBUG=0`이면 세션·CSRF 쿠키 Secure, SSL 리다이렉트, HSTS(기본 1년)가 켜진다. HSTS **preload**는
+  준-비가역 커밋(모든 서브도메인 HTTPS 필수)이라 기본 꺼짐 — 확신 서면 `DJANGO_HSTS_PRELOAD=1`.
 
 ## 5. 앱 셋업 (vibe로) — 파이썬 · 이미지 · Codex
 
@@ -142,6 +147,10 @@ systemctl status vibe-grader-web vibe-grader-worker
 HTTP를 응답해 `curl`이 `wrong version number`로 깨진다. certbot 전에 도메인 A레코드가 이 서버를
 가리키고(`dig +short <도메인>`) 80·443 인바운드가 열려 있어야 한다.
 
+이 nginx conf는 엣지에서 `Content-Security-Policy` 헤더도 내려준다(리소스 전부 자체 호스팅이라
+`default-src 'self'`; 템플릿의 인라인 `<script>/<style>` 때문에 `script/style-src`에 `'unsafe-inline'`
+포함 — nonce로 리팩터하면 제거 가능). Referrer-Policy·X-Content-Type-Options는 Django가 내려준다.
+
 ```bash
 sudo cp /opt/vibe-security-score/deploy/nginx/vibe-grader.conf /etc/nginx/sites-available/vibe-grader
 sudo ln -s /etc/nginx/sites-available/vibe-grader /etc/nginx/sites-enabled/
@@ -154,7 +163,7 @@ sudo certbot --nginx -d nekonic.cloud            # 인증서 발급 + listen 443
 ## 9. 확인
 
 ```bash
-curl -I https://grader.example.com/                 # 200
+curl -I https://grader.example.com/                 # 200 + Strict-Transport-Security · Content-Security-Policy · Referrer-Policy · X-Content-Type-Options
 journalctl -u vibe-grader-worker -f                 # 워커 로그
 ```
 웹 UI(`/`)에서 제출을 넣고 상태가 queued → generating → scoring → done 으로 흐르는지,
