@@ -41,6 +41,9 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def dynamic_results():
     config = load_config()
+    # Keep the integration deterministic and independent of host-installed CLIs;
+    # production-mode tool execution is covered separately by tool adapter tests.
+    config.dev = True
     checks, functional_failed, boot_failed, _boot_log = run_dynamic(_APP_DIR, config)
     by_id = {c.check_id: c for c in checks}
     return by_id, functional_failed, boot_failed
@@ -54,18 +57,26 @@ def test_app_boots_and_functional_passes(dynamic_results):
     assert by_id["functional"].score == 100.0
 
 
-def test_injection_vulnerabilities_detected(dynamic_results):
-    # This baseline string-builds a query and renders a post body with |safe => the
-    # probes must FLAG both. The no-false-positive counterpart runs on secure_board.
+def test_sqli_defense_and_attribute_xss_are_distinguished(dynamic_results):
+    # SQL values are parameterized, but link_url is rendered as an unchecked href;
+    # quote escaping alone does not neutralize a javascript: URL.
     by_id, _, _ = dynamic_results
-    assert by_id["sqli"].passed is False
+    assert by_id["sqli"].passed is True
     assert by_id["stored_xss"].passed is False
     assert by_id["stored_xss"].score == 0.0
+    assert any("javascript:" in reason for reason in by_id["stored_xss"].penalty_reasons)
 
 
-def test_sqli_uses_builtin_oracle_without_dev(dynamic_results):
-    # sqlmap is dev-gated (and not installed) => verdict comes from the built-in
-    # oracle, not the sqlmap CLI (tool stays empty).
+def test_active_svg_upload_is_detected(dynamic_results):
+    by_id, _, _ = dynamic_results
+    r = by_id["unrestricted_upload"]
+    assert r.passed is False and r.score == 0.0
+    assert any("SVG" in reason for reason in r.penalty_reasons)
+
+
+def test_sqli_uses_builtin_oracle_in_dev_mode(dynamic_results):
+    # This integration fixture explicitly uses dev mode, so the verdict comes from
+    # the deterministic built-in oracle and does not claim sqlmap execution.
     by_id, _, _ = dynamic_results
     assert by_id["sqli"].tool == ""
 
@@ -78,16 +89,15 @@ def test_defense_in_depth_gaps_detected(dynamic_results):
     assert by_id["weak_password_policy"].score == 0.0 # accepts a trivial password
 
 
-def test_session_forgery_not_false_flagged(dynamic_results):
-    # The SECRET_KEY is hardcoded but a strong random value, so a blackbox forge with
-    # the known weak/default secrets must FAIL => session_forgery stays clean. (The
-    # in-source key is what the static hardcoded_secret critical flags instead.) Guards
-    # against a false forge verdict. Skipped if flask isn't importable on the host.
+def test_hardcoded_secret_is_live_forgeable(dynamic_results):
+    # The scorer extracts the app's actual hardcoded key and must prove the finding
+    # by forging user_id=1 (the contract's administrator) and rendering admin content.
     by_id, _, _ = dynamic_results
     r = by_id["session_forgery"]
     if r.skipped:
         pytest.skip("flask not importable on host — no live forge attempt")
-    assert r.passed is True and r.score == 100.0
+    assert r.passed is False and r.score == 0.0
+    assert any("소스에 하드코딩된" in reason for reason in r.penalty_reasons)
 
 
 def test_dynamic_cve_flags_pinned_flask(dynamic_results):

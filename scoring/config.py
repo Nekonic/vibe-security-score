@@ -14,9 +14,9 @@ _DEFAULT_CONFIG_PATH = os.path.normpath(
 class Config:
     def __init__(self, raw: Dict[str, Any]):
         self.raw = raw
-        # Dev mode: run REAL external CLI tools (osv-scanner/gitleaks/semgrep/sqlmap).
-        # Default False => tools are NOT executed (warn + use built-in offline checks);
-        # enable with the CLI `--dev` flag or grade_submission(dev=True).
+        # Dev mode: skip external security CLIs and use built-in/offline checks.
+        # Default False => require and run the configured external tools;
+        # enable dev mode with the CLI `--dev` flag or grade_submission(dev=True).
         self.dev = bool(raw.get("dev", False))
         self._grades = self._parse_grades(raw.get("grades", []))
         self.category_weights = self._normalize_category_weights(

@@ -175,6 +175,14 @@ _COOKIE_FLAGS = {
 # already has HttpOnly unless it explicitly turns it off — don't penalize it.
 _FLASK_SESSION = re.compile(r"""from\s+flask\s+import[^\n]*\bsession\b|\bsession\s*\[|flask\.session""", re.IGNORECASE)
 _HTTPONLY_OFF = re.compile(r"""SESSION_COOKIE_HTTPONLY['"\]\s]*[=:]\s*False""", re.IGNORECASE)
+# A flag NAME present but set to a disabling value is NOT protection. `Secure=False`
+# is the common one (apps disable it to work over plain HTTP) — crediting it just
+# because the string appears is a false positive (the flag is off). SameSite=None
+# (or False) likewise removes the cross-site restriction. HttpOnly keeps its own
+# `_HTTPONLY_OFF` (Flask defaults it on, so only an explicit False disables it).
+_SECURE_OFF = re.compile(r"""SESSION_COOKIE_SECURE['"\]\s]*[=:]\s*False""", re.IGNORECASE)
+_SAMESITE_OFF = re.compile(r"""SESSION_COOKIE_SAMESITE['"\]\s]*[=:]\s*(?:False|None|['"]None['"])""", re.IGNORECASE)
+_FLAG_OFF = {"Secure": _SECURE_OFF, "SameSite": _SAMESITE_OFF}
 
 
 def check_cookie_flags(check, sctx, cfg):
@@ -193,7 +201,8 @@ def check_cookie_flags(check, sctx, cfg):
             if not httponly_off and (explicit or uses_flask_session):
                 present.append(label)
                 evidence.append(flag if explicit else "Flask 세션 기본값(HttpOnly=True)")
-        elif explicit:
+        elif explicit and not (label in _FLAG_OFF and _FLAG_OFF[label].search(joined)):
+            # The name appears AND is not set to a disabling value (False/None).
             present.append(label)
             evidence.append(flag)
 

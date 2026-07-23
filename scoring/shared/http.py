@@ -61,12 +61,15 @@ def _post_payload(title: str, content: str) -> Dict[str, Any]:
     return {"title": title, "content": content, "body": content, "text": content}
 
 
-def create_post_id(ctx, sess: requests.Session, title: str, content: str) -> Optional[int]:
+def create_post_id(ctx, sess: requests.Session, title: str, content: str,
+                   extra: Optional[Dict[str, Any]] = None) -> Optional[int]:
     """Create a post and return its id — from the create response JSON, else by
     matching ``content`` (use a unique value) to a ``/posts/<id>`` link the listing
     exposes (form apps that redirect). ``None`` if the id can't be pinned. Shared by
     the BOLA and comment-XSS probes."""
-    r = ctx.post(sess, "/posts", _post_payload(title, content))
+    payload = _post_payload(title, content)
+    payload.update(extra or {})
+    r = ctx.post(sess, "/posts", payload)
     if r is None or r.status_code not in (200, 201):
         return None
     j = _json_or_none(r)
@@ -96,11 +99,41 @@ def create_comment_id(ctx, sess: requests.Session, pid: int, content: str) -> Op
         for key in ("id", "comment_id", "pk"):
             if isinstance(j.get(key), int):
                 return j[key]
+    # JSON post-detail: match the just-posted comment by its unique content and read
+    # its id. Many apps render comments as plain text (no /comments/<id> edit link) and
+    # omit the id from the create response, yet expose comments[].id via JSON — without
+    # this the BOLA probe can't pin a cid and wrongly reports "no comment feature".
+    cid = _comment_id_from_json(
+        _json_or_none(ctx.get(sess, f"/posts/{pid}", headers={"Accept": "application/json"})),
+        content,
+    )
+    if cid is not None:
+        return cid
     detail = _body_text(ctx.get(sess, f"/posts/{pid}"))
     if content not in detail:
         return None
     ids = sorted({int(n) for n in re.findall(r"/comments/(\d+)", detail)}, reverse=True)
     return ids[0] if ids else None
+
+
+def _comment_id_from_json(data: Any, content: str) -> Optional[int]:
+    """Find the id of the comment whose content matches ``content`` in a JSON post
+    detail. Accepts ``{"comments": [...]}``, ``{"post": {"comments": [...]}}`` or a
+    bare list; matches on content so we never grab the wrong comment."""
+    if isinstance(data, dict):
+        items = data.get("comments")
+        if items is None and isinstance(data.get("post"), dict):
+            items = data["post"].get("comments")
+    else:
+        items = data
+    if not isinstance(items, list):
+        return None
+    for it in items:
+        if isinstance(it, dict) and content in str(it.get("content", "")):
+            for key in ("id", "comment_id", "pk"):
+                if isinstance(it.get(key), int):
+                    return it[key]
+    return None
 
 
 _LOGIN_FORM_MARKERS = ('type="password"', "type='password'", "type=password",
@@ -257,10 +290,17 @@ class DynamicContext:
         if tok:
             setattr(sess, "_csrf_token", tok)
         if r is not None and r.status_code in (400, 403, 419):
+            # 400 here is usually a VALIDATION reject (bad file type), not a CSRF
+            # failure. Blanking the token then failing to re-seed one would 403 every
+            # later upload in this probe (the positive-control image included) and make
+            # a working, restricted upload look like "no upload feature". Keep the prior
+            # token as a fallback so a validation-400 can't poison the session.
+            prev = self._csrf_for(sess)
             setattr(sess, "_csrf_token", "")
             self._seed_csrf(sess, path)
-            token = self._csrf_for(sess)
+            token = self._csrf_for(sess) or prev
             if token:
+                setattr(sess, "_csrf_token", token)
                 r2 = _try(token)
                 if r2 is not None and (r2.status_code in (200, 201) or r2.status_code < r.status_code):
                     r = r2
@@ -304,6 +344,13 @@ class DynamicContext:
 # to everyone and would false-positive; the probes already hit the admin PATHS.
 _ADMIN_MARKERS = ("admin dashboard", "관리자 대시보드", "운영자", "관리자", "사용자 목록",
                   "is_admin", "post_count")
+# Generated apps often use a terse English heading instead of one of the textual
+# markers above. Match only heading-shaped admin labels so a shared navbar link
+# containing the word "admin" does not become an authorization false positive.
+_ADMIN_HEADING = re.compile(
+    r"<h[1-6][^>]*>\s*(?:admin(?:\s+dashboard)?|all\s+users)\s*</h[1-6]\s*>",
+    re.IGNORECASE,
+)
 # A soft access-denied page rendered with HTTP 200 (common) can contain "관리자"
 # ("관리자 권한이 필요합니다"); these phrases mean the viewer is NOT an admin, so a
 # match here vetoes the admin verdict (kills the denial-page false positive).
@@ -316,6 +363,8 @@ def _looks_like_admin(body: str, j: Any) -> bool:
     low = (body or "").lower()
     if any(d.lower() in low for d in _ADMIN_DENY):
         return False  # explicit denial/login page — not real admin content
+    if _ADMIN_HEADING.search(body or ""):
+        return True
     if any(m.lower() in low for m in _ADMIN_MARKERS):
         return True
     if isinstance(j, dict) and isinstance(j.get("users"), list) and j["users"]:

@@ -1,33 +1,21 @@
 {% extends 'base.html' %}
 {% block content %}
-  <div class="card">
-    <h2>{{ user['username'] }}의 프로필</h2>
-    <p>Email: {{ user['email'] }}</p>
-    <p>아바타: <img src="{{ user['avatar_url'] or '' }}" alt="avatar" style="max-width:80px;max-height:80px"></p>
-
-    <h3>작성한 글</h3>
-    {% for p in posts %}
-      <div class="comment"><a href="{{ url_for('post_detail', post_id=p['id']) }}">{{ p['title'] }}</a></div>
-    {% else %}
-      <p class="muted">작성한 글이 없습니다.</p>
-    {% endfor %}
-  </div>
-
-  <div class="card">
-    <h3>비밀번호 변경</h3>
-    <form method="post" action="{{ url_for('change_password') }}">
-      <input name="old_password" type="password" placeholder="기존 비밀번호">
-      <input name="new_password" type="password" placeholder="새 비밀번호">
-      <button type="submit">변경</button>
-    </form>
-  </div>
-
-  <div class="card">
-    <h3>아바타 변경</h3>
-    <form method="post" action="{{ url_for('set_avatar') }}" enctype="multipart/form-data">
-      <input name="avatar_url" placeholder="avatar_url">
-      <input type="file" name="image">
-      <button type="submit">URL로 설정</button>
-    </form>
-  </div>
+<h2>User Profile</h2>
+<p>username: {{ user.username }}</p>
+{% if user.avatar_url %}<img src="{{ user.avatar_url }}" alt="avatar" class="thumb">{% endif %}
+{% if can_view_phone %}<p>phone: {{ user.phone }}</p>{% endif %}
+{% if can_view_phone %}<p>this is your profile</p>{% endif %}
+<form action="/profile/avatar" method="post" enctype="multipart/form-data">
+  <input type="file" name="image">
+  <input name="avatar_url" placeholder="or avatar_url">
+  <button type="submit">upload avatar</button>
+</form>
+<h3>Posts</h3>
+<ul>
+{% for p in posts %}
+  <li><a href="/posts/{{ p.id }}">{{ p.title }}</a> ({{ p.created_at }})</li>
+{% else %}
+  <li>no posts</li>
+{% endfor %}
+</ul>
 {% endblock %}

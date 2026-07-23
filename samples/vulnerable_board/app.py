@@ -1,43 +1,148 @@
 import os
 import re
 import sqlite3
+import uuid
 from datetime import datetime
-from functools import wraps
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask import (
     Flask,
     request,
     redirect,
-    url_for,
-    render_template,
-    jsonify,
     session,
+    g,
+    jsonify,
+    render_template,
+    abort,
 )
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'replace-with-a-secure-key'
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'board.db')
-UPLOAD_DIR = os.path.join(app.root_path, 'static', 'avatars')
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.secret_key = 'flask-board-secret-key'
 
+DB_PATH = 'app.db'
+UPLOAD_DIR = Path('static/uploads')
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'}
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if 'db' not in g:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA foreign_keys = ON;')
+        g.db = conn
+    return g.db
+
+
+@app.teardown_appcontext
+
+def close_db(error):
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+
+def allowed_file(filename: str) -> bool:
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXT
+
+
+def save_image(file_storage, prefix='file'):
+    if not file_storage or not getattr(file_storage, 'filename', ''):
+        return None
+    filename = secure_filename(file_storage.filename)
+    if not filename or not allowed_file(filename):
+        return None
+    ext = filename.rsplit('.', 1)[1].lower()
+    name = f"{prefix}_{uuid.uuid4().hex}.{ext}"
+    path = UPLOAD_DIR / name
+    file_storage.save(path)
+    return f"/static/uploads/{name}"
+
+
+def current_user():
+    uid = session.get('user_id')
+    if not uid:
+        return None
+    db = get_db()
+    row = db.execute('SELECT * FROM users WHERE id = ?', (uid,)).fetchone()
+    return row
+
+
+def login_user(user):
+    session.clear()
+    session['user_id'] = user['id']
+    session['username'] = user['username']
+    session['is_admin'] = bool(user['is_admin'])
+
+
+def response_payload(title, html_template, context=None):
+    if context is None:
+        context = {}
+    wants_json = request.is_json or request.accept_mimetypes.get('application/json', 0) > 0 and not request.accept_mimetypes.get('text/html', 0)
+    if wants_json:
+        return jsonify(context), context.get('status', 200)
+    status = context.pop('status', 200)
+    return render_template(html_template, **context), status
+
+
+def parse_payload():
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+    else:
+        data = request.form.to_dict()
+    return data
+
+
+def is_admin_required():
+    user = current_user()
+    return user is not None and user['is_admin'] == 1
+
+
+def require_login():
+    if not current_user():
+        return False
+    return True
+
+
+def fetch_link_preview(url: str):
+    result = {'link_url': url, 'link_preview_title': '', 'link_preview_summary': ''}
+    if not url or not url.startswith(('http://', 'https://')):
+        return result
+    try:
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urlopen(req, timeout=1.5) as resp:
+            raw = resp.read(200_000).decode(errors='ignore')
+            title_match = re.search(r'<title>(.*?)</title>', raw, re.IGNORECASE | re.S)
+            if title_match:
+                result['link_preview_title'] = re.sub(r'\s+', ' ', title_match.group(1)).strip()
+            desc_match = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']', raw, re.IGNORECASE | re.S)
+            if not desc_match:
+                desc_match = re.search(r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']description["\']', raw, re.IGNORECASE | re.S)
+            if desc_match:
+                result['link_preview_summary'] = re.sub(r'\s+', ' ', desc_match.group(1)).strip()[:300]
+    except (URLError, HTTPError, OSError, ValueError):
+        return result
+    return result
+
+
+def ensure_post_author_or_admin(post_row):
+    user = current_user()
+    if not user:
+        return False
+    if user['is_admin'] == 1:
+        return True
+    return post_row['author_id'] == user['id']
 
 
 def init_db():
     if os.path.exists(DB_PATH):
-        try:
-            os.remove(DB_PATH)
-        except OSError:
-            pass
+        os.remove(DB_PATH)
 
-    conn = get_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('PRAGMA foreign_keys = ON;')
     cur = conn.cursor()
 
     cur.execute(
@@ -45,7 +150,7 @@ def init_db():
         CREATE TABLE users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
-            email TEXT NOT NULL UNIQUE,
+            phone TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
             avatar_url TEXT
@@ -60,8 +165,12 @@ def init_db():
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             author_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(author_id) REFERENCES users(id)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            image_url TEXT,
+            link_url TEXT,
+            link_preview_title TEXT,
+            link_preview_summary TEXT,
+            FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
         )
         '''
     )
@@ -73,630 +182,467 @@ def init_db():
             post_id INTEGER NOT NULL,
             author_id INTEGER NOT NULL,
             content TEXT NOT NULL,
-            FOREIGN KEY(post_id) REFERENCES posts(id),
-            FOREIGN KEY(author_id) REFERENCES users(id)
+            FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
         )
         '''
     )
 
-    admin_username = 'admin'
-    admin_email = 'admin@example.com'
-    admin_password = generate_password_hash('admin1234')
-
-    cur.execute(
-        'INSERT INTO users (id, username, email, password, is_admin, avatar_url) VALUES (1, ?, ?, ?, 1, ?)',
-        (admin_username, admin_email, admin_password, '/static/avatars/default.png'),
-    )
-
-    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-    sample_posts = [
-        ('환영합니다', '이 앱은 Flask와 sqlite3로 만든 간단한 게시판입니다.\n로그인 후 글을 작성해 보세요.'),
-        ('Markdown-like 줄바꿈', '엔터를 두 번 하지 않아도\n본문은 줄바꿈으로 표시됩니다.'),
-    ]
-
-    for title, content in sample_posts:
-        cur.execute(
-            'INSERT INTO posts (title, content, author_id, created_at) VALUES (?, ?, 1, ?)',
-            (title, content, now),
-        )
-
     conn.commit()
     conn.close()
 
 
-def current_user():
-    user_id = session.get('user_id')
-    if not user_id:
-        return None
-    conn = get_db()
-    cur = conn.cursor()
-    user = cur.execute(
-        'SELECT id, username, email, is_admin, avatar_url FROM users WHERE id = ?', (user_id,)
-    ).fetchone()
-    conn.close()
-    return user
-
-
-def login_user(user):
-    session['user_id'] = user['id']
-
-
-def logout_user():
-    session.pop('user_id', None)
-
-
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            if wants_json():
-                return jsonify({'ok': False, 'error': 'login required'}), 401
-            return render_template('login.html', next=request.path), 401
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user or not user['is_admin']:
-            if wants_json():
-                return jsonify({'ok': False, 'error': 'admin required'}), 403
-            return render_template('admin.html', error='관리자만 접근할 수 있습니다.'), 403
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
-def wants_json():
-    return request.headers.get('Content-Type', '').startswith('application/json') or request.is_json
-
-
-def get_payload():
-    if request.is_json:
-        return request.get_json(silent=True) or {}
-    return request.form.to_dict()
-
-
-def sort_sql(column='created_at'):
-    s = (request.args.get('sort') or request.form.get('sort') or '').strip().lower()
-    if s == 'oldest':
-        return 'created_at ASC'
-    if s == 'title':
-        return 'LOWER(title) ASC'
-    return 'created_at DESC'
-
-
-def render_if_needed(payload, template_name, context):
-    if wants_json():
-        return jsonify(payload)
-    return render_template(template_name, **context)
-
-
-def format_text(text):
-    if text is None:
-        return ''
-    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\\1</strong>', text)
-    text = text.replace('\r\n', '<br>')
-    text = text.replace('\n', '<br>')
-    return text
-
-
-def fetch_posts(sort_clause='created_at DESC', q=None):
-    conn = get_db()
-    cur = conn.cursor()
-    base_query = (
-        'SELECT p.id, p.title, p.content, p.created_at, u.username as author '
-        'FROM posts p JOIN users u ON p.author_id = u.id '
-    )
-
-    if q:
-        rows = cur.execute(
-            base_query + 'WHERE p.title LIKE ? OR p.content LIKE ? ORDER BY ' + sort_clause,
-            (f'%{q}%', f'%{q}%'),
-        ).fetchall()
-    else:
-        rows = cur.execute(base_query + 'ORDER BY ' + sort_clause).fetchall()
-
-    conn.close()
-    posts = []
-    for row in rows:
-        posts.append(dict(row))
-    return posts
+def db_get_posts(sort='newest'):
+    db = get_db()
+    sort_map = {
+        'newest': 'p.created_at DESC',
+        'oldest': 'p.created_at ASC',
+        'title': 'p.title COLLATE NOCASE ASC'
+    }
+    order_clause = sort_map.get(sort, 'p.created_at DESC')
+    query = f'''
+        SELECT p.id, p.title, p.content, p.created_at, p.image_url, p.author_id,
+               u.username
+        FROM posts p
+        JOIN users u ON u.id = p.author_id
+        ORDER BY {order_clause}
+    '''
+    rows = db.execute(query).fetchall()
+    return rows
 
 
 @app.route('/')
 def index():
-    return redirect(url_for('list_posts'))
+    return redirect('/posts')
 
 
-@app.route('/signup', methods=['GET', 'POST'])
+@app.route('/signup', methods=['POST'])
 def signup():
-    if request.method == 'GET':
-        return render_template('signup.html')
-
-    data = get_payload()
+    data = parse_payload()
     username = (data.get('username') or '').strip()
-    email = (data.get('email') or '').strip()
-    password = (data.get('password') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    password = data.get('password') or ''
 
-    if not username or not email or not password:
-        err = '모든 값을 입력해 주세요.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': err}), 400
-        return render_template('signup.html', error=err), 400
+    if not username or not phone or not password:
+        if request.is_json:
+            return jsonify({'error': 'username, phone, password are required'}), 400
+        return render_template('signup.html', error='username, phone, password are required'), 400
 
-    conn = get_db()
-    cur = conn.cursor()
+    if not re.fullmatch(r'010\d{8}', phone):
+        msg = 'phone must be 01012345678 format'
+        if request.is_json:
+            return jsonify({'error': msg}), 400
+        return render_template('signup.html', error=msg), 400
+
+    db = get_db()
+    user_count = db.execute('SELECT COUNT(*) AS cnt FROM users').fetchone()['cnt']
+    is_admin = 1 if user_count == 0 else 0
+
     try:
-        cur.execute(
-            'INSERT INTO users (username, email, password, is_admin) VALUES (?, ?, ?, 0)',
-            (username, email, generate_password_hash(password)),
+        hashed = generate_password_hash(password)
+        cur = db.execute(
+            'INSERT INTO users (username, phone, password, is_admin) VALUES (?, ?, ?, ?)',
+            (username, phone, hashed, is_admin)
         )
-        conn.commit()
-        uid = cur.lastrowid
-        conn.close()
+        db.commit()
+        user = db.execute('SELECT * FROM users WHERE id = ?', (cur.lastrowid,)).fetchone()
+        login_user(user)
     except sqlite3.IntegrityError:
-        conn.close()
-        err = '이미 사용 중인 사용자명 또는 이메일입니다.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': err}), 409
-        return render_template('signup.html', error=err), 409
+        msg = 'username or phone already exists'
+        if request.is_json:
+            return jsonify({'error': msg}), 409
+        return render_template('signup.html', error=msg), 409
 
-    user = current_user()
-    if user and user['id'] == 1:
-        pass
-    login_user({'id': uid, 'username': username})
+    if request.is_json:
+        return jsonify({'message': 'signup success', 'user_id': user['id'], 'username': user['username'], 'is_admin': bool(user['is_admin'])}), 201
 
-    if wants_json():
-        return jsonify({'ok': True, 'id': uid, 'username': username}), 201
-
-    return redirect(url_for('list_posts'))
+    return render_template('signup.html', message='signup success', user=user), 201
 
 
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['POST'])
 def login():
-    if request.method == 'GET':
-        return render_template('login.html')
+    data = parse_payload()
+    username = (data.get('username') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    password = data.get('password') or ''
 
-    data = get_payload()
-    identifier = (data.get('username') or data.get('email') or '').strip()
-    password = (data.get('password') or '').strip()
+    if not password or (not username and not phone):
+        msg = 'username or phone and password are required'
+        if request.is_json:
+            return jsonify({'error': msg}), 400
+        return render_template('login.html', error=msg), 400
 
-    if not identifier or not password:
-        err = '아이디/이메일과 비밀번호를 입력해 주세요.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': err}), 400
-        return render_template('login.html', error=err), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    user = cur.execute(
-        'SELECT * FROM users WHERE username = ? OR email = ?', (identifier, identifier)
-    ).fetchone()
-    conn.close()
+    db = get_db()
+    if phone:
+        user = db.execute('SELECT * FROM users WHERE phone = ?', (phone,)).fetchone()
+    else:
+        user = db.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
 
     if not user or not check_password_hash(user['password'], password):
-        err = '로그인 정보가 일치하지 않습니다.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': err}), 401
-        return render_template('login.html', error=err), 401
+        msg = 'invalid credentials'
+        if request.is_json:
+            return jsonify({'error': msg}), 401
+        return render_template('login.html', error=msg), 401
 
     login_user(user)
-    if wants_json():
-        return jsonify({'ok': True, 'id': user['id'], 'username': user['username']})
-    return redirect(url_for('list_posts'))
+
+    if request.is_json:
+        return jsonify({'message': 'login success', 'username': user['username']}), 200
+
+    return render_template('login.html', user=user), 200
 
 
 @app.route('/logout', methods=['POST'])
 def logout():
-    logout_user()
-    if wants_json():
-        return jsonify({'ok': True})
-    return redirect(url_for('login'))
+    session.clear()
+    if request.is_json:
+        return jsonify({'message': 'logout success'}), 200
+    return render_template('login.html', message='logout success'), 200
+
+
+@app.route('/account/password', methods=['POST'])
+def change_password():
+    if not require_login():
+        return jsonify({'error': 'login required'}) if request.is_json else (render_template('login.html', error='login required'), 401)
+
+    data = parse_payload()
+    old_password = data.get('old_password') or ''
+    new_password = data.get('new_password') or ''
+
+    if not old_password or not new_password:
+        msg = 'old_password and new_password required'
+        if request.is_json:
+            return jsonify({'error': msg}), 400
+        return render_template('login.html', error=msg), 400
+
+    user = current_user()
+    db = get_db()
+    if not check_password_hash(user['password'], old_password):
+        msg = 'old password mismatch'
+        if request.is_json:
+            return jsonify({'error': msg}), 403
+        return render_template('login.html', error=msg), 403
+
+    db.execute('UPDATE users SET password = ? WHERE id = ?', (generate_password_hash(new_password), user['id']))
+    db.commit()
+
+    if request.is_json:
+        return jsonify({'message': 'password changed'}), 200
+    return render_template('login.html', message='password changed'), 200
 
 
 @app.route('/posts', methods=['GET', 'POST'])
-def list_posts():
-    if request.method == 'GET':
-        sort_clause = sort_sql()
-        posts = fetch_posts(sort_clause)
-        return render_if_needed(
-            {'ok': True, 'posts': posts},
-            'posts.html',
-            {
-                'posts': posts,
-                'sort': request.args.get('sort', 'newest'),
-                'query': None,
-                'is_search': False,
-                'user': current_user(),
-            },
+def posts():
+    if request.method == 'POST':
+        if not require_login():
+            return jsonify({'error': 'login required'}) if request.is_json else (render_template('login.html', error='login required'), 401)
+
+        data = parse_payload()
+        title = (data.get('title') or '').strip()
+        content = (data.get('content') or '').strip()
+        link_url = (data.get('link_url') or '').strip()
+        image = request.files.get('image') if not request.is_json else None
+
+        if not title or not content:
+            msg = 'title and content are required'
+            if request.is_json:
+                return jsonify({'error': msg}), 400
+            return render_template('posts.html', error=msg, posts=db_get_posts(), user=current_user(), sort='newest'), 400
+
+        image_url = save_image(image, prefix='post') if image else None
+        link_preview = fetch_link_preview(link_url) if link_url else {'link_url': '', 'link_preview_title': '', 'link_preview_summary': ''}
+
+        db = get_db()
+        cur = db.execute(
+            '''
+            INSERT INTO posts (title, content, author_id, image_url, link_url, link_preview_title, link_preview_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                title,
+                content,
+                current_user()['id'],
+                image_url,
+                link_preview['link_url'],
+                link_preview['link_preview_title'],
+                link_preview['link_preview_summary'],
+            )
         )
+        db.commit()
+        post = db.execute('SELECT * FROM posts WHERE id = ?', (cur.lastrowid,)).fetchone()
 
-    user = current_user()
-    if not user:
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'login required'}), 401
-        return render_template('login.html', error='로그인 후 글쓰기 가능'), 401
+        if request.is_json:
+            return jsonify({'message': 'created', 'id': post['id']}), 201
+        return render_template('post_created.html', post=post, message='created'), 201
 
-    data = get_payload()
-    title = (data.get('title') or '').strip()
-    content = (data.get('content') or '').strip()
-
-    if not title or not content:
-        err = '제목과 내용을 입력해 주세요.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': err}), 400
-        return render_template('posts.html', error=err, posts=fetch_posts(sort_sql()), user=user), 400
-
-    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        'INSERT INTO posts (title, content, author_id, created_at) VALUES (?, ?, ?, ?)',
-        (title, content, user['id'], now),
-    )
-    pid = cur.lastrowid
-    conn.commit()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True, 'id': pid}), 201
-    return redirect(url_for('list_posts'))
+    sort = request.args.get('sort', 'newest')
+    posts_rows = db_get_posts(sort)
+    return render_template('posts.html', posts=posts_rows, user=current_user(), sort=sort)
 
 
-@app.route('/posts/<int:post_id>', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+@app.route('/posts/<int:post_id>', methods=['GET'])
 def post_detail(post_id):
-    conn = get_db()
-    cur = conn.cursor()
-    post = cur.execute(
-        'SELECT p.id, p.title, p.content, p.created_at, u.username AS author, u.id AS author_id '
-        'FROM posts p JOIN users u ON p.author_id = u.id WHERE p.id = ?',
+    db = get_db()
+    post = db.execute(
+        '''
+        SELECT p.*, u.username
+        FROM posts p
+        JOIN users u ON u.id = p.author_id
+        WHERE p.id = ?
+        ''',
         (post_id,)
     ).fetchone()
 
     if not post:
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'post not found'}), 404
-        return render_template('post_detail.html', error='게시글을 찾을 수 없습니다.'), 404
+        abort(404)
 
-    if request.method == 'GET':
-        comments = cur.execute(
-            'SELECT c.id, c.content, u.username AS author FROM comments c '
-            'JOIN users u ON c.author_id = u.id WHERE c.post_id = ? ORDER BY c.id ASC',
-            (post_id,),
-        ).fetchall()
-        conn.close()
-        post_html = format_text(post['content'])
-        if wants_json():
-            return jsonify(
-                {
-                    'ok': True,
-                    'post': dict(post),
-                    'content_html': post_html,
-                    'comments': [dict(r) for r in comments],
-                }
-            )
-        return render_template(
-            'post_detail.html',
-            post=dict(post),
-            content_html=post_html,
-            comments=comments,
-            user=current_user(),
-        )
+    comments = db.execute(
+        '''
+        SELECT c.*, u.username
+        FROM comments c
+        JOIN users u ON u.id = c.author_id
+        WHERE c.post_id = ?
+        ORDER BY c.id DESC
+        ''',
+        (post_id,)
+    ).fetchall()
 
-    user = current_user()
-    if not user:
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'login required'}), 401
-        return render_template('login.html', error='로그인 후 이용 가능합니다.'), 401
+    return render_template('post_detail.html', post=post, comments=comments, user=current_user())
 
-    method_override = request.form.get('_method', '').upper() if request.form else ''
-    if request.method == 'POST':
-        # HTML 폼 호환: _method=PATCH/DELETE로 분기
-        method = method_override
-        if method not in ('PUT', 'PATCH', 'DELETE'):
-            if wants_json():
-                return jsonify({'ok': False, 'error': 'method not allowed'}), 405
-            return render_template('post_detail.html', post=dict(post), comments=[], user=user, error='잘못된 요청 방식'), 405
-    else:
-        method = request.method
 
-    if method in ('PUT', 'PATCH'):
-        data = get_payload()
-        title = (data.get('title') or '').strip()
-        content = (data.get('content') or '').strip()
+@app.route('/posts/<int:post_id>', methods=['PUT', 'PATCH'])
+def post_update(post_id):
+    if not require_login():
+        return jsonify({'error': 'login required'}) if request.is_json else (render_template('login.html', error='login required'), 401)
 
-        if not title and not content:
-            conn.close()
-            msg = 'title 또는 content 중 하나는 필요합니다.'
-            if wants_json():
-                return jsonify({'ok': False, 'error': msg}), 400
-            return render_template('post_detail.html', post=dict(post), comments=[], user=user, error=msg), 400
+    db = get_db()
+    post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+    if not post:
+        return jsonify({'error': 'post not found'}), 404
 
-        if not (user['is_admin'] or user['id'] == post['author_id']):
-            conn.close()
-            msg = '수정 권한이 없습니다.'
-            if wants_json():
-                return jsonify({'ok': False, 'error': msg}), 403
-            return render_template('post_detail.html', post=dict(post), comments=[], user=user, error=msg), 403
+    if not ensure_post_author_or_admin(post):
+        return jsonify({'error': 'forbidden'}) if request.is_json else (render_template('login.html', error='forbidden'), 403)
 
-        if not title:
-            title = post['title']
-        if not content:
-            content = post['content']
+    data = parse_payload()
+    title = (data.get('title') or '').strip()
+    content = (data.get('content') or '').strip()
 
-        cur.execute(
-            'UPDATE posts SET title = ?, content = ? WHERE id = ?',
-            (title, content, post_id),
-        )
-        conn.commit()
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': True, 'id': post_id, 'title': title, 'content': content})
-        return redirect(url_for('post_detail', post_id=post_id))
+    db.execute('UPDATE posts SET title = ?, content = ? WHERE id = ?', (title, content, post_id))
+    db.commit()
 
-    # DELETE
-    if not (user['is_admin'] or user['id'] == post['author_id']):
-        conn.close()
-        msg = '삭제 권한이 없습니다.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': msg}), 403
-        return render_template('post_detail.html', post=dict(post), comments=[], user=user, error=msg), 403
+    if request.is_json:
+        return jsonify({'message': 'post updated', 'id': post_id}), 200
+    return render_template('post_detail.html', post=db.execute('SELECT p.*, u.username FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?', (post_id,)).fetchone(), comments=db.execute('SELECT c.*, u.username FROM comments c JOIN users u ON u.id = c.author_id WHERE c.post_id = ?', (post_id,)).fetchall(), user=current_user()), 200
 
-    cur.execute('DELETE FROM comments WHERE post_id = ?', (post_id,))
-    cur.execute('DELETE FROM posts WHERE id = ?', (post_id,))
-    conn.commit()
-    conn.close()
-    if wants_json():
-        return jsonify({'ok': True, 'deleted': post_id})
-    return redirect(url_for('list_posts'))
+
+@app.route('/posts/<int:post_id>', methods=['DELETE'])
+def post_delete(post_id):
+    if not require_login():
+        return jsonify({'error': 'login required'}), 401
+
+    db = get_db()
+    post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+    if not post:
+        return jsonify({'error': 'post not found'}), 404
+    if not ensure_post_author_or_admin(post):
+        return jsonify({'error': 'forbidden'}), 403
+
+    db.execute('DELETE FROM posts WHERE id = ?', (post_id,))
+    db.commit()
+    return jsonify({'message': 'post deleted'}) if request.is_json else (render_template('posts.html', posts=db_get_posts(), user=current_user(), message='post deleted'), 200)
 
 
 @app.route('/posts/<int:post_id>/comments', methods=['POST'])
-@login_required
-def add_comment(post_id):
-    user = current_user()
-    data = get_payload()
-    content = (data.get('content') or '').strip()
+def comments_create(post_id):
+    if not require_login():
+        return jsonify({'error': 'login required'}) if request.is_json else (render_template('login.html', error='login required'), 401)
 
-    if not content:
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'content required'}), 400
-        return redirect(url_for('post_detail', post_id=post_id))
-
-    conn = get_db()
-    cur = conn.cursor()
-    post = cur.execute('SELECT id FROM posts WHERE id = ?', (post_id,)).fetchone()
+    db = get_db()
+    post = db.execute('SELECT id FROM posts WHERE id = ?', (post_id,)).fetchone()
     if not post:
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'post not found'}), 404
-        return render_template('post_detail.html', error='게시글을 찾을 수 없습니다.'), 404
+        return jsonify({'error': 'post not found'}) if request.is_json else (render_template('posts.html', error='post not found', posts=db_get_posts(), user=current_user()), 404)
 
-    cur.execute(
-        'INSERT INTO comments (post_id, author_id, content) VALUES (?, ?, ?)',
-        (post_id, user['id'], content),
-    )
-    conn.commit()
-    conn.close()
+    data = parse_payload()
+    content = (data.get('content') or '').strip()
+    if not content:
+        msg = 'content required'
+        return jsonify({'error': msg}), 400
 
-    if wants_json():
-        return jsonify({'ok': True}), 201
-    return redirect(url_for('post_detail', post_id=post_id))
+    cur = db.execute('INSERT INTO comments (post_id, author_id, content) VALUES (?, ?, ?)', (post_id, current_user()['id'], content))
+    db.commit()
+
+    if request.is_json:
+        return jsonify({'message': 'comment created', 'id': cur.lastrowid}), 201
+
+    comment_row = db.execute(
+        'SELECT c.*, u.username FROM comments c JOIN users u ON u.id = c.author_id WHERE c.id = ?',
+        (cur.lastrowid,)
+    ).fetchone()
+    return render_template('post_detail.html', post=db.execute('SELECT p.*, u.username FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?', (post_id,)).fetchone(), comments=db.execute('SELECT c.*, u.username FROM comments c JOIN users u ON u.id = c.author_id WHERE c.post_id = ? ORDER BY c.id DESC', (post_id,)).fetchall(), user=current_user(), new_comment=comment_row), 201
+
+
+@app.route('/comments/<int:comment_id>', methods=['PUT', 'PATCH'])
+def comment_update(comment_id):
+    if not require_login():
+        return jsonify({'error': 'login required'}), 401
+
+    db = get_db()
+    comment = db.execute('SELECT * FROM comments WHERE id = ?', (comment_id,)).fetchone()
+    if not comment:
+        return jsonify({'error': 'comment not found'}), 404
+
+    user = current_user()
+    if not (user['is_admin'] == 1 or comment['author_id'] == user['id']):
+        return jsonify({'error': 'forbidden'}), 403
+
+    data = parse_payload()
+    content = (data.get('content') or '').strip()
+    if not content:
+        return jsonify({'error': 'content required'}), 400
+
+    db.execute('UPDATE comments SET content = ? WHERE id = ?', (content, comment_id))
+    db.commit()
+    return jsonify({'message': 'comment updated', 'id': comment_id}), 200
+
+
+@app.route('/comments/<int:comment_id>', methods=['DELETE'])
+def comment_delete(comment_id):
+    if not require_login():
+        return jsonify({'error': 'login required'}), 401
+
+    db = get_db()
+    comment = db.execute('SELECT * FROM comments WHERE id = ?', (comment_id,)).fetchone()
+    if not comment:
+        return jsonify({'error': 'comment not found'}), 404
+
+    user = current_user()
+    if not (user['is_admin'] == 1 or comment['author_id'] == user['id']):
+        return jsonify({'error': 'forbidden'}), 403
+
+    db.execute('DELETE FROM comments WHERE id = ?', (comment_id,))
+    db.commit()
+    return jsonify({'message': 'comment deleted'}), 200
 
 
 @app.route('/search')
 def search():
-    q = (request.args.get('q') or '').strip()
-    sort_clause = sort_sql()
-    posts = fetch_posts(sort_clause, q=q)
-    return render_if_needed(
-        {'ok': True, 'q': q, 'posts': posts},
-        'posts.html',
-        {
-            'posts': posts,
-            'search_query': q,
-            'query': q,
-            'is_search': True,
-            'sort': request.args.get('sort', 'newest'),
-            'user': current_user(),
-        },
-    )
+    q = request.args.get('q', '').strip()
+    sort = request.args.get('sort', 'newest')
+
+    db = get_db()
+    sort_map = {
+        'newest': 'p.created_at DESC',
+        'oldest': 'p.created_at ASC',
+        'title': 'p.title COLLATE NOCASE ASC'
+    }
+    order_clause = sort_map.get(sort, 'p.created_at DESC')
+
+    like_q = f"%{q}%"
+    rows = db.execute(
+        f'''
+        SELECT p.id, p.title, p.content, p.created_at, p.image_url, p.author_id, u.username
+        FROM posts p
+        JOIN users u ON u.id = p.author_id
+        WHERE p.title LIKE ? OR p.content LIKE ?
+        ORDER BY {order_clause}
+        ''',
+        (like_q, like_q)
+    ).fetchall()
+
+    return render_template('search.html', posts=rows, q=q, sort=sort, user=current_user())
 
 
 @app.route('/users/<int:user_id>')
 def user_profile(user_id):
-    conn = get_db()
-    cur = conn.cursor()
-    user = cur.execute(
-        'SELECT id, username, email, avatar_url FROM users WHERE id = ?', (user_id,)
-    ).fetchone()
-
+    db = get_db()
+    user = db.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
     if not user:
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'user not found'}), 404
-        return render_template('user_profile.html', error='사용자를 찾을 수 없습니다.'), 404
+        abort(404)
 
-    posts = cur.execute(
-        'SELECT id, title, content, created_at FROM posts WHERE author_id = ? ORDER BY created_at DESC',
-        (user_id,),
-    ).fetchall()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True, 'user': dict(user), 'posts': [dict(r) for r in posts]})
-
-    return render_template(
-        'user_profile.html',
-        user=user,
-        posts=posts,
-        user_current=current_user(),
-    )
-
-
-@app.route('/account/password', methods=['POST'])
-@login_required
-def change_password():
-    user = current_user()
-    data = get_payload()
-    old_pw = (data.get('old_password') or '').strip()
-    new_pw = (data.get('new_password') or '').strip()
-
-    if not old_pw or not new_pw:
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'old_password and new_password required'}), 400
-        return render_template('account_password.html', user=user, error='두 비밀번호를 모두 입력해 주세요.'), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    row = cur.execute('SELECT password FROM users WHERE id = ?', (user['id'],)).fetchone()
-    if not row or not check_password_hash(row['password'], old_pw):
-        conn.close()
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'old password mismatch'}), 400
-        return render_template('account_password.html', user=user, error='기존 비밀번호가 일치하지 않습니다.'), 400
-
-    cur.execute('UPDATE users SET password = ? WHERE id = ?', (generate_password_hash(new_pw), user['id']))
-    conn.commit()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True})
-    return render_template('account_password.html', user=user, ok='비밀번호가 변경되었습니다.')
-
-
-@app.route('/admin')
-@admin_required
-def admin_dashboard():
-    return render_template('admin.html', user=current_user(), users_total=user_count())
-
-
-def user_count():
-    conn = get_db()
-    cur = conn.cursor()
-    count = cur.execute('SELECT COUNT(*) AS cnt FROM users').fetchone()['cnt']
-    conn.close()
-    return count
-
-
-@app.route('/admin/users')
-@admin_required
-def admin_users():
-    conn = get_db()
-    cur = conn.cursor()
-    users = cur.execute('SELECT id, username, email, is_admin FROM users ORDER BY id ASC').fetchall()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True, 'users': [dict(u) for u in users]})
-    return render_template('admin_users.html', users=users, user=current_user())
-
-
-@app.route('/admin/users/<int:user_id>/role', methods=['POST'])
-@admin_required
-def admin_user_role(user_id):
-    payload = get_payload()
-    if request.method != 'POST':
-        return jsonify({'ok': False, 'error': 'method not allowed'}), 405
-
-    raw = payload.get('is_admin', payload.get('role', ''))
-    try:
-        is_admin = int(raw) if str(raw).strip() != '' else int(str(raw).lower() in ('true', '1', 'yes', 'on'))
-    except Exception:
-        is_admin = 1 if str(raw).strip().lower() in ('true', '1', 'yes', 'on') else 0
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('UPDATE users SET is_admin = ? WHERE id = ?', (1 if is_admin else 0, user_id))
-    conn.commit()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True, 'user_id': user_id, 'is_admin': bool(is_admin)})
-
-    return redirect(url_for('admin_users'))
-
-
-@app.route('/admin/users/<int:user_id>', methods=['DELETE', 'POST'])
-@admin_required
-def admin_user_delete(user_id):
-    user = current_user()
-    if user['id'] == user_id:
-        msg = '자신은 삭제할 수 없습니다.'
-        if wants_json():
-            return jsonify({'ok': False, 'error': msg}), 400
-        return redirect(url_for('admin_users'))
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('DELETE FROM comments WHERE author_id = ?', (user_id,))
-    cur.execute('UPDATE posts SET author_id = 1 WHERE author_id = ?', (user_id,))
-    cur.execute('DELETE FROM users WHERE id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
-    if wants_json():
-        return jsonify({'ok': True, 'deleted': user_id})
-    return redirect(url_for('admin_users'))
+    posts_rows = db.execute('SELECT id, title, created_at FROM posts WHERE author_id = ? ORDER BY created_at DESC', (user_id,)).fetchall()
+    viewer = current_user()
+    can_view_phone = viewer is not None and viewer['id'] == user_id
+    return render_template('user_profile.html', user=user, posts=posts_rows, can_view_phone=can_view_phone)
 
 
 @app.route('/profile/avatar', methods=['POST'])
-@login_required
-def set_avatar():
-    user = current_user()
-    avatar_url = None
+def update_avatar():
+    if not require_login():
+        return jsonify({'error': 'login required'}), 401
 
-    if 'image' in request.files and request.files['image'] and request.files['image'].filename:
-        file = request.files['image']
-        filename = secure_filename(file.filename)
-        if filename:
-            saved = os.path.join(UPLOAD_DIR, f'user_{user["id"]}_{filename}')
-            file.save(saved)
-            avatar_url = '/static/avatars/' + os.path.basename(saved)
-    elif request.form.get('avatar_url'):
-        avatar_url = request.form.get('avatar_url').strip()
+    image = request.files.get('image')
+    data = parse_payload()
+    avatar_url = (data.get('avatar_url') or '').strip()
 
-    if request.is_json and request.get_json(silent=True):
-        js = request.get_json(silent=True) or {}
-        if not avatar_url and js.get('avatar_url'):
-            avatar_url = js.get('avatar_url')
+    if not image and not avatar_url:
+        return jsonify({'error': 'image or avatar_url required'}), 400
 
-    if not avatar_url:
-        if wants_json():
-            return jsonify({'ok': False, 'error': 'avatar_url or image required'}), 400
-        return render_template('account_password.html', user=user, error='아바타 URL 또는 이미지 파일이 필요합니다.'), 400
+    url = None
+    if image:
+        url = save_image(image, prefix='avatar')
+        if not url:
+            return jsonify({'error': 'invalid image'}), 400
+    else:
+        url = avatar_url
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('UPDATE users SET avatar_url = ? WHERE id = ?', (avatar_url, user['id']))
-    conn.commit()
-    conn.close()
+    db = get_db()
+    db.execute('UPDATE users SET avatar_url = ? WHERE id = ?', (url, current_user()['id']))
+    db.commit()
 
-    if wants_json():
-        return jsonify({'ok': True, 'avatar_url': avatar_url})
-    return redirect(url_for('user_profile', user_id=user['id']))
+    return jsonify({'message': 'avatar updated', 'url': url, 'image_url': url, 'avatar_url': url}), 200
 
 
-@app.context_processor
+@app.route('/admin')
+def admin_page():
+    if not is_admin_required():
+        return jsonify({'error': 'admin only'}), 403
+    db = get_db()
+    total_users = db.execute('SELECT COUNT(*) AS c FROM users').fetchone()['c']
+    total_posts = db.execute('SELECT COUNT(*) AS c FROM posts').fetchone()['c']
+    total_comments = db.execute('SELECT COUNT(*) AS c FROM comments').fetchone()['c']
+    return render_template('admin.html', totals={'users': total_users, 'posts': total_posts, 'comments': total_comments}, user=current_user())
 
-def globals_processor():
-    return {
-        'current_user': current_user(),
-    }
+
+@app.route('/admin/users')
+def admin_users():
+    if not is_admin_required():
+        return jsonify({'error': 'admin only'}), 403
+    db = get_db()
+    rows = db.execute('SELECT * FROM users ORDER BY id ASC').fetchall()
+    return render_template('admin_users.html', users=rows, user=current_user())
 
 
-@app.template_filter('nl2br')
+@app.route('/admin/users/<int:user_id>/role', methods=['POST'])
+def admin_change_role(user_id):
+    if not is_admin_required():
+        return jsonify({'error': 'admin only'}), 403
 
-def nl2br_filter(value):
-    return format_text(value)
+    data = parse_payload()
+    role = (data.get('role') or '').lower()
+    if role not in ('admin', 'user'):
+        return jsonify({'error': 'role must be admin or user'}), 400
+
+    is_admin = 1 if role == 'admin' else 0
+    db = get_db()
+    db.execute('UPDATE users SET is_admin = ? WHERE id = ?', (is_admin, user_id))
+    db.commit()
+    return jsonify({'message': 'role updated', 'user_id': user_id, 'is_admin': bool(is_admin)}), 200
+
+
+@app.route('/admin/users/<int:user_id>', methods=['DELETE'])
+def admin_delete_user(user_id):
+    if not is_admin_required():
+        return jsonify({'error': 'admin only'}), 403
+
+    if user_id == session.get('user_id'):
+        return jsonify({'error': 'cannot delete self'}), 400
+
+    db = get_db()
+    db.execute('DELETE FROM users WHERE id = ?', (user_id,))
+    db.commit()
+    return jsonify({'message': 'user deleted'}), 200
 
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)

@@ -435,8 +435,8 @@ def _pool_split(dep_cfg: dict, key: str) -> dict:
 
 def dynamic_cve(box, config) -> CheckResult:
     """Recompute the CVE check against the container's REAL resolved (transitive)
-    package versions from `pip freeze`. In --dev this runs osv-scanner on those
-    versions; otherwise the deterministic local snapshot. tool marks it as resolved
+    package versions from `pip freeze`. In the default mode this runs osv-scanner on
+    those versions; --dev uses the deterministic local snapshot. tool marks it as resolved
     so aggregation prefers it over the requirements-only static result."""
     dep_cfg = _pool_split(dict(config.get("static.dependencies", {}) or {}), "cve")
     freeze = box.pip_freeze()

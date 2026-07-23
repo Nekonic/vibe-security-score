@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Search</h2>
+<form action="/search" method="get">
+  <input name="q" value="{{ q }}" placeholder="keyword">
+  <button type="submit">search</button>
+</form>
+<p>query: {{ q }}</p>
+{% for p in posts %}
+  <div>
+    <a href="/posts/{{ p.id }}">{{ p.title }}</a>
+    <p>by {{ p.username }}</p>
+  </div>
+{% else %}
+  <p>no result</p>
+{% endfor %}
+{% endblock %}

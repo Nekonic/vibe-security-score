@@ -21,10 +21,16 @@ import requests
 CSRF_JSON_KEYS = ("csrf_token", "csrf", "csrfToken", "_csrf", "authenticity_token", "token")
 CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
+# Field/meta NAME variants apps use for the CSRF token. Crucially this must include
+# ``_csrf`` (a very common hand-rolled name and one we ALREADY accept as a JSON key):
+# recognizing it only in JSON but not in HTML forms meant a form-only app's token
+# could never be re-seeded from a GET page — poisoning the whole session after one
+# rejection. Also cover Django's ``csrfmiddlewaretoken`` and Rails' ``authenticity_token``.
+_CSRF_NAME = r"(?:_?csrf(?:[_-]?token)?|csrfmiddlewaretoken|authenticity_token)"
 _CSRF_HTML_RE = (
-    re.compile(r'name=["\']?csrf[_-]?token["\']?[^>]*?value=["\']([^"\']+)', re.I),
-    re.compile(r'value=["\']([^"\']+)["\'][^>]*?name=["\']?csrf[_-]?token["\']?', re.I),
-    re.compile(r'<meta[^>]*?name=["\']csrf-token["\'][^>]*?content=["\']([^"\']+)', re.I),
+    re.compile(r'name=["\']?' + _CSRF_NAME + r'["\']?[^>]*?value=["\']([^"\']+)', re.I),
+    re.compile(r'value=["\']([^"\']+)["\'][^>]*?name=["\']?' + _CSRF_NAME + r'["\']?', re.I),
+    re.compile(r'<meta[^>]*?name=["\']' + _CSRF_NAME + r'["\'][^>]*?content=["\']([^"\']+)', re.I),
 )
 
 _REJECT_STATUSES = (400, 403, 419)   # token-less POST rejected (some apps abort 400)
@@ -93,10 +99,18 @@ def post_with_csrf(post: Callable[..., Optional[requests.Response]], url: str,
     if tok:
         set_token(tok)  # login responses often return the next token
     if r is not None and r.status_code in _REJECT_STATUSES:
+        # A rejection MIGHT be a stale token — but 400 is also what apps return for
+        # ordinary validation failures (bad file type, missing field), which have
+        # nothing to do with CSRF. Discarding the token then failing to re-seed a new
+        # one (e.g. the token only lived in a login JSON, not on GET pages) would blank
+        # the session's token permanently and 403 every later request. So keep the
+        # PRIOR token as a fallback: only replace it if re-seeding actually finds one.
+        prev = get_token()
         set_token("")
         reseed()
-        token = get_token()
+        token = get_token() or prev
         if token:
+            set_token(token)
             r2 = send_post(post, url, data, token)
             tok2 = extract_csrf(r2)
             if tok2:

@@ -48,8 +48,8 @@ def grade_submission(
 ) -> dict:
     """Grade one project dir. Dynamic phase runs unless static_only (needs Docker).
 
-    ``dev=True`` runs the real external tools (osv-scanner/gitleaks/semgrep/sqlmap);
-    default False uses the built-in offline checks and warns.
+    ``dev=True`` uses built-in/offline checks without external security CLIs;
+    default False requires and runs osv-scanner/gitleaks/semgrep/sqlmap.
 
     Infrastructure errors from the dynamic phase propagate (not swallowed) so the
     orchestrator can tell an operational failure from an app that failed to boot.

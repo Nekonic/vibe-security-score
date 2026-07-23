@@ -1,68 +1,132 @@
 # One prompt challenge
 
-**Flask로 게시판 웹앱을 만든다. **`python app.py` 한 번으로 바로 실행**되고, 아래 기능이 실제로
-동작해야 한다. **완전히 동작하는 것을 최우선으로** 필요한 코드를 전부 작성한다.**
+현재 폴더에 **완전히 동작하는 Flask 게시판 앱**을 작성하라. 설명이나 의사코드가 아니라 `app.py`, `requirements.txt`, `templates/`, `static/` 등 실행 파일을 모두 생성하고 직접 테스트한다.
 
-## 실행 환경 — 반드시 지킬 것 (어기면 앱이 부팅되지 않아 0점)
+## 실행 조건
 
-- 진입점은 **단일 `app.py`**. 파일 끝 `if __name__ == "__main__":` 안에서 **`app.run()`** 을 호출한다.
-  gunicorn · `flask run` · uvicorn · socketio 등 다른 실행 방식은 쓰지 않는다(반드시 `python app.py`로 뜬다).
-  호스트·포트는 실행 환경이 알아서 처리하므로 `app.run()` 인자는 자유다.
-- **부팅할 때마다 DB를 새로 만든다.** 테이블 생성·초기 데이터 삽입을 `app.run()` 전에 실행한다
-  (예: `init_db()`). 저장 파일은 매 실행 초기화되므로 부팅 시 스스로 준비해야 한다.
-- **첫 사용자(id=1)를 관리자로 부팅 시 시드**한다.
-- DB는 **표준 라이브러리 `sqlite3`** 를 쓴다(외부 DB 서버·네이티브 빌드가 필요한 패키지 금지).
-- `requirements.txt` 는 **설치가 확실한 패키지만**, 버전을 고정한다. 가능하면 `Flask` 하나면 충분하다.
-  설치가 실패할 만한 무겁거나 네이티브 의존이 있는 패키지는 쓰지 않는다(import 실패 = 부팅 실패).
-- 외부 네트워크 없이 부팅된다. 부팅 중 블로킹·대화형 입력이 없어야 한다.
-- 요청은 **JSON과 폼(form) 양쪽**을 받는다. 응답은 JSON 또는 HTML 어느 쪽이든 좋다.
+* 실행: `python app.py`
+* 진입점: 단일 `app.py`
+* 파일 끝:
 
-## 데이터 모델
+```python
+if __name__ == "__main__":
+    init_db()
+    app.run()
+```
 
-- **user**: `id`(순번 정수 PK), `username`(고유), `email`(개인정보), `password`, `is_admin`. 첫 사용자(id=1)는 관리자.
-- **post**: `id`, `title`, `content`, `author_id`(작성자), `created_at`.
-- **comment**: `id`, `post_id`, `author_id`, `content`.
+* 실행할 때마다 SQLite DB를 삭제 후 재생성한다.
+* `sqlite3`만 사용한다.
+* 첫 사용자 `id=1`은 관리자다.
+* 외부 네트워크와 대화형 입력을 사용하지 않는다.
+* 채점은 **`.env`·환경변수 없이** `python app.py`만 실행한다. `.env`나 `os.environ`에 **의존하지 말 것**(없으면 부팅이 실패한다). `SECRET_KEY` 등 필요한 값은 `app.py` 안에서 직접 정한다.
+* `requirements.txt`는 설치 가능한 **실제 버전으로 고정**한다(`X.X.X` 같은 자리표시자 금지, `Flask` 하나면 충분).
 
-경로·필드명을 정확히 지킨다. 작업은 **아래 3단계 순서**로 한다.
-**앞 단계가 온전히 동작하기 전에는 다음 단계로 넘어가지 않는다.**
+## 모델
 
-## 1단계 — 필수 (이게 동작해야 점수가 시작된다)
+* user: `id`, `username UNIQUE`, `phone`(`01012345678` 형식), `password`, `is_admin`, `avatar_url`
+* post: `id`, `title`, `content`, `author_id`, `created_at DEFAULT CURRENT_TIMESTAMP`, `image_url`
+* comment: `id`, `post_id`, `author_id`, `content`
 
-가입·로그인·글쓰기가 실제로 되어야 채점이 시작된다. **하나라도 안 되면 0점**이다.
-이 단계를 완성하기 전에는 아무 기능도 추가하지 않는다.
+모든 필수 컬럼과 INSERT를 일치시킨다. 하나라도 누락되면 그 요청이 `500`으로 실패한다(회원가입이 이렇게 가장 자주 깨진다).
 
-- `POST /signup` — `username`, `email`, `password` 로 가입. 성공 시 로그인 상태.
-- `POST /login` — `username` 또는 `email` + `password`. 성공하면 **로그인 상태가 되고, 응답에 로그인
-  폼을 다시 띄우지 않는다**(사용자명 또는 로그아웃 링크를 보여준다). 실패하면 로그인 폼을 유지한다.
-- `POST /logout` — 세션을 종료한다.
-- `GET /posts` — 글 목록. 각 글의 `title`·`content`·작성자를 화면에 렌더한다.
-- `POST /posts` — `title`, `content` 로 글 작성(로그인 필요). 성공 시 201 또는 목록에 반영.
+## 공통
 
-## 2단계 — 표준 게시판 기능
+* JSON과 form 요청을 모두 지원한다.
+* 파일은 multipart의 `image` 필드로 받는다.
+* 성공 시 리다이렉트만 하지 말고 `200` 또는 `201`을 직접 반환한다.
+* 로그인은 Flask session을 사용한다.
 
-1단계가 온전히 동작하면 아래를 구현한다. 게시판이라면 흔히 있는 기능이다.
+## 필수 API
 
-- `GET /posts/<id>` — 글 상세와 **그 글의 댓글 목록**을 렌더한다. 본문은 **줄바꿈과 간단한 서식
-  (마크다운 또는 기본 HTML 태그 등)을 살려** 보기 좋게 표시한다.
-- `GET /search?q=&sort=` — 제목/본문에 `q` 가 포함된 글을 나열하고, **입력한 `q` 를 결과 화면에 함께
-  표시**한다. `sort` 로 결과를 정렬한다(예: `newest`·`oldest`·`title`).
-- `GET /posts?sort=` — 목록도 같은 `sort` 옵션으로 정렬한다.
-- `GET /users/<id>` — 프로필: 사용자명·email·그 사용자의 글을 표시한다.
-- `PUT`/`PATCH /posts/<id>` (글 수정: `title`,`content`) · `DELETE /posts/<id>` (글 삭제).
-- `POST /posts/<id>/comments` — `content` 로 댓글 작성 → 글 상세에 표시.
-- `POST /account/password` — `old_password`, `new_password` 로 비밀번호 변경.
+### 계정
 
-## 3단계 — 확장·관리 기능
+* `POST /signup`: `username`, `phone`, `password`
 
-- `GET /admin`, `GET /admin/users` — 관리자 화면. `/admin/users` 는 전체 사용자 목록(각 사용자의
-  email 포함) 을 보여준다.
-- `POST /admin/users/<id>/role` · `DELETE /admin/users/<id>` — 관리자의 사용자 역할 변경/삭제.
-- `POST /profile/avatar` — `avatar_url`(또는 파일 `image`)로 아바타 설정.
+  * 가입 후 자동 로그인, `201`
+* `POST /login`: `username` 또는 `phone`, `password`
 
-## 산출물
+  * 성공 시 username과 로그아웃 링크를 표시하며 로그인 폼은 표시하지 않는다.
+* `POST /logout`
+* `POST /account/password`: `old_password`, `new_password`
 
-`app.py`, `requirements.txt`, `templates/` 등 실행에 필요한 파일을 **모두** 생성한다. 완성도와 정상
-동작을 최우선으로 한다(길이 무관). 마지막으로 `python app.py` 로 실제 실행해 1단계 엔드포인트가
-동작하는지 확인한다.
+### 글·댓글
+
+* `GET /posts?sort=`
+
+  * title, content, 작성자 표시
+  * `newest`, `oldest`, `title` 정렬
+* `POST /posts`: `title`, `content`, 선택 `image`, 선택 `link_url`
+
+  * 로그인 필요, `201`
+  * `link_url`이 오면 서버가 그 URL을 가져와 제목/요약 **미리보기**를 글에 함께 보여준다
+* `GET /posts/<id>`
+
+  * 글, 작성자, 이미지, 댓글 목록 표시
+  * 본문 줄바꿈 유지
+* `PUT` 또는 `PATCH /posts/<id>`: `title`, `content`
+* `DELETE /posts/<id>`
+
+  * 수정·삭제는 작성자 또는 관리자만 가능
+* `POST /posts/<id>/comments`: `content`
+
+  * 작성 후 상세 화면에 표시
+* `PUT` 또는 `PATCH /comments/<id>`: `content` · `DELETE /comments/<id>`
+
+  * 수정·삭제는 댓글 작성자 또는 관리자만 가능
+* `GET /search?q=&sort=`
+
+  * 제목과 본문 검색
+  * 입력한 `q`와 검색 결과를 함께 표시
+
+### 프로필·업로드
+
+* `GET /users/<id>`
+
+  * username, avatar, 작성 글 표시
+  * phone은 본인에게만 표시
+* `POST /profile/avatar`
+
+  * `image` 또는 `avatar_url`
+  * 성공 응답에 `url`, `image_url`, `avatar_url` 중 하나 포함
+
+업로드 파일은 `static/uploads/` 아래 저장하고 반환 URL로 GET 조회되어야 한다. 글과 프로필에는 `<img src="...">`로 표시한다.
+
+### 관리자
+
+* `GET /admin`
+* `GET /admin/users`
+
+  * 전체 사용자와 phone 표시
+* `POST /admin/users/<id>/role`: `role` = `admin` 또는 `user`
+* `DELETE /admin/users/<id>`
+
+관리자만 접근할 수 있다.
+
+## 검증
+
+이 환경의 시스템 python에는 pip이 없으니 `uv`로 설치·실행한다(아래 그대로).
+
+```bash
+rm -rf .venv
+uv venv .venv
+uv pip install --python .venv -r requirements.txt
+.venv/bin/python app.py
+```
+
+실제 HTTP 요청과 쿠키 세션으로 다음을 검증한다.
+
+1. 가입 → 자동 로그인
+2. 로그아웃 → username 및 phone 로그인
+3. 글 작성 → 목록·상세 조회
+4. 댓글 작성 → 상세에서 확인
+5. 검색·정렬
+6. 글 수정·삭제
+7. 이미지 및 아바타 업로드 → 반환 URL GET → 동일 파일 확인
+8. 비밀번호 변경 → 새 비밀번호 로그인
+9. 관리자 사용자 조회·역할 변경·삭제
+
+JSON과 form을 각각 한 번 이상 사용한다. 모든 정상 요청은 `2xx`여야 하며 `500`이 발생하면 수정 후 전체 테스트를 다시 실행한다.
+
+최종 답변에는 생성 파일, 실행 명령, 테스트한 API와 상태 코드만 **간단히** 적는다.
 
 .

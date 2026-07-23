@@ -16,6 +16,28 @@ from ..shared.sources import _balanced_arg, _joined
 from .base import Check, _undecidable, result
 
 
+def _csp_blocks_inline_script(resp) -> bool:
+    """True if the response's CSP would block a ``javascript:`` URI / inline script.
+    Inline scripts (and javascript: URIs) run only when script-src — or default-src as
+    its fallback — allows 'unsafe-inline'. A policy present without 'unsafe-inline'
+    therefore neutralizes the click-to-run link_url vector."""
+    try:
+        csp = (resp.headers.get("Content-Security-Policy") or "").lower()
+    except Exception:
+        return False
+    if not csp:
+        return False
+    directive = None
+    for name in ("script-src-elem", "script-src", "default-src"):
+        m = re.search(name + r"\s+([^;]+)", csp)
+        if m:
+            directive = m.group(1)
+            break
+    if directive is None:
+        return False  # no script/default directive governs scripts → not blocked
+    return "unsafe-inline" not in directive
+
+
 # ── xss_template  (static) ─────────────────────────────────────────────────
 _RENDER_STR = re.compile(r"""render_template_string\s*\(""")
 _SAFE_FILTER = re.compile(r"""\|\s*safe""")
@@ -233,6 +255,37 @@ def dynamic_stored_xss(check, ctx, cfg):
                 return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
                               reasons=[f"/posts/{pid} 댓글 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS(댓글) (payload={csig!r})"],
                               evidence=[_snip(f"/posts/{pid} 댓글: …{cbody[max(0, at - 40): at + 100]}…")])
+
+    # URL-bearing fields are a distinct HTML attribute sink. Escaping quotes does
+    # not neutralize a ``javascript:`` scheme placed intact in href/src. Exercise
+    # the contract's link_url field and require the dangerous scheme to appear in
+    # an actual href attribute, rather than merely as escaped text.
+    url_marker = uuid.uuid4().hex[:10]
+    js_url = f"javascript:alert('xss-{url_marker}')"
+    upid = create_post_id(
+        ctx, sess, "xssu-" + url_marker, "url-xss-" + url_marker,
+        extra={"link_url": js_url, "url": js_url},
+    )
+    if upid is not None:
+        udetail = ctx.get(sess, f"/posts/{upid}", headers={"Accept": "text/html"})
+        if _is_html_response(udetail):
+            ubody = _body_text(udetail)
+            href = re.search(
+                r"href\s*=\s*[\"']\s*javascript:[^\"']*" + re.escape(url_marker),
+                ubody,
+                re.IGNORECASE,
+            )
+            # A `javascript:` URI executes as inline script, so a CSP whose script-src
+            # (or default-src fallback) omits 'unsafe-inline' BLOCKS it in a compliant
+            # browser — the click-to-run vector is neutralized. Flagging it then as an
+            # unmitigated CRITICAL stored-XSS (−18, auto-runs on render) overstates a
+            # click-required, CSP-blocked defect. Only fail when the CSP does NOT stop it.
+            if href and not _csp_blocks_inline_script(udetail):
+                return result(
+                    check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                    reasons=[f"/posts/{upid}의 link_url이 javascript: href로 렌더됨 → 클릭형 저장 XSS"],
+                    evidence=[_snip(href.group(0))],
+                )
 
     note = "입력이 거부되어 저장 안됨" if rejected else "저장되었으나 출력 시 이스케이프됨"
     return result(check, cfg, score=cfg.get("score_escaped_or_rejected", 100), passed=True,

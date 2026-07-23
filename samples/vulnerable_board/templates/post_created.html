@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block content %}
+<p class="ok">created</p>
+<p>post #{{ post.id }} created.</p>
+{% if post.image_url %}<img src="{{ post.image_url }}" alt="post image">{% endif %}
+<p><a href="/posts/{{ post.id }}">go to detail</a></p>
+{% endblock %}

@@ -1,13 +1,12 @@
 {% extends 'base.html' %}
 {% block content %}
-  <div class="card">
-    <h2>회원가입</h2>
-    <form method="post" action="{{ url_for('signup') }}">
-      <input name="username" placeholder="아이디">
-      <input name="email" placeholder="이메일" type="email">
-      <input name="password" placeholder="비밀번호" type="password">
-      <button type="submit">가입</button>
-    </form>
-    <p class="small muted">가입 성공 시 자동 로그인됩니다.</p>
-  </div>
+{% if message %}<p class="ok">{{ message }}</p>{% endif %}
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<h2>Sign up</h2>
+<form method="post" action="/signup">
+  <label>username<input name="username"></label><br>
+  <label>phone<input name="phone" placeholder="01012345678"></label><br>
+  <label>password<input type="password" name="password"></label><br>
+  <button type="submit">signup</button>
+</form>
 {% endblock %}

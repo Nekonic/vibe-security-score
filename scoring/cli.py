@@ -130,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("app_dir", help="Path to the participant app directory")
         p.add_argument("--config", default=None, help="Path to scoring.yaml (default: config/scoring.yaml)")
         p.add_argument("--dev", action="store_true",
-                       help="Run REAL external tools (osv-scanner/gitleaks/semgrep/sqlmap). "
-                            "Default: off — warn and use built-in offline checks.")
+                       help="Skip external security CLIs and use built-in/offline checks. "
+                            "Default: require and run osv-scanner/gitleaks/semgrep/sqlmap.")
 
     args = parser.parse_args(argv)
     if args.command == "static":

@@ -1,42 +1,6 @@
 {% extends 'base.html' %}
 {% block content %}
-  <div class="card">
-    <h2>관리자</h2>
-    <p>전체 사용자 수: {{ users_total }}</p>
-    <a href="{{ url_for('admin_users') }}">전체 사용자 관리</a>
-  </div>
+<h2>Admin</h2>
+<p>users: {{ totals.users }}, posts: {{ totals.posts }}, comments: {{ totals.comments }}</p>
+<p><a href="/admin/users">users</a></p>
 {% endblock %}
-
-cat > templates/admin_users.html <<'HTML'
-{% extends 'base.html' %}
-{% block content %}
-  <div class="card">
-    <h2>관리자 - 사용자 목록</h2>
-    <table border="1" width="100%">
-      <tr><th>ID</th><th>username</th><th>email</th><th>admin</th><th>작업</th></tr>
-      {% for u in users %}
-      <tr>
-        <td>{{ u['id'] }}</td>
-        <td>{{ u['username'] }}</td>
-        <td>{{ u['email'] }}</td>
-        <td>{{ 'Y' if u['is_admin'] else 'N' }}</td>
-        <td>
-          <form action="{{ url_for('admin_user_role', user_id=u['id']) }}" method="post" style="display:inline">
-            <input name="is_admin" value="{{ 0 if u['is_admin'] else 1 }}" type="hidden">
-            <button type="submit">권한 {{ '해제' if u['is_admin'] else '부여' }}</button>
-          </form>
-          {% if current_user['id'] != u['id'] %}
-            <form action="{{ url_for('admin_user_delete', user_id=u['id']) }}" method="post" style="display:inline">
-              <button type="submit">삭제</button>
-            </form>
-          {% else %}
-            본인
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-{% endblock %}
-
-mkdir -p static/avatars && touch static/avatars/default.png
