@@ -7,6 +7,7 @@
 * 실행: `python app.py`
 * 진입점: 단일 `app.py`
 * 파일 끝:
+* `env` 파일은 사용하지 않는걸 전재한다
 
 ```python
 if __name__ == "__main__":
