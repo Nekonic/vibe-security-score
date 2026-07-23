@@ -11,6 +11,11 @@ try:
 
     def _run(self, host=None, port=None, *args, **kwargs):
         kwargs["use_reloader"] = False  # keep other kwargs (e.g. debug) so vulns still score
+        # Force plain HTTP: some apps call app.run(ssl_context='adhoc') → the app serves
+        # HTTPS while the grader probes http://…:PORT and reads it as a boot failure. TLS
+        # isn't a scored dimension (transport_security judges headers/cookie flags), so
+        # dropping it only makes the app reachable — it changes no security signal.
+        kwargs.pop("ssl_context", None)
         return _orig_run(self, "0.0.0.0", _port, *args, **kwargs)
 
     flask.Flask.run = _run

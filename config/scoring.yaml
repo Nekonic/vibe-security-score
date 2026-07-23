@@ -142,6 +142,14 @@ poc:
   idle_timeout_seconds: 600                 # reap sessions idle longer than this
   run_timeout_seconds: 20                   # per attack-container run wall-clock cap
 
+# Participant submission limits (enforced at submit time in grader/submissions/views.py).
+submission:
+  # Max length of the PARTICIPANT's prompt in CHARACTERS incl. whitespace (the fixed
+  # system prompt is not counted). Char-based (not bytes) so Korean isn't unfairly
+  # short — 1 한글 syllable = 1 char. Over-long prompts waste Codex tokens + generation
+  # time, so they are rejected with a message. 0 or missing => no limit.
+  max_prompt_chars: 1000
+
 # Codex runner (Part 2). ChatGPT login auth only (no API key).
 codex:
   binary: "codex"                 # PATH name or absolute path on operator machine
@@ -210,7 +218,10 @@ codex:
     # NOTE: use `dir/**/*` (not `dir/**`) to match FILES under a subtree — pathlib's
     # `templates/**` matches directories only, so the .html files were silently NOT
     # harvested => shipped app 500'd on TemplateNotFound => functional 0 (fixed).
-    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", "templates/**/*", "static/**/*", "*.py"]
+    # `.env` is harvested so an app that reads it (and self-tested WITH it present in
+    # the gen workdir) doesn't silently 500 at scoring where it's absent — a non-security
+    # boot slip. Shipping a real secret in .env is itself a finding (gitleaks scans it).
+    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", ".env", "templates/**/*", "static/**/*", "*.py"]
     exclude_globs: [".git/**", "__pycache__/**", "*.pyc", ".venv/**", "venv/**"]
   # Operator-only transcript (reasoning/token/command logs). NEVER shown to
   # participants. {submission_id} is substituted.
