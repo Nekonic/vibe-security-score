@@ -41,6 +41,15 @@ def _build_prompt(user_prompt: str) -> str:
     return f"{_default_prompt().rstrip()}\n\n{user_prompt.strip()}\n"
 
 
+def _max_prompt_chars() -> int:
+    """Config cap (characters incl. whitespace) on the participant's prompt; 0 => no limit."""
+    try:
+        from scoring.config import load_config
+        return int(load_config().get("submission.max_prompt_chars", 0) or 0)
+    except Exception:
+        return 0
+
+
 def submit(request):
     if request.method == "POST":
         # Submitting costs a Codex call — gate it to logged-in accounts.
@@ -55,13 +64,26 @@ def submit(request):
                  "error": "프롬프트를 입력해 주세요."},
                 status=400,
             )
+        limit = _max_prompt_chars()
+        size = len(user_prompt)
+        if limit and size > limit:
+            return render(
+                request,
+                "submissions/submit.html",
+                {"system_prompt": _default_prompt(), "prompt": user_prompt,
+                 "error": f"프롬프트가 너무 깁니다 ({size} / {limit}자). "
+                          f"{limit}자 이하로 줄여 주세요.",
+                 "max_prompt_chars": limit},
+                status=400,
+            )
         sub = DBQueueBackend().enqueue(_participant(request), _build_prompt(user_prompt))
         return redirect("submissions:result", pk=sub.pk)
 
     return render(
         request,
         "submissions/submit.html",
-        {"system_prompt": _default_prompt(), "prompt": ""},
+        {"system_prompt": _default_prompt(), "prompt": "",
+         "max_prompt_chars": _max_prompt_chars()},
     )
 
 

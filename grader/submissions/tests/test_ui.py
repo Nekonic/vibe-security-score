@@ -122,6 +122,31 @@ class SubmitPageTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(Submission.objects.count(), 0)
 
+    def test_over_long_prompt_rejected(self):
+        # Counted in characters (incl. whitespace); over the cap => 400, nothing queued.
+        with mock.patch("submissions.views._max_prompt_chars", return_value=10):
+            resp = self.client.post(
+                reverse("submissions:submit"), {"prompt": "가" * 50, "nickname": "n"}
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(Submission.objects.count(), 0)
+        self.assertIn("자", resp.content.decode())
+
+    def test_korean_prompt_counted_by_char_not_byte(self):
+        # 100 Korean chars = 300 UTF-8 bytes but only 100 CHARS — must pass a 200-char cap.
+        with mock.patch("submissions.views._max_prompt_chars", return_value=200):
+            self.client.post(
+                reverse("submissions:submit"), {"prompt": "가" * 100, "nickname": "n"}
+            )
+        self.assertEqual(Submission.objects.count(), 1)
+
+    def test_zero_limit_means_no_cap(self):
+        with mock.patch("submissions.views._max_prompt_chars", return_value=0):
+            self.client.post(
+                reverse("submissions:submit"), {"prompt": "x" * 5000, "nickname": "n"}
+            )
+        self.assertEqual(Submission.objects.count(), 1)
+
     def test_submit_page_does_not_disclose_security_checks(self):
         body = self.client.get(reverse("submissions:submit")).content.decode().lower()
         # None of the grading vocabulary may appear before grading.

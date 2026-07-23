@@ -22,10 +22,14 @@
         </div>
         <div class="col-6">
           <div class="card shadow-sm h-100">
-            <div class="card-header py-2 fw-semibold">프롬프트</div>
+            <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center">
+              <span>프롬프트</span>
+              {% if max_prompt_chars %}<small class="text-body-secondary fw-normal">최대 {{ max_prompt_chars }}자</small>{% endif %}
+            </div>
             <div class="card-body">
               <textarea class="form-control font-monospace" name="prompt" rows="20"
                         autocomplete="off" required>{{ prompt }}</textarea>
+              {% if max_prompt_chars %}<small class="text-body-secondary d-block mt-1">남은 글자: <span id="prompt-chars">{{ max_prompt_chars }}</span></small>{% endif %}
             </div>
           </div>
         </div>
@@ -50,7 +54,23 @@
       window.addEventListener("pageshow", function () {
         var t = document.querySelector('textarea[name="prompt"]');
         if (t) t.value = "";
+        if (t && typeof updatePromptChars === "function") updatePromptChars();
       });
+      var MAX_PROMPT_CHARS = {{ max_prompt_chars|default:0 }};
+      function updatePromptChars() {
+        var t = document.querySelector('textarea[name="prompt"]');
+        var out = document.getElementById("prompt-chars");
+        if (!t || !out || !MAX_PROMPT_CHARS) return;
+        // Count characters (code points) incl. whitespace — matches server len().
+        var used = Array.from(t.value.trim()).length;
+        var left = MAX_PROMPT_CHARS - used;
+        out.textContent = left;
+        out.classList.toggle("text-danger", left < 0);
+      }
+      (function () {
+        var t = document.querySelector('textarea[name="prompt"]');
+        if (t && MAX_PROMPT_CHARS) t.addEventListener("input", updatePromptChars);
+      })();
     </script>
   {% endif %}
 {% endblock %}
