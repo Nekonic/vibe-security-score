@@ -66,7 +66,7 @@ def create_post_id(ctx, sess: requests.Session, title: str, content: str,
     """Create a post and return its id — from the create response JSON, else by
     matching ``content`` (use a unique value) to a ``/posts/<id>`` link the listing
     exposes (form apps that redirect). ``None`` if the id can't be pinned. Shared by
-    the BOLA and comment-XSS probes."""
+    the XSS and session-management probes."""
     payload = _post_payload(title, content)
     payload.update(extra or {})
     r = ctx.post(sess, "/posts", payload)
@@ -83,56 +83,6 @@ def create_post_id(ctx, sess: requests.Session, title: str, content: str,
     for pid in sorted({int(n) for n in re.findall(r"/posts/(\d+)", listing)}, reverse=True):
         if content in _body_text(ctx.get(sess, f"/posts/{pid}")):
             return pid
-    return None
-
-
-def create_comment_id(ctx, sess: requests.Session, pid: int, content: str) -> Optional[int]:
-    """Post a comment on ``pid`` and return its id — from the create response JSON,
-    else from a ``/comments/<id>`` reference the post-detail page renders (edit/delete
-    link). ``content`` must be unique. ``None`` if the id can't be pinned. Used by the
-    comment-authorization (BOLA) probe."""
-    r = ctx.post(sess, f"/posts/{pid}/comments", {"content": content, "body": content})
-    if r is None or r.status_code not in (200, 201):
-        return None
-    j = _json_or_none(r)
-    if isinstance(j, dict):
-        for key in ("id", "comment_id", "pk"):
-            if isinstance(j.get(key), int):
-                return j[key]
-    # JSON post-detail: match the just-posted comment by its unique content and read
-    # its id. Many apps render comments as plain text (no /comments/<id> edit link) and
-    # omit the id from the create response, yet expose comments[].id via JSON — without
-    # this the BOLA probe can't pin a cid and wrongly reports "no comment feature".
-    cid = _comment_id_from_json(
-        _json_or_none(ctx.get(sess, f"/posts/{pid}", headers={"Accept": "application/json"})),
-        content,
-    )
-    if cid is not None:
-        return cid
-    detail = _body_text(ctx.get(sess, f"/posts/{pid}"))
-    if content not in detail:
-        return None
-    ids = sorted({int(n) for n in re.findall(r"/comments/(\d+)", detail)}, reverse=True)
-    return ids[0] if ids else None
-
-
-def _comment_id_from_json(data: Any, content: str) -> Optional[int]:
-    """Find the id of the comment whose content matches ``content`` in a JSON post
-    detail. Accepts ``{"comments": [...]}``, ``{"post": {"comments": [...]}}`` or a
-    bare list; matches on content so we never grab the wrong comment."""
-    if isinstance(data, dict):
-        items = data.get("comments")
-        if items is None and isinstance(data.get("post"), dict):
-            items = data["post"].get("comments")
-    else:
-        items = data
-    if not isinstance(items, list):
-        return None
-    for it in items:
-        if isinstance(it, dict) and content in str(it.get("content", "")):
-            for key in ("id", "comment_id", "pk"):
-                if isinstance(it.get(key), int):
-                    return it[key]
     return None
 
 

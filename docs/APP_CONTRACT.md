@@ -60,7 +60,6 @@ flowchart LR
 | **프로필 PII** | `GET /users/<id>`는 **소유자 phone(사적 PII)을 그대로** 렌더(타인에겐 마스킹/차단) | idor_profile | phone 미렌더 → skip |
 | **검색 반향+목록** | `GET /search?q=`는 **q를 HTML에 반향** + **매칭 글을 나열** | reflected_xss, sqli(boolean 오라클) | 반향/목록 없으면 오라클 무력 → 미탐 |
 | **글 렌더** | `GET /posts`·`/posts/<id>`는 저장된 `title`/`content`를 그대로 렌더 | stored_xss, functional | 미저장/미렌더 → 거짓음성 |
-| **객체 상태** | `GET /posts/<id>`로 수정·삭제 반영을 관측 가능 | object_authorization(§4.1) | 상태 확인 불가 → skip |
 | **에러 신호** | 잘못된 입력에 SQL/트레이스 서명(스택트레이스)만이 노출 근거 | sqli, verbose_errors | 일반 500은 근거 아님(오탐 방지) |
 
 ---
@@ -79,10 +78,10 @@ flowchart LR
 | `GET /posts` | — | title·content·author 렌더 | — | functional, stored_xss, sqli |
 | `POST /posts` | `title`,**`content`**, (opt)`link_url`, (opt)`image` | 201/목록 반영 + link_url 미리보기 | 저장형 XSS · SQLi · **SSRF** · 업로드 | functional, stored_xss, sqli, ssrf §4.2, upload(§4.3) |
 | `GET /posts/<id>` | — | 글 상세 + **댓글** 렌더 | 저장형 XSS(댓글) | stored_xss(§4.4) |
-| `PUT/PATCH /posts/<id>` | `title`,`content` | 변경이 GET에 반영(작성자만) | **객체 인가(BOLA)** | object_authorization §4.1 |
-| `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | **객체 인가(BOLA)** | object_authorization §4.1 |
+| `PUT/PATCH /posts/<id>` | `title`,`content` | 변경이 GET에 반영(작성자만) | — | (채점 안 함 · §4.1 제거) |
+| `DELETE /posts/<id>` | — | 글 삭제(작성자/admin만) | — | (채점 안 함 · §4.1 제거) |
 | `POST /posts/<id>/comments` | `content` | 댓글이 글 상세에 렌더 | 저장형 XSS · 인가 | stored_xss(§4.4) |
-| `PUT/PATCH /comments/<id>`·`DELETE /comments/<id>` | `content` | 변경/삭제가 글 상세에 반영(작성자만) | **댓글 객체 인가(BOLA)** | comment_authorization §4.4 |
+| `PUT/PATCH /comments/<id>`·`DELETE /comments/<id>` | `content` | 변경/삭제가 글 상세에 반영(작성자만) | — | (채점 안 함 · §4.4 제거) |
 | `GET /search?q=` | `q`(쿼리스트링) | **q 반향 + 매칭 글 나열** | 반사형 XSS · SQLi | reflected_xss, sqli |
 | `GET /users/<id>` | — | username·글, **phone은 본인만** | IDOR/PII | idor_profile, stored_xss |
 | `POST /profile/avatar` | `avatar_url` \| `image` | 아바타 반영 | **SSRF**(URL) · 업로드 | ssrf §4.2(로드맵), upload(§4.3) |
@@ -95,14 +94,13 @@ flowchart LR
 
 각 절: **계약 → 오라클(판정 방법) → 양성 대조 → FP/FN 노트 → 구현 비용**.
 
-### 4.1 BOLA — 글 수정·삭제 객체 인가
-- **계약**: `PUT/PATCH /posts/<id>`(수정), `DELETE /posts/<id>`(삭제)는 **작성자 또는 admin만** 허용.
-- **오라클**: userA가 글 생성 → userB가 그 글에 PUT·DELETE 시도 → `GET /posts/<id>`로 **상태 변화 관측**.
-  변경/삭제되면 취약(0), 403/미변경이면 방어(100).
-- **양성 대조**: userA는 자기 글을 수정·삭제할 수 있어야 함(대조 실패 시 skip — §0-3).
-- **FP/FN**: 관찰 마커 = "객체 상태"(§2). 상태를 GET으로 못 읽으면 skip. 상태코드만으론 판정 안 함
-  (일부 앱은 무시하고 200 반환) → **반드시 후속 GET로 실제 변화 확인**.
-- **비용**: 신규 동적 프로브 `object_authorization`. 오라클이 깨끗해 우선순위 최상.
+### 4.1 BOLA — 글 수정·삭제 객체 인가 — **제거됨 (채점하지 않음)**
+`object_authorization` 프로브는 **삭제됐다.** 공격을 시도하기 전에 (1) 글 id를 특정하고 (2) 소유자
+양성 대조(본인 수정·삭제가 실제로 반영)를 먼저 성립시켜야 했는데, 응답 형태가 그 id/상태를 프로브가
+아는 방식으로 노출하지 않는 앱은 **자신의 인가 구현이 아니라 그레이더의 탐지 실패로** 판정됐다
+(부당 감점 또는 엉뚱한 사유의 skip). 오탐 비용이 미탐 비용보다 훨씬 크다는 원칙에 따라 제거한다.
+관리자·기능 수준 인가는 `access_control_admin`·`admin_user_mgmt`가, 객체 수준 PII 노출은
+`idor_profile`이 계속 담당한다. **재도입 금지.**
 
 ### 4.2 라이브 SSRF — URL 소비 기능
 - **계약**: 서버가 사용자 URL을 가져오는 기능(글 `link_url` 미리보기 또는 `avatar_url`). **내부/사설
@@ -111,8 +109,9 @@ flowchart LR
   이어 `http://169.254.169.254/…`·`http://127.0.0.1`·링크-로컬 제출 → 가져오면 취약. (b) 콜백 없이
   내부 vs 외부 URL 응답/지연 **차등**으로 판정(약함).
 - **양성 대조**: 정상 외부 URL은 미리보기 성공해야(기능 존재 확인). 아니면 skip.
-- **FP/FN**: 내부 대역 접근을 **실측**으로만 판정(정적 `ssrf_sink`는 sink 존재만 봄 → 여전히 보조). 기능
-  자체가 없으면 skip(정적 검사로 대체).
+- **FP/FN**: 내부 대역 접근을 **실측 콜백으로만** 판정한다. 정적 `ssrf_sink`는 **제거됨** — 비리터럴
+  URL의 외부 요청은 데이터플로 분석 없이는 가드된 구현과 취약한 구현을 구분할 수 없어 오탐을 냈다.
+  기능 자체가 없거나 콜백을 못 세우면 skip(정적 대체 없음 — 절대 단정하지 않는다).
 - **비용**: 신규 동적 프로브 + **그레이더측 콜백 HTTP 리스너**(컨테이너에서 도달 가능해야) → 구현 복잡도
   가장 높음. 콜백 없이 (b)만 하면 신뢰도 낮음.
 
@@ -125,16 +124,14 @@ flowchart LR
   탈출은 skip.
 - **비용**: 신규 동적 프로브 `unrestricted_upload`. 오라클 여러 갈래라 중간 복잡도.
 
-### 4.4 댓글 — 두 번째 저장형 XSS·인가 표면
+### 4.4 댓글 — 두 번째 저장형 XSS 표면
 - **계약**: `POST /posts/<id>/comments`{content} → `GET /posts/<id>`에 렌더.
-  `PUT/PATCH /comments/<id>`(수정)·`DELETE /comments/<id>`(삭제)는 **댓글 작성자/admin만**.
 - **오라클(XSS)**: `stored_xss`를 댓글 본문에도 적용(마커 스크립트 저장 → 글 상세 렌더에서 이스케이프 여부).
-- **오라클(인가) — `comment_authorization`**: userA가 댓글 생성 → userB가 그 댓글에 PUT/DELETE 시도 →
-  글 상세 GET로 **실제 반영(수정 텍스트 등장/마커 소멸) 관측**. 반영되면 취약(0), 차단이면 방어(100).
-  수정·삭제 각각 **자체 대조군**(소유자 수정/삭제가 먼저 동작)으로 확인, 없는 표면은 skip.
-- **FP/FN**: 글 XSS/BOLA와 **독립 신호**(댓글 렌더 위치·댓글 소유권) → 글은 보호하되 댓글은 인가를
-  잊는 흔한 결함 포착. 상태는 쓰기 응답이 아니라 후속 GET로만 판정(§4.1과 동일).
-- **비용**: `stored_xss` 확장 + 신규 동적 `comment_authorization`(A01, auth 카테고리 weight 2). 낮음.
+- **FP/FN**: 글 본문과 **독립 신호**(댓글 렌더 위치) → 글은 이스케이프하되 댓글은 잊는 흔한 결함 포착.
+- **댓글 인가(BOLA)는 제거됨**: `comment_authorization`은 댓글 id 특정 + 소유자 양성 대조가 모두
+  성립해야만 판정할 수 있었는데, 댓글 id를 노출하지 않는 앱(글 상세에 수정·삭제 링크가 없는 흔한 형태)은
+  인가가 올바른데도 "기능 없음"으로 skip되고, 반대로 형태만 맞으면 엉뚱하게 감점될 수 있었다.
+  §4.1과 같은 이유로 삭제한다. **재도입 금지.**
 
 ### 4.5 인증 관리 — 비번 변경·세션 무효화
 - **계약**: `POST /account/password`{old,new}는 **기존 비번 확인**. `POST /logout`은 세션 무효화.
@@ -168,7 +165,6 @@ flowchart LR
 | `idor_profile` | 프로필 PII(소유자 phone) | phone 미렌더 → **skip** |
 | `access_control_admin` | 관리자 콘텐츠(사용자 목록) | 목록 마커 없으면 휴리스틱 추측 → FP/FN |
 | `privilege_escalation` | 관리자 콘텐츠 + 권한 서버결정 | 관리자 페이지가 모두에게 열리면 분리 판정 불가 → skip |
-| `object_authorization` | 객체 상태(GET 반영) | 상태 확인 불가 → skip; 상태코드만 신뢰하면 **거짓통과** |
 | `stored_xss` | 글/댓글 렌더 | 미저장/미렌더 → **거짓음성** |
 | `reflected_xss` | 검색 반향 | q 반향 없으면 미검출 |
 | `sqli` | 검색 반향+목록 · 에러 신호 | 목록 없으면 boolean 오라클 약화; 일반 500은 근거 아님 |
@@ -208,11 +204,10 @@ flowchart LR
 > **구현 완료**:
 > - `auth_session_management`(§4.5) — 비번 변경 기존-비번 확인 + 로그아웃 세션 무효화.
 >   `A07_authentication_failures.py`, `auth` 카테고리 weight 6.
-> - `comment_authorization`(§4.4) — 댓글 수정/삭제 객체 인가. `A01`, `auth` weight 2.
 > - 라이브 `ssrf`(§4.2) — `link_url`/`avatar_url` 소비를 그레이더 콜백 리스너로 실측.
 >   `A01_broken_access_control.py::dynamic_ssrf` + `shared/ssrf_callback.py` +
 >   `Sandbox.host_gateway()`(브리지 게이트웨이로 콜백 도달). `ai_security` weight 5.
->   콜백/게이트웨이 미가동 시 skip → 정적 `ssrf_sink` fallback 유지.
+>   콜백/게이트웨이 미가동 시 skip(정적 fallback 없음).
 
 ---
 

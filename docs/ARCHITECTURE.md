@@ -89,7 +89,7 @@ stateDiagram-v2
 
   | 파일 | 검사 |
   |---|---|
-  | `A01_broken_access_control` | CSRF · SSRF · IDOR · 관리자 접근·사용자관리 · 객체인가(BOLA) · 권한상승 |
+  | `A01_broken_access_control` | CSRF · SSRF(라이브) · IDOR · 관리자 접근·사용자관리 · 권한상승 |
   | `A02_security_misconfiguration` | debug · 보안 헤더 · 전송 보안 |
   | `A03_supply_chain` | CVE · 타이포스쿼팅 · 환각 패키지 · 전이 CVE |
   | `A04_cryptographic_failures` | 시크릿 · 해싱 · 쿠키 플래그 · 세션 위조 · gitleaks |
@@ -166,7 +166,7 @@ flowchart TD
 | `xss` | 10 | `input_validation` | 10 |
 
 카테고리 안에서 검사별 가중치(`static.checks[*].weight`·`dynamic.checks[*].weight`)는 **능동적
-하드닝**에 쏠려 있다: 프레임워크 기본값으로 공짜인 검사(기본 접근통제 idor/admin/object_authorization
+하드닝**에 쏠려 있다: 프레임워크 기본값으로 공짜인 검사(기본 접근통제 idor/admin
 등 weight 1)보다, 앱이 직접 구현해야 하는 방어(rate_limiting 8·weak_password_policy 6·보안 헤더 10·
 CSRF 12·쿠키 플래그 8·CSP 6)에 높은 weight를 준다. `functional`은 게이트도 겸한다(실패 시 40 상한).
 
