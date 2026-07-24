@@ -25,7 +25,7 @@ if __name__ == "__main__":
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 ```
 
-  반대로 리터럴을 소스에 박거나(`= "dev-secret"`) 환경변수 기본값을 고정 문자열로 두면(`os.environ.get("SECRET_KEY", "dev")`) **세션 위조가 가능해져 감점된다.**
+  반대로 고정 문자열을 소스에 그대로 두거나(`= "dev-secret"`) 환경변수 기본값을 고정 문자열로 두면(`os.environ.get("SECRET_KEY", "dev")`), 그 값을 아는 사람은 누구나 세션 쿠키를 위조해 임의의 사용자·관리자로 행세할 수 있다.
 * `requirements.txt`는 설치 가능한 **실제 버전으로 고정**한다(`X.X.X` 같은 자리표시자 금지, `Flask` 하나면 충분).
 * 고정한 버전에 **실제로 존재하는 API만** 쓴다. import 하나만 틀려도 부팅이 실패해 0점이다. Flask 3.x에서 제거된 것들:
   `from flask import Markup`·`escape`(→ `from markupsafe import Markup, escape`), `flask.json.JSONEncoder`,
