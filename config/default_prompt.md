@@ -20,6 +20,9 @@ if __name__ == "__main__":
 * 외부 네트워크와 대화형 입력을 사용하지 않는다.
 * 채점은 **`.env`·환경변수 없이** `python app.py`만 실행한다. `.env`나 `os.environ`에 **의존하지 말 것**(없으면 부팅이 실패한다). `SECRET_KEY` 등 필요한 값은 `app.py` 안에서 직접 정한다.
 * `requirements.txt`는 설치 가능한 **실제 버전으로 고정**한다(`X.X.X` 같은 자리표시자 금지, `Flask` 하나면 충분).
+* 고정한 버전에 **실제로 존재하는 API만** 쓴다. import 하나만 틀려도 부팅이 실패해 0점이다. Flask 3.x에서 제거된 것들:
+  `from flask import Markup`·`escape`(→ `from markupsafe import Markup, escape`), `flask.json.JSONEncoder`,
+  `@app.before_first_request`. 확신이 없으면 그 API를 쓰지 말고 표준 라이브러리로 대체한다.
 
 ## 모델
 
@@ -107,11 +110,17 @@ if __name__ == "__main__":
 이 환경의 시스템 python에는 pip이 없으니 `uv`로 설치·실행한다(아래 그대로).
 
 ```bash
-rm -rf .venv
-uv venv .venv
+uv venv .venv --allow-existing
 uv pip install --python .venv -r requirements.txt
 .venv/bin/python app.py
 ```
+
+* **`rm -rf`를 쓰지 마라** — 샌드박스가 거절해서 턴만 낭비한다. 위 명령은 이미 재실행 안전하다.
+* 이 호스트에는 `python` 실행파일이 **없다**(`python: command not found`, exit 127). 셸에서는 항상
+  **`.venv/bin/python`** 또는 `python3`를 쓴다. 프롬프트의 `python app.py`는 채점 컨테이너 기준 표기다.
+* curl 전에 **서버가 실제로 떴는지 먼저 확인**한다. import 하나만 틀려도 프로세스가 즉사하는데,
+  그러면 모든 curl이 `000`을 반환한다. 상태코드가 `000`이거나 비어 있으면 **성공으로 보고하지 말고**
+  서버 로그를 열어 원인을 고친 뒤 전체 테스트를 다시 돌린다.
 
 실제 HTTP 요청과 쿠키 세션으로 다음을 검증한다.
 
@@ -125,6 +134,11 @@ uv pip install --python .venv -r requirements.txt
 8. 비밀번호 변경 → 새 비밀번호 로그인
 9. 관리자 사용자 조회·역할 변경·삭제
 
-JSON과 form을 각각 한 번 이상 사용한다. 모든 정상 요청은 `2xx`여야 하며 `500`이 발생하면 수정 후 전체 테스트를 다시 실행한다.
+JSON과 form을 각각 한 번 이상 사용한다. 모든 정상 요청은 `2xx`여야 하며 `500`·`000`이 발생하면 수정 후 전체 테스트를 다시 실행한다. **관측한 상태코드만 보고한다** — 실행하지 않았거나 실패한 요청을 성공으로 적지 않는다.
+
+로그인 헬퍼가 "사용자 또는 오류응답"을 함께 반환하는 구조는 만들지 마라. `sqlite3.Row`는 `tuple`이
+**아니라서** `isinstance(user, tuple)` 같은 판별이 조용히 뒤집히고, 미인증 요청이 통과하거나 로그인
+사용자가 차단된다. 로그인 확인은 **세션 사용자만 반환**하고(없으면 `None`) 호출부에서 분기하거나,
+데코레이터로 분리한다.
 
 최종 답변에는 생성 파일, 실행 명령, 테스트한 API와 상태 코드만 **간단히** 적는다.
