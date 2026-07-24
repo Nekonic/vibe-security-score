@@ -18,7 +18,14 @@ if __name__ == "__main__":
 * `sqlite3`만 사용한다.
 * 첫 사용자 `id=1`은 관리자다.
 * 외부 네트워크와 대화형 입력을 사용하지 않는다.
-* 채점은 **`.env`·환경변수 없이** `python app.py`만 실행한다. `.env`나 `os.environ`에 **의존하지 말 것**(없으면 부팅이 실패한다). `SECRET_KEY` 등 필요한 값은 `app.py` 안에서 직접 정한다.
+* 채점은 **`.env`·환경변수 없이** `python app.py`만 실행하고, `app.py`·`requirements.txt`·`templates/`·`static/`만 수거한다(`.env`를 만들어도 채점 때는 존재하지 않는다). 따라서 앱은 **환경변수가 하나도 없어도 반드시 떠야 한다.** 이건 채점 환경 제약이지 "시크릿을 소스에 박으라"는 뜻이 아니다.
+  환경변수를 **읽는 것은 자유다. 다만 없다고 죽거나 고정 문자열로 대체하면 안 된다.** `SECRET_KEY`는 없을 때 **부팅 시 난수로 생성**한다:
+
+```python
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+```
+
+  반대로 리터럴을 소스에 박거나(`= "dev-secret"`) 환경변수 기본값을 고정 문자열로 두면(`os.environ.get("SECRET_KEY", "dev")`) **세션 위조가 가능해져 감점된다.**
 * `requirements.txt`는 설치 가능한 **실제 버전으로 고정**한다(`X.X.X` 같은 자리표시자 금지, `Flask` 하나면 충분).
 * 고정한 버전에 **실제로 존재하는 API만** 쓴다. import 하나만 틀려도 부팅이 실패해 0점이다. Flask 3.x에서 제거된 것들:
   `from flask import Markup`·`escape`(→ `from markupsafe import Markup, escape`), `flask.json.JSONEncoder`,
