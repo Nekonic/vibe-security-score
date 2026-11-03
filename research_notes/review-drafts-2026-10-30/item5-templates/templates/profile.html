@@ -1,0 +1,79 @@
+{#
+  GET /users/<id>. 사용자 프로필.
+  변수
+    user   id, username, avatar_url, phone_verified, phone
+           phone은 넘어오면 그대로 보여준다. 누구에게 넘길지는 app.py가 정한다.
+    posts  이 사용자가 쓴 글. 항목은 posts.html과 같다
+  본인일 때만 아바타 변경과 휴대폰 인증 폼을 보여준다. 화면 표시용이다.
+  이 화면에는 비밀번호 입력란을 두지 않는다.
+#}
+{% extends "base.html" %}
+{% block title %}{{ user.username }}{% endblock %}
+{% block content %}
+{% set mine = current_user and current_user.username and current_user.id == user.id %}
+
+<div class="card mb-4">
+  <div class="card-body d-flex gap-3 align-items-center">
+    {% if user.avatar_url %}
+      <img src="{{ user.avatar_url }}" class="rounded-circle border" width="96" height="96" alt="아바타">
+    {% endif %}
+    <div>
+      <h1 class="h3 mb-1">{{ user.username }}</h1>
+      {% if user.phone %}
+        <p class="mb-0">
+          {{ user.phone }}
+          {% if user.phone_verified %}<span class="badge text-bg-success">인증됨</span>{% endif %}
+        </p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if mine %}
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card card-body h-100">
+      <h2 class="h6">아바타 변경</h2>
+      <form action="/profile/avatar" method="post" enctype="multipart/form-data" class="d-flex gap-2 mb-2">
+        {% include "_csrf.html" %}
+        <input class="form-control form-control-sm" name="image" type="file" aria-label="이미지 파일">
+        <button class="btn btn-sm btn-primary text-nowrap" type="submit">올리기</button>
+      </form>
+      <form action="/profile/avatar" method="post" class="d-flex gap-2">
+        {% include "_csrf.html" %}
+        <input class="form-control form-control-sm" name="avatar_url" type="url" placeholder="이미지 주소" aria-label="이미지 주소">
+        <button class="btn btn-sm btn-outline-primary text-nowrap" type="submit">적용</button>
+      </form>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card card-body h-100">
+      <h2 class="h6">휴대폰 인증</h2>
+      {% if user.phone_verified %}
+        <p class="mb-0 text-body-secondary">완료했습니다</p>
+      {% else %}
+        <form action="/verify/request" method="post" class="mb-2">
+          {% include "_csrf.html" %}
+          <button class="btn btn-sm btn-outline-primary" type="submit">인증번호 받기</button>
+        </form>
+        <form action="/verify/confirm" method="post" class="d-flex gap-2">
+          {% include "_csrf.html" %}
+          <input class="form-control form-control-sm" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6자리 번호" aria-label="인증번호" required>
+          <button class="btn btn-sm btn-primary text-nowrap" type="submit">확인</button>
+        </form>
+      {% endif %}
+      <a class="small mt-3" href="/account/password">비밀번호 변경</a>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<h2 class="h5">작성한 글</h2>
+<div class="list-group">
+  {% for post in posts %}
+    {% include "_post_item.html" %}
+  {% else %}
+    <div class="list-group-item text-body-secondary">글이 없습니다</div>
+  {% endfor %}
+</div>
+{% endblock %}

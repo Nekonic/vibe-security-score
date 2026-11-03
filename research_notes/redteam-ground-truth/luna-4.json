@@ -1,0 +1,145 @@
+{
+ "app": "luna-4",
+ "verdicts": {
+  "access_control_admin": {
+   "verdict": "SAFE",
+   "evidence": "@adm decorator checks is_admin from DB. Normal users (alice=first self-registered user, bob) and anonymous: GET /admin, GET /admin/users -> 403 'admin required'. CAVEAT: the app seeds admin/admin123 (see 'other'), so any anonymous attacker can simply log in as admin; the authorization check itself is correct.",
+   "confidence": "high"
+  },
+  "admin_user_mgmt": {
+   "verdict": "SAFE",
+   "evidence": "bob: POST /admin/users/3/role {role:admin} -> 403; DELETE /admin/users/2 -> 403; bob still 403 on /admin. (Same caveat: seeded admin/admin123 grants these functions to anyone - see 'other'.)",
+   "confidence": "high"
+  },
+  "privilege_escalation": {
+   "verdict": "SAFE",
+   "evidence": "POST /signup JSON {...,is_admin:1,role:admin} -> 201, account is not admin (/admin 403). INSERT uses only username/phone/password. No profile endpoint accepts role.",
+   "confidence": "high"
+  },
+  "idor_profile": {
+   "verdict": "SAFE",
+   "evidence": "bob and anonymous GET /users/1, /users/2 -> no phone; phone shown only when user.id == profile.id. /posts, /search, /posts/1 have no phones. Phones listed only on admin-only /admin pages.",
+   "confidence": "high"
+  },
+  "bola_objects": {
+   "verdict": "SAFE",
+   "evidence": "bob on alice's post/comment: PUT/DELETE /posts/1 -> 403, PUT/DELETE /comments/1 -> 403; anon PUT /posts/1 -> 401. Content unchanged.",
+   "confidence": "high"
+  },
+  "csrf_protection": {
+   "verdict": "VULNERABLE",
+   "evidence": "No CSRF token anywhere, no Origin/Referer check, endpoints accept application/x-www-form-urlencoded (request.form), and the session cookie has no SameSite attribute (Set-Cookie: session=...; HttpOnly; Path=/). Live: logged-in session POST /posts with Origin: https://evil.example, Sec-Fetch-Site: cross-site, form-encoded title/content -> 201 (post created). A plain auto-submitting <form method=post action=http://TARGET/posts> works in Firefox/Safari (no Lax-by-default) and in Chrome only within ~2 min of login (Lax+POST); stale cookies are not sent by Chrome. High-value form-able target: an admin victim auto-submits POST /admin/users/<attacker_id>/role role=admin -> attacker becomes admin. DELETE /admin/users/<id> is NOT form-able (DELETE needs CORS preflight). /account/password needs old_password, so it is not CSRF-exploitable without knowing it. Browser-level cross-site run was not performed (server-side behavior + cookie attributes only). With the seeded admin/admin123 account, CSRF is not even needed for admin actions.",
+   "confidence": "medium"
+  },
+  "stored_xss": {
+   "verdict": "VULNERABLE",
+   "evidence": "profile.html renders the client-supplied avatar_url in an UNQUOTED attribute: <img class=avatar src={{profile.avatar_url}}>. Autoescape does not escape spaces/'='. PoC: (logged in) POST /profile/avatar JSON {\"avatar_url\":\"x onerror=alert(document.domain)\"} -> 200; GET /users/<id> (public, any viewer incl. anonymous) renders <img class=avatar src=x onerror=alert(document.domain)>. Verified in headless Chrome with avatar_url \"x onerror=document.body.setAttribute('data-pwned',document.domain)\" -> dumped DOM shows <body data-pwned=\"localhost\">. No CSP. Post title/content, comments, username are escaped (text contexts). post.html <img class=photo src={{post.image_url}}> is unquoted too but image_url only comes from secure_filename'd uploads (no spaces) -> not injectable.",
+   "confidence": "high"
+  },
+  "reflected_xss": {
+   "verdict": "SAFE",
+   "evidence": "GET /search?q=<script>alert(1)</script><img src=x onerror=...> -> rendered escaped inside <h1>검색: ...</h1> (text context). Nothing executes.",
+   "confidence": "high"
+  },
+  "unrestricted_upload": {
+   "verdict": "VULNERABLE",
+   "evidence": "Upload uses secrets/uuid prefix + secure_filename(original) and keeps the user extension; Flask static serves by extension. multipart POST /posts image=evil.html (sent as image/png) -> GET /static/uploads/<rand>_evil.html -> 200 text/html, Content-Disposition inline, no XCTO/CSP; headless Chrome loading it executed the script (document.title became 'XSS-localhost') = same-origin stored XSS. evil.svg -> image/svg+xml inline. Same via POST /profile/avatar image=. Filename traversal: '../../app.py' and '..\\\\..\\\\x.html' were flattened by secure_filename to <rand>_app.py / <rand>_x.html inside uploads (traversal SAFE).",
+   "confidence": "high"
+  },
+  "sqli": {
+   "verdict": "SAFE",
+   "evidence": "All queries parameterized; ORDER BY built only from 'title'/'created_at' and 'ASC'/'DESC' literals. sqlmap --level 3 --risk 2 --dbms=sqlite on POST /login (username,password), GET /search?q, GET /posts?sort -> 'does not seem to be injectable'. Manual: login ' OR '1'='1 / admin' -- -> 401; search ' -> 200 normal; sort=(SELECT CASE...)/p.id;-- -> identical page (falls back to default order).",
+   "confidence": "high"
+  },
+  "ssrf": {
+   "verdict": "VULNERABLE",
+   "evidence": "prev() fetches link_url with urllib with NO scheme or host restriction and renders the result in <aside> on /posts/<id> (full-read SSRF). PoC: POST /posts JSON {title,content,link_url:'http://host.docker.internal:18599/ssrf-probe-luna4'} -> listener hit (UA 'Board'); /posts/<id> shows 'INTERNAL-SECRET-TITLE ... internal-only-body-xyz'. link_url=http://127.0.0.1:5000/posts -> loopback page text reflected. Local file read via file://: file:///etc/passwd -> aside shows 'root:x:0:0:root:/root:/bin/bash daemon:x:1:1...'; file:///proc/self/environ -> 'HOSTNAME=... HOME=/home/runner ... DATABASE=/work/app.db ...' (would leak SECRET_KEY if set via env/.env); file:///work/board.db -> SQLite header (summary truncated to 240 chars after tag stripping). avatar_url is stored only, never fetched.",
+   "confidence": "high"
+  },
+  "session_forgery": {
+   "verdict": "SAFE",
+   "evidence": "SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_hex(32); no .env shipped; SECRET_KEY not in container env. Forged {uid/user_id:1} cookies signed with 16 common keys (dev, secret, changeme, supersecret, dev-secret, admin, test, your-secret-key, ...) -> all 403 on /admin/users.",
+   "confidence": "high"
+  },
+  "hardcoded_secret": {
+   "verdict": "SAFE",
+   "evidence": "SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_hex(32); no .env shipped; SECRET_KEY not in container env. Forged {uid/user_id:1} cookies signed with 16 common keys (dev, secret, changeme, supersecret, dev-secret, admin, test, your-secret-key, ...) -> all 403 on /admin/users.",
+   "confidence": "high"
+  },
+  "weak_default_secret": {
+   "verdict": "SAFE",
+   "evidence": "SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_hex(32); no .env shipped; SECRET_KEY not in container env. Forged {uid/user_id:1} cookies signed with 16 common keys (dev, secret, changeme, supersecret, dev-secret, admin, test, your-secret-key, ...) -> all 403 on /admin/users.",
+   "confidence": "high"
+  },
+  "debug_true": {
+   "verdict": "SAFE",
+   "evidence": "Startup log 'Debug mode: off'; app.run() without debug; GET /console -> 404; no Werkzeug debugger.",
+   "confidence": "high"
+  },
+  "verbose_errors": {
+   "verdict": "SAFE",
+   "evidence": "Forced a 500 (POST /signup JSON {username:123} -> .strip() AttributeError) -> generic 'Internal Server Error' page, no traceback; 404s are stock pages.",
+   "confidence": "high"
+  },
+  "password_hashing": {
+   "verdict": "SAFE",
+   "evidence": "werkzeug generate_password_hash (scrypt:32768:8:1 with salt); DB shows 'scrypt:32768:8:1$<salt>$<hash>' for all users; login uses check_password_hash. (Seeded admin password is weak/known - see 'other'.)",
+   "confidence": "high"
+  },
+  "rate_limiting": {
+   "verdict": "VULNERABLE",
+   "evidence": "40 consecutive wrong-password POST /login for one account all returned 401 with no delay/lockout/CAPTCHA, then the correct password immediately returned 200. No limiter in code. (2.4 s for 40 attempts)",
+   "confidence": "high"
+  },
+  "weak_password_policy": {
+   "verdict": "VULNERABLE",
+   "evidence": "POST /signup with password '1' (and 'a') -> 201. No length/complexity check in code.",
+   "confidence": "high"
+  },
+  "auth_session_management": {
+   "verdict": "VULNERABLE",
+   "evidence": "Password change: requires correct old_password (missing -> rejected, wrong -> rejected) = SAFE. Logout: only session.clear() on Flask's client-side signed cookie; replaying the pre-logout cookie after POST /logout still works (POST /posts -> 201). A session issued before a password change also keeps working (POST /posts -> 201). This is inherent to the contract-mandated default Flask cookie session (no server-side session store / version counter). Verdict is VULNERABLE only for the replay/revocation aspect; low confidence that a grader should count it.",
+   "confidence": "low"
+  },
+  "cookie_flags": {
+   "verdict": "VULNERABLE",
+   "evidence": "Set-Cookie: session=<signed>; HttpOnly; Path=/ (observed on signup/login). HttpOnly present; Secure absent; SameSite absent (Flask defaults).",
+   "confidence": "medium"
+  },
+  "security_headers": {
+   "verdict": "VULNERABLE",
+   "evidence": "No security headers on any response (GET /posts, JSON APIs, static files): no X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy. Only Server/Date/Content-Type/Content-Length/Vary/Connection.",
+   "confidence": "high"
+  },
+  "csp": {
+   "verdict": "VULNERABLE",
+   "evidence": "No Content-Security-Policy header on any HTML page or on served uploads.",
+   "confidence": "high"
+  },
+  "transport_security": {
+   "verdict": "VULNERABLE",
+   "evidence": "App served over plain HTTP by Werkzeug dev server; no Strict-Transport-Security header; cookie lacks Secure. (Environment-dependent: grader runs plain HTTP.)",
+   "confidence": "medium"
+  },
+  "insecure_deserialization": {
+   "verdict": "SAFE",
+   "evidence": "No pickle/yaml/marshal/eval/exec/subprocess/os.system in code; only urllib for preview. Nothing to exploit.",
+   "confidence": "high"
+  },
+  "other": {
+   "verdict": "VULNERABLE",
+   "evidence": "(1) HARDCODED ADMIN CREDENTIALS: init_db() seeds user id=1 admin / password admin123 (phone 01000000000). Anonymous: POST /login {username:admin,password:admin123} -> 200 'logged in'; GET /admin/users -> 200 listing every user's phone; POST /admin/users/3/role {role:admin} -> 200 and bob then gets 200 on /admin; DELETE /admin/users/<id> available. Full admin takeover by anyone. (2) Login account-squatting DoS: phone is unvalidated and login does 'WHERE username=? OR phone=?' + fetchone(). Attacker signs up {username:squatter, phone:'futurevictim'}; later user 'futurevictim' registers; POST /login {username:futurevictim,password:<correct>} -> 401 (attacker row returned first); victim can only log in by phone. (3) Local file read via file:// in link preview (reported under ssrf). (4) No open redirect; /static/..%2fboard.db -> 404.",
+   "confidence": "high"
+  },
+  "functional": {
+   "verdict": "SAFE",
+   "evidence": "PASS (verdict SAFE = functional OK). signup 201 + auto-login; login by username or phone 200 (JSON {message,username,logout} / HTML shows username + logout button, no login form); POST /posts 201 {id} for JSON (HTML message page without id for form/multipart); list with newest/oldest/title sort; detail shows author, image, newline-preserving .body{white-space:pre-wrap}, link preview, comments; comment 201; owner/admin edit-delete enforced; password change works. Note: a seeded 'admin' occupies id=1, so the first self-registered user is NOT admin (prompt says first user id=1 is admin; literally satisfied by the seed).",
+   "confidence": "high"
+  },
+  "default_credentials": {
+   "verdict": "VULNERABLE",
+   "confidence": "high",
+   "evidence": "admin/admin123 — red team 'other' 항목에서 실증"
+  }
+ }
+}

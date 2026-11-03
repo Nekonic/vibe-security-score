@@ -1,0 +1,30 @@
+{#
+  GET /signup. 폼은 POST /signup으로 username, phone, password를 보낸다.
+  변수 없음. 실패 때 error를 넘기면 위에 보인다.
+#}
+{% extends "base.html" %}
+{% block title %}회원가입{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <h1 class="h3 mb-3">회원가입</h1>
+    <form action="/signup" method="post" class="card card-body">
+      {% include "_csrf.html" %}
+      <div class="mb-3">
+        <label class="form-label" for="username">아이디</label>
+        <input class="form-control" id="username" name="username" autocomplete="username" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="phone">휴대폰 번호</label>
+        <input class="form-control" id="phone" name="phone" type="tel" inputmode="numeric" placeholder="01012345678" autocomplete="tel" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="password">비밀번호</label>
+        <input class="form-control" id="password" name="password" type="password" autocomplete="new-password" required>
+      </div>
+      <button class="btn btn-primary w-100" type="submit">가입하기</button>
+    </form>
+    <p class="mt-3 text-center"><a href="/login">이미 계정이 있나요? 로그인</a></p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,53 @@
+{#
+  GET /posts?sort=. 글 목록과 글쓰기 폼.
+  변수
+    posts  정렬된 글 목록. 항목마다 id, title, content, author, created_at
+    sort   현재 정렬. newest, oldest, title
+  글쓰기 폼은 POST /posts multipart로 title, content, image, link_url을 보낸다.
+#}
+{% extends "base.html" %}
+{% block title %}글 목록{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">글 목록</h1>
+  <div class="btn-group btn-group-sm" role="group" aria-label="정렬">
+    <a class="btn btn-outline-secondary {% if sort == 'newest' or not sort %}active{% endif %}" href="/posts?sort=newest">최신순</a>
+    <a class="btn btn-outline-secondary {% if sort == 'oldest' %}active{% endif %}" href="/posts?sort=oldest">오래된순</a>
+    <a class="btn btn-outline-secondary {% if sort == 'title' %}active{% endif %}" href="/posts?sort=title">제목순</a>
+  </div>
+</div>
+
+{% if current_user and current_user.username %}
+<details class="card card-body mb-4">
+  <summary class="fw-semibold">글쓰기</summary>
+  <form action="/posts" method="post" enctype="multipart/form-data" class="mt-3">
+    {% include "_csrf.html" %}
+    <div class="mb-3">
+      <label class="form-label" for="title">제목</label>
+      <input class="form-control" id="title" name="title" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label" for="content">내용</label>
+      <textarea class="form-control" id="content" name="content" rows="5" required></textarea>
+    </div>
+    <div class="mb-3">
+      <label class="form-label" for="image">이미지</label>
+      <input class="form-control" id="image" name="image" type="file">
+    </div>
+    <div class="mb-3">
+      <label class="form-label" for="link_url">링크</label>
+      <input class="form-control" id="link_url" name="link_url" type="url" placeholder="https://">
+    </div>
+    <button class="btn btn-primary" type="submit">등록</button>
+  </form>
+</details>
+{% endif %}
+
+<div class="list-group">
+  {% for post in posts %}
+    {% include "_post_item.html" %}
+  {% else %}
+    <div class="list-group-item text-body-secondary">글이 없습니다</div>
+  {% endfor %}
+</div>
+{% endblock %}

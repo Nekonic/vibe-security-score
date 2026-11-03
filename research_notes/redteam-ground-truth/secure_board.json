@@ -1,0 +1,145 @@
+{
+ "app": "secure_board",
+ "verdicts": {
+  "access_control_admin": {
+   "verdict": "SAFE",
+   "evidence": "@require_admin re-reads is_admin from DB. anon: GET /admin, /admin/users -> 401; bob -> 403; admin alice -> 200.",
+   "confidence": "high"
+  },
+  "admin_user_mgmt": {
+   "verdict": "SAFE",
+   "evidence": "bob: POST /admin/users/3/role {role:admin} -> 403 {error:'Admin only'}; DELETE /admin/users/3 -> 403.",
+   "confidence": "high"
+  },
+  "privilege_escalation": {
+   "verdict": "SAFE",
+   "evidence": "POST /signup {..., is_admin:1, role:'admin'} -> 201 {is_admin:false}; form is_admin=1 ignored.",
+   "confidence": "high"
+  },
+  "idor_profile": {
+   "verdict": "SAFE",
+   "evidence": "anon and bob GET /users/1 HTML/JSON -> no phone; own profile JSON includes the phone. /admin/users is admin-only. (Side effect: the profile owner's row is passed as `user` to base.html, so the nav shows the owner's name and an 'admin' link when the owner is admin. This leaks who is admin, not the phone.)",
+   "confidence": "high"
+  },
+  "bola_objects": {
+   "verdict": "SAFE",
+   "evidence": "bob on alice's post 1: PATCH -> 403, DELETE -> 403; comment 1: PATCH -> 403, DELETE -> 403; content intact.",
+   "confidence": "high"
+  },
+  "csrf_protection": {
+   "verdict": "SAFE",
+   "evidence": "Server-side token check is FAIL-OPEN: verify_csrf() returns (allows) when no token is sent, and rejects only a wrong token. Live as admin with Origin evil.example, form-encoded POST /admin/users/2/role role=admin, no token -> 200 role updated (wrong token -> 403). It is not exploitable from a cross-site form in a modern browser only because the session cookie is explicitly SameSite=Lax (and Secure), so a cross-site POST arrives without the cookie -> 401. Residual: same-site attackers (sibling subdomain, or another port on the same host, since SameSite ignores ports) can CSRF every endpoint.",
+   "confidence": "medium"
+  },
+  "stored_xss": {
+   "verdict": "SAFE",
+   "evidence": "Input is html.escape()d before storage AND autoescaped on output (double-escaped display, &amp;lt;script&amp;gt;). link_url javascript: is stored but the <a href> renders only when a preview exists (which requires http(s)), so no javascript: link was rendered. CSP script-src 'self' also applies. avatar_url javascript: -> 400.",
+   "confidence": "high"
+  },
+  "reflected_xss": {
+   "verdict": "SAFE",
+   "evidence": "/search?q=<script>... and \"><svg onload=...> -> double-escaped in both the value attribute and the text; CSP script-src 'self'.",
+   "confidence": "high"
+  },
+  "unrestricted_upload": {
+   "verdict": "SAFE",
+   "evidence": "Allowlist png/jpg/jpeg/gif/webp: x.svg / x.html -> 400 'invalid image' (posts and avatar). x.png with an HTML body -> image/png + nosniff. Traversal filename -> random timestamp name. 5 MB MAX_CONTENT_LENGTH.",
+   "confidence": "high"
+  },
+  "sqli": {
+   "verdict": "SAFE",
+   "evidence": "Parameterized; sort mapped via dict .get(). sqlmap --level 3 --risk 2 GET /search q,sort -> not injectable; manual login payloads -> 401.",
+   "confidence": "high"
+  },
+  "ssrf": {
+   "verdict": "SAFE",
+   "confidence": "medium",
+   "evidence": "gen-3 기반. 리다이렉트 미추종(_NoRedirect)으로 패치 — 공개 IP 302→사설 우회 차단. 직접 사설/루프백 주소는 getaddrinfo 검사로 차단(gen-3 레드팀 확인)."
+  },
+  "session_forgery": {
+   "verdict": "SAFE",
+   "evidence": "secret_key = secrets.token_urlsafe(32) per boot. Not guessable.",
+   "confidence": "high"
+  },
+  "hardcoded_secret": {
+   "verdict": "SAFE",
+   "evidence": "secrets.token_urlsafe(32). No hardcoded secret.",
+   "confidence": "high"
+  },
+  "weak_default_secret": {
+   "verdict": "SAFE",
+   "evidence": "secrets.token_urlsafe(32). No weak default.",
+   "confidence": "high"
+  },
+  "debug_true": {
+   "verdict": "SAFE",
+   "evidence": "app.run() (debug off). /console -> 404.",
+   "confidence": "high"
+  },
+  "verbose_errors": {
+   "verdict": "SAFE",
+   "evidence": "POST /signup with JSON [1] -> generic 500 page with no traceback. 403/404 use a custom error.html.",
+   "confidence": "high"
+  },
+  "password_hashing": {
+   "verdict": "SAFE",
+   "evidence": "DB: 'pbkdf2:sha256:1000000$...' (1M iterations, salted).",
+   "confidence": "high"
+  },
+  "rate_limiting": {
+   "verdict": "SAFE",
+   "evidence": "Per-IP: 8 failures in 60 s -> 5-min lock. 12 wrong logins -> 401 x8 then 429 x4; the correct password while locked -> 429; X-Forwarded-For spoof -> 429.",
+   "confidence": "high"
+  },
+  "weak_password_policy": {
+   "verdict": "SAFE",
+   "evidence": ">=8 chars plus a letter plus a digit. '1' -> 400. Note: 'password1' -> 201 (no common-password list).",
+   "confidence": "medium"
+  },
+  "auth_session_management": {
+   "verdict": "SAFE",
+   "confidence": "medium",
+   "evidence": "gen-3 기반. users.session_version 으로 서버측 세션 무효화 패치 — 로그아웃/비번변경 후 이전 쿠키 재사용 거부. 비번변경은 기존 비번 확인(gen-3 레드팀 확인)."
+  },
+  "cookie_flags": {
+   "verdict": "SAFE",
+   "evidence": "session=...; Secure; HttpOnly; Path=/; SameSite=Lax. All three flags are set. (Functional side effect: Secure over plain HTTP means a browser on a non-localhost http:// origin drops the cookie, so login does not stick. It works on localhost/127.0.0.1 and over HTTPS.)",
+   "confidence": "high"
+  },
+  "security_headers": {
+   "verdict": "SAFE",
+   "evidence": "HSTS, X-Content-Type-Options nosniff, X-Frame-Options DENY, Referrer-Policy no-referrer, Permissions-Policy and CSP on every response.",
+   "confidence": "high"
+  },
+  "csp": {
+   "verdict": "SAFE",
+   "evidence": "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'. No frame-ancestors, but XFO DENY covers framing.",
+   "confidence": "high"
+  },
+  "transport_security": {
+   "verdict": "SAFE",
+   "evidence": "HSTS max-age=31536000; includeSubDomains; preload, plus the Secure cookie. Served over plain HTTP (deployment).",
+   "confidence": "medium"
+  },
+  "insecure_deserialization": {
+   "verdict": "SAFE",
+   "evidence": "No pickle/yaml/eval/exec/subprocess (grep).",
+   "confidence": "high"
+  },
+  "other": {
+   "verdict": "VULNERABLE",
+   "evidence": "Low severity. (1) Login CSRF: /login and /signup are exempt from verify_csrf, so an anonymous cross-origin login sets the session (code path; not browser-verified). (2) The CSRF token check is fail-open (see csrf_protection). (3) avatar_url accepts protocol-relative '//evil.example/a.png' (meant to allow only same-origin '/' paths), but CSP img-src 'self' blocks loading it. No seeded credentials, no open redirect, no traversal.",
+   "confidence": "medium"
+  },
+  "functional": {
+   "verdict": "SAFE",
+   "evidence": "Works via API. JSON/form signup 201 (first user admin), login 200, multipart POST /posts with image -> 201 (response has no post id), comment 201, detail keeps newlines + comments, search/sort 200. Caveats: GET /login and /signup -> 405 (forms live on /); html.escape at input causes double-escaped display (&amp;lt;) and breaks link_url values containing '&'; the Secure cookie breaks browser sessions on non-localhost plain HTTP; the nav logout link is a no-op (onclick return false).",
+   "confidence": "high"
+  },
+  "default_credentials": {
+   "verdict": "SAFE",
+   "confidence": "high",
+   "evidence": "init_db 에 기본 관리자 계정 시드 없음(첫 가입자가 관리자) — 코드 확인"
+  }
+ }
+}
