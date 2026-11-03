@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 class Interval:
@@ -88,9 +88,6 @@ class FakeGrade:
         return {
             "submission_id": submission_id,
             "final_score": 72.5,
-            "grade": "통과",
-            "pass_fail": "pass",
-            "passed": True,
             "capped": False,
             "cap_reason": "",
             "functional_failed": False,
@@ -117,6 +114,22 @@ class RaiseOnceThenSucceedGenerate(FakeGenerate):
             if not self._raised:
                 self._raised = True
                 raise self._exc
+        return super().__call__(submission_id, prompt, config=config, event_sink=event_sink)
+
+
+class RaiseSequenceThenSucceedGenerate(FakeGenerate):
+    """Raises each exception in ``excs`` on successive calls, then behaves normally."""
+
+    def __init__(self, workdir_base: Path, excs, *, duration: float = 0.02):
+        super().__init__(workdir_base, duration=duration)
+        self._excs = list(excs)
+        self._lock = threading.Lock()
+
+    def __call__(self, submission_id: str, prompt: str, *, config=None, event_sink=None, model=None, reasoning_effort=None) -> Path:
+        with self._lock:
+            exc = self._excs.pop(0) if self._excs else None
+        if exc is not None:
+            raise exc
         return super().__call__(submission_id, prompt, config=config, event_sink=event_sink)
 
 

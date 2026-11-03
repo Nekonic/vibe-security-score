@@ -1,6 +1,9 @@
 {% extends "submissions/base.html" %}
 {% block title %}제출 #{{ sub.id }} · One Prompt Secure Coding Challenge{% endblock %}
+{% block body_class %}{% if not done and not failed %}d-flex flex-column vh-100 overflow-hidden{% endif %}{% endblock %}
+{% block main_class %}{% if done or failed %}container pb-5{% else %}container-fluid d-flex flex-column flex-grow-1 overflow-hidden pb-3{% endif %}{% endblock %}
 {% block body %}
+ {% if done or failed %}<div class="col-xl-8 mx-auto">{% endif %}
   <div class="d-flex justify-content-between align-items-baseline mb-3">
     <h1 class="h4 mb-0">제출 #{{ sub.id }}</h1>
     <span class="text-secondary small">참가자: {{ sub.participant }}</span>
@@ -10,31 +13,49 @@
     <div class="card shadow-sm mb-3">
       <div class="card-body d-flex justify-content-between align-items-center">
         <div>
-          <div class="text-secondary small">최종 점수 · 등급</div>
+          <div class="text-secondary small">최종 점수</div>
           <div class="display-6 fw-bold">{{ sub.final_score }}<span class="fs-6 text-secondary"> / 100</span></div>
-          <div>등급: <strong>{{ sub.grade }}</strong></div>
           {% if critical_penalties %}
             <div class="small text-secondary mt-1">
-              기본 점수 {{ sub.raw_score }} − 치명 감점 = {{ sub.final_score }}
+              기본 점수 {{ sub.raw_score }} − 치명 감점 {{ critical_total }} = 보안 점수 {{ sub.security_score|default:sub.final_score }}{% if critical_total > sub.raw_score %} · 0점 하한{% endif %}
+            </div>
+          {% endif %}
+          {% if sub.efficiency is not None %}
+            <div class="small text-secondary">
+              보안 점수 {{ sub.security_score }} × 효율 {{ sub.efficiency }} · {{ sub.prompt_chars }}자 = 최종 {{ sub.final_score }}
             </div>
           {% endif %}
         </div>
-        {% if sub.pass_fail|upper == "PASS" %}
-          <span class="badge fs-6 text-bg-success">PASS</span>
-        {% else %}
-          <span class="badge fs-6 text-bg-danger">FAIL</span>
-        {% endif %}
       </div>
     </div>
 
     {% if boot_log %}
       <div class="card shadow-sm mb-3 border-danger">
-        <div class="card-header py-2 text-bg-danger fw-semibold">앱 부팅 실패 — 동적 검사를 실행하지 못했습니다</div>
+        <div class="card-header py-2 text-bg-danger fw-semibold">앱 부팅 실패</div>
         <div class="card-body">
-          <p class="small text-secondary mb-2">아래는 컨테이너 부팅 로그입니다(앱이 서버를 열기 전에 종료됨).</p>
-          <pre style="max-height:360px;overflow:auto;background:#0d1117;color:#c9d1d9;
-            font-size:12.5px;line-height:1.5;padding:12px 14px;border-radius:6px;
-            white-space:pre-wrap;word-break:break-word;margin:0;">{{ boot_log }}</pre>
+          <pre class="bg-dark text-light small p-3 rounded mb-0 overflow-auto">{{ boot_log }}</pre>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if breakdown.domains %}
+      <div class="card shadow-sm mb-3">
+        <div class="card-header fw-semibold">영역별 점수</div>
+        <div class="card-body pb-2">
+          {% for d in breakdown.domains %}
+            <a href="#cat-{{ d.key }}" class="d-flex align-items-center gap-3 py-1 small link-body-emphasis link-underline-opacity-0 link-underline-opacity-100-hover">
+              <span class="col-5 text-truncate">{{ d.label }}</span>
+              <div class="progress flex-grow-1" role="progressbar"
+                   aria-valuenow="{{ d.pct }}" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar {% if d.pct >= 80 %}bg-success{% elif d.pct >= 50 %}bg-warning{% else %}bg-danger{% endif %}"
+                     style="width:{{ d.pct }}%"></div>
+              </div>
+              <span class="col-2 text-end">{{ d.earned }} <span class="text-secondary">/ {{ d.max_points }}</span></span>
+            </a>
+          {% endfor %}
+          <div class="small text-secondary border-top mt-2 pt-2">
+            영역 합계 = 기본 점수 {{ sub.raw_score }}{% if critical_penalties %} · 치명 감점 후 보안 점수 {{ sub.security_score|default:sub.final_score }}{% endif %}
+          </div>
         </div>
       </div>
     {% endif %}
@@ -42,7 +63,7 @@
     {% if critical_penalties %}
       <div class="card border-danger shadow-sm mb-3">
         <div class="card-header bg-danger text-white fw-semibold">
-          치명 결함 (최종 점수에서 차감)
+          치명 결함
         </div>
         <ul class="list-group list-group-flush">
           {% for p in critical_penalties %}
@@ -64,26 +85,27 @@
       </div>
     {% endif %}
 
-    {% for g in category_groups %}
-      <div class="card shadow-sm mb-3">
+    {% for d in breakdown.domains %}
+      <div class="card shadow-sm mb-3" id="cat-{{ d.key }}">
         <div class="card-header d-flex align-items-center fw-semibold">
-          <span>{{ g.label }}</span>
-          <span class="ms-auto {% if g.score >= 60 %}text-success{% else %}text-danger{% endif %}">
-            {{ g.earned }} / {{ g.max_points }}점
-          </span>
+          <span>{{ d.label }}</span>
+          <span class="ms-auto">{{ d.earned }} <span class="text-secondary fw-normal">/ {{ d.max_points }}점</span></span>
         </div>
         <ul class="list-group list-group-flush">
-          {% for f in g.findings %}
+          {% for f in d.failed %}
             <li class="list-group-item">
               <div class="d-flex align-items-center">
-                {% if f.passed %}
-                  <span class="text-success fs-5 me-2">✔</span>
-                {% else %}
-                  <span class="text-danger fs-5 me-2">✘</span>
-                {% endif %}
+                <span class="text-danger fs-5 me-2">✘</span>
                 <span class="fw-semibold">{{ f.label|default:f.check_id }}</span>
-                <span class="ms-auto text-secondary">{{ f.score }} / 100</span>
+                <span class="ms-auto text-danger fw-bold">−{{ f.lost }}점</span>
+                <span class="text-secondary small ms-1">/ {{ f.points }}</span>
               </div>
+              {% if f.tags or f.critical %}
+                <div class="mt-1">
+                  {% if f.critical %}<span class="badge rounded-pill text-bg-danger">치명 감점 −{{ f.critical }}</span>{% endif %}
+                  {% for t in f.tags %}<span class="badge rounded-pill text-bg-light border fw-normal">{{ t }}</span>{% endfor %}
+                </div>
+              {% endif %}
               {% if f.penalty_reasons %}
                 <ul class="small text-danger-emphasis mt-1 mb-0">
                   {% for r in f.penalty_reasons %}<li>{{ r }}</li>{% endfor %}
@@ -91,37 +113,78 @@
               {% endif %}
             </li>
           {% endfor %}
+          {% if d.passed %}
+            <li class="list-group-item py-2">
+              <details>
+                <summary class="small text-success">✔ 통과 {{ d.passed|length }}개</summary>
+                <ul class="list-unstyled small mt-2 mb-0">
+                  {% for f in d.passed %}
+                    <li class="d-flex py-1">
+                      <span>{{ f.label|default:f.check_id }}</span>
+                      <span class="ms-auto text-secondary">{{ f.points }}점</span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </li>
+          {% endif %}
         </ul>
       </div>
     {% empty %}
-      <div class="card shadow-sm"><div class="card-body text-secondary">표시할 항목이 없어요.</div></div>
+      <div class="card shadow-sm mb-3"><div class="card-body text-secondary">항목 없음</div></div>
     {% endfor %}
+
+    {% if breakdown.reference %}
+      <div class="card shadow-sm mb-3">
+        <div class="card-body py-2">
+          <details>
+            <summary class="small text-secondary">참고 항목 {{ breakdown.reference|length }}개 · 점수 반영 안 됨</summary>
+            <ul class="list-unstyled small mt-2 mb-0">
+              {% for f in breakdown.reference %}
+                <li class="py-1">
+                  <span class="{% if f.passed %}text-success{% else %}text-danger{% endif %}">{% if f.passed %}✔{% else %}✘{% endif %}</span>
+                  {{ f.label|default:f.check_id }}
+                  {% if f.penalty_reasons and not f.passed %}
+                    <span class="text-secondary">— {{ f.penalty_reasons|join:" · " }}</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
+        </div>
+      </div>
+    {% endif %}
     <p class="mt-3 d-flex align-items-center gap-3">
       <a href="{% url 'submissions:submit' %}">← 다시 제출하기</a>
+      {% if user.is_authenticated and sub.workdir %}
+        <a href="{% url 'submissions:app_preview' pk=sub.id %}posts" target="_blank" class="btn btn-primary btn-sm">내 앱 열기</a>
+      {% endif %}
       {% if user.is_staff %}
-        <a href="{% url 'submissions:poc_console' pk=sub.id %}" class="btn btn-danger btn-sm">공격 시연 (PoC)</a>
+        <a href="{% url 'submissions:kali_console' pk=sub.id %}" class="btn btn-danger btn-sm">Kali</a>
+        {% if sub.workdir %}<a href="{% url 'submissions:code_view' pk=sub.id %}" class="btn btn-secondary btn-sm">코드 보기</a>{% endif %}
         <form method="post" action="{% url 'submissions:rerun' pk=sub.id %}" class="d-inline m-0">
           {% csrf_token %}
           <button type="submit" class="btn btn-warning btn-sm">재채점</button>
         </form>
       {% endif %}
     </p>
+   </div>
 
   {% elif failed %}
     <div class="alert alert-danger">
       <h2 class="h5">처리 실패</h2>
-      <p class="mb-1">{{ stage_hint }}</p>
       {% if sub.last_error %}<p class="small text-secondary mb-0">사유: {{ sub.last_error }}</p>{% endif %}
     </div>
     <div class="d-flex align-items-center gap-3">
       <a href="{% url 'submissions:submit' %}">← 다시 제출하기</a>
-      {% if user.is_staff %}
+      {% if user.is_staff and sub.workdir %}
         <form method="post" action="{% url 'submissions:rerun' pk=sub.id %}" class="d-inline m-0">
           {% csrf_token %}
           <button type="submit" class="btn btn-warning btn-sm">재채점</button>
         </form>
       {% endif %}
     </div>
+   </div>
 
   {% else %}
     <div class="card shadow-sm">
@@ -129,10 +192,9 @@
         <div class="spinner-border text-primary" role="status"><span class="visually-hidden">로딩</span></div>
         <div class="flex-grow-1">
           <div id="stage" class="fw-semibold">{{ stage_label }}</div>
-          <div id="hint" class="text-secondary">{{ stage_hint }}</div>
           <div id="queue" class="text-secondary small">{% if queue_position %}대기열 {{ queue_position }}번째{% endif %}</div>
-          <div id="progress-wrap" class="mt-2" style="display:none">
-            <div class="progress" role="progressbar" style="height:20px;">
+          <div id="progress-wrap" class="mt-2 d-none">
+            <div class="progress" role="progressbar">
               <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
                    style="width:0%">0%</div>
             </div>
@@ -142,55 +204,22 @@
       </div>
     </div>
 
-    <div id="ai-activity-card" class="card shadow-sm mt-3 codex-term" style="display:none">
-      <div class="codex-term-bar">
-        <span class="codex-dot codex-dot-r"></span>
-        <span class="codex-dot codex-dot-y"></span>
-        <span class="codex-dot codex-dot-g"></span>
-        <span class="codex-term-title">codex · 코드 생성</span>
-        <span id="codex-live" class="codex-live ms-auto"><span class="codex-live-dot"></span>생성 중</span>
+    <div id="split" class="d-flex flex-grow-1 overflow-hidden mt-3 border rounded bg-body">
+      {% if user.is_authenticated %}
+      <div class="flex-grow-1 position-relative overflow-hidden">
+        <div id="live-placeholder" class="position-absolute top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center text-secondary small">서버 띄우는 중...</div>
+        <iframe id="live-app" class="d-block w-100 h-100 border-0 bg-white" title="실시간 앱" data-src="{% url 'submissions:app_preview' pk=sub.id %}posts"></iframe>
       </div>
-      <div id="ai-activity" class="codex-term-body"></div>
+      <div id="split-bar" class="border-start border-end bg-body-secondary px-1" role="separator" aria-orientation="vertical"></div>
+      {% endif %}
+      <div id="ai-activity-card" class="{% if user.is_authenticated %}col-4{% else %}flex-grow-1{% endif %} d-flex flex-column overflow-hidden">
+        <div class="d-flex align-items-center gap-2 px-3 py-2 border-bottom small">
+          <span class="fw-semibold">AI 채팅</span>
+          <span id="codex-live" class="ms-auto d-flex align-items-center gap-2 text-secondary"><span class="spinner-border spinner-border-sm"></span>생성 중</span>
+        </div>
+        <div id="ai-activity" class="flex-grow-1 overflow-auto list-group list-group-flush small"></div>
+      </div>
     </div>
-
-    <style>
-      /* Codex-CLI style terminal for the live generation view. */
-      .codex-term { overflow:hidden; border:1px solid #30363d; background:#0d1117; }
-      .codex-term-bar { display:flex; align-items:center; gap:8px;
-        background:#161b22; border-bottom:1px solid #30363d; padding:8px 12px; }
-      .codex-dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
-      .codex-dot-r { background:#ff5f56; } .codex-dot-y { background:#ffbd2e; } .codex-dot-g { background:#27c93f; }
-      .codex-term-title { color:#8b949e; font-size:12.5px; margin-left:6px;
-        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-      .codex-live { display:inline-flex; align-items:center; gap:6px;
-        color:#7ee787; font-size:12px; font-weight:600; }
-      .codex-live-dot { width:8px; height:8px; border-radius:50%; background:#27c93f;
-        animation:codexPulse 1.4s infinite; }
-      .codex-live.done { color:#8b949e; }
-      .codex-live.done .codex-live-dot { background:#8b949e; animation:none; }
-      @keyframes codexPulse {
-        0%   { box-shadow:0 0 0 0 rgba(39,201,63,.6); }
-        70%  { box-shadow:0 0 0 7px rgba(39,201,63,0); }
-        100% { box-shadow:0 0 0 0 rgba(39,201,63,0); }
-      }
-      .codex-term-body { height:58vh; min-height:460px; max-height:74vh;
-        resize:vertical; overflow-y:auto; background:#0d1117; color:#c9d1d9;
-        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-        font-size:13.5px; line-height:1.65; padding:14px 16px;
-        white-space:pre-wrap; word-break:break-word; }
-      #ai-activity .ln { padding:1px 0; animation:codexIn .18s ease-out; }
-      @keyframes codexIn { from { opacity:0; transform:translateY(2px); } to { opacity:1; transform:none; } }
-      #ai-activity .ln-message { color:#e6edf3; }
-      #ai-activity .ln-command { color:#7ee787; }
-      #ai-activity .ln-files   { color:#79c0ff; }
-      #ai-activity .ln-status  { color:#8b949e; }
-      #ai-activity .exit-bad   { color:#ff7b72; }
-      #ai-activity .ai-empty   { color:#6e7681; }
-      .codex-caret { display:inline-block; width:.6em; color:#7ee787; font-weight:700;
-        animation:codexBlink 1s steps(1) infinite; }
-      .codex-caret.done { display:none; }
-      @keyframes codexBlink { 50% { opacity:0; } }
-    </style>
 
     <script>
       (function () {
@@ -199,42 +228,71 @@
         var box = document.getElementById("ai-activity");
 
         var liveBadge = document.getElementById("codex-live");
-        // A blinking block cursor pinned to the bottom, like the codex CLI prompt.
-        var caret = document.createElement("span");
-        caret.className = "codex-caret";
-        caret.textContent = "▌";
+        // Bootstrap list-group rows per activity kind (no custom CSS).
+        var ROW = {
+          message: "list-group-item text-break",
+          files: "list-group-item",
+          commands: "list-group-item",
+          status: "list-group-item border-0 text-center text-secondary",
+        };
         var emptyLine = document.createElement("div");
-        emptyLine.className = "ln ai-empty";
-        emptyLine.textContent = "codex 세션을 준비하고 있어요…";
+        emptyLine.className = ROW.status;
+        emptyLine.textContent = "세션 준비 중...";
         box.appendChild(emptyLine);
-        box.appendChild(caret);
 
         function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-        // Non-prose events (commands/files/status) render as instant HTML blocks.
-        function contentHtml(ev) {
-          if (ev.kind === "command") {
-            var code = (ev.exit_code != null && ev.exit_code !== 0)
-              ? ' <span class="exit-bad">(exit ' + esc(ev.exit_code) + ')</span>' : '';
-            return '<span style="color:#6e7681">$</span> ' + esc(ev.command) + code;
-          }
-          if (ev.kind === "files") {
-            var names = (ev.files || []).map(function (f) { return f.path; }).join(", ");
-            return '📄 파일 ' + esc((ev.files || []).length) + '개: ' + esc(names);
-          }
-          return '· ' + esc(ev.text || "");
+        // "/bin/zsh -lc 'cmd'" → "cmd": drop the shell wrapper and its outer quotes
+        // (mixed-quote concatenations can open with " and close with ').
+        function shellCmd(raw) {
+          var cmd = String(raw || "").replace(/^\/bin\/\w+ -lc /, "").replace(/\s+/g, " ").trim();
+          if (/^["']/.test(cmd)) cmd = cmd.slice(1).replace(/["']$/, "");
+          return cmd;
         }
         function atBottom() { return box.scrollHeight - box.scrollTop - box.clientHeight < 60; }
+        function newLine(kind) {
+          var el = document.createElement("div");
+          el.className = ROW[kind] || ROW.status;
+          box.appendChild(el);
+          return el;
+        }
+
+        // Consecutive commands share one collapsed row: "▸ 명령 N개 실행" + failure count.
+        var group = null;
+        function groupLabel(g) { g.toggle.textContent = (g.open ? "▾" : "▸") + " 명령 " + g.n + "개 실행"; }
+        function addCommand(ev) {
+          if (!group) {
+            var row = newLine("commands");
+            row.innerHTML = '<button type="button" class="btn btn-link btn-sm p-0 text-secondary text-decoration-none"></button>' +
+              ' <span class="badge text-bg-danger d-none"></span>' +
+              '<ul class="list-unstyled font-monospace text-body-secondary mb-0 mt-2 ps-3 d-flex flex-column gap-1 d-none"></ul>';
+            var g = group = {n: 0, failed: 0, open: false, toggle: row.querySelector("button"),
+                             badge: row.querySelector(".badge"), list: row.querySelector("ul")};
+            g.toggle.addEventListener("click", function () {
+              g.open = !g.open;
+              g.list.classList.toggle("d-none", !g.open);
+              groupLabel(g);
+            });
+          }
+          var cmd = shellCmd(ev.command);
+          var failed = ev.exit_code != null && ev.exit_code !== 0;
+          var li = document.createElement("li");
+          li.className = "d-flex align-items-center gap-2";
+          li.innerHTML = '<span class="text-truncate" title="' + esc(cmd) + '">$ ' + esc(cmd) + '</span>' +
+            (failed ? '<span class="badge text-bg-danger flex-shrink-0">exit ' + esc(ev.exit_code) + '</span>' : "");
+          group.list.appendChild(li);
+          group.n += 1;
+          if (failed) {
+            group.failed += 1;
+            group.badge.textContent = "실패 " + group.failed;
+            group.badge.classList.remove("d-none");
+          }
+          groupLabel(group);
+        }
 
         // Render queue: agent messages type out char-by-char (codex-like streaming),
         // everything else appears instantly. A queue guarantees no event is lost even
         // when several arrive in one poll, and preserves order.
         var queue = [], draining = false;
-        function newLine(ev) {
-          var el = document.createElement("div");
-          el.className = "ln ln-" + (ev.kind || "status");
-          box.insertBefore(el, caret);   // keep the caret last
-          return el;
-        }
         function enqueue(events) {
           if (!events || !events.length) return;
           if (emptyLine) { emptyLine.remove(); emptyLine = null; }
@@ -247,45 +305,85 @@
           if (!ev) return;
           draining = true;
           var stick = atBottom();
-          if (ev.kind === "message" && ev.text) {
-            typeMessage(ev.text, stick, function () { draining = false; drain(); });
+          if (ev.kind === "command") {
+            addCommand(ev);
           } else {
-            var el = newLine(ev);
-            el.innerHTML = contentHtml(ev);
-            if (stick) box.scrollTop = box.scrollHeight;
-            setTimeout(function () { draining = false; drain(); }, 80);
+            group = null;
+            if (ev.kind === "message" && ev.text) {
+              typeMessage(ev.text, stick, function () { draining = false; drain(); });
+              return;
+            }
+            var el = newLine(ev.kind);
+            if (ev.kind === "files") {
+              el.innerHTML = (ev.files || []).map(function (f) {
+                return '<span class="badge text-bg-light border fw-normal me-1">' + esc(f.path) + '</span>';
+              }).join("");
+            } else {
+              el.textContent = ev.text || "";
+            }
           }
+          if (stick) box.scrollTop = box.scrollHeight;
+          setTimeout(function () { draining = false; drain(); }, 80);
         }
         function typeMessage(text, stick, done) {
-          var el = newLine({ kind: "message" });
+          var el = newLine("message");
           // Cap the per-char delay so long messages never lag the stream (~1s total).
           var per = Math.max(4, Math.min(16, Math.floor(900 / Math.max(1, text.length))));
           var step = text.length > 400 ? 6 : 1, i = 0;
           (function tick() {
             i = Math.min(text.length, i + step);
-            el.textContent = text.slice(0, i);
+            el.innerText = text.slice(0, i);  // innerText keeps the message's line breaks
             if (stick) box.scrollTop = box.scrollHeight;
             if (i < text.length) setTimeout(tick, per); else done();
           })();
         }
         function finishStream() {
-          caret.classList.add("done");
-          if (liveBadge) {
-            liveBadge.classList.add("done");
-            liveBadge.innerHTML = '<span class="codex-live-dot"></span>완료';
-          }
+          if (liveBadge) liveBadge.textContent = "완료";
         }
 
         var since = 0, eventsStopped = false;
-        var card = document.getElementById("ai-activity-card");
+        var liveApp = document.getElementById("live-app");
+        var livePlaceholder = document.getElementById("live-placeholder");
+        // Loaded ONCE — when Codex's server first answers, or straight away once the
+        // code is harvested (scoring) — and never reloaded after that.
+        function showLiveApp(d) {
+          if (!liveApp || liveApp.getAttribute("src")) return;
+          if (!(d.app_live || d.status === "scoring")) return;
+          liveApp.src = liveApp.dataset.src;
+          if (livePlaceholder) livePlaceholder.remove();
+        }
+        (function () {
+          var split = document.getElementById("split"), bar = document.getElementById("split-bar");
+          var right = document.getElementById("ai-activity-card");
+          if (!bar) return;
+          bar.style.cursor = "col-resize";
+          bar.addEventListener("mousedown", function (e) {
+            e.preventDefault();
+            bar.classList.replace("bg-body-secondary", "bg-primary");
+            if (liveApp) liveApp.style.pointerEvents = "none";  // keep mousemove on the page
+            function move(ev) {
+              var rect = split.getBoundingClientRect();
+              var w = Math.min(rect.width - 320, Math.max(260, rect.right - ev.clientX));
+              right.style.width = w + "px";
+            }
+            function up() {
+              bar.classList.replace("bg-primary", "bg-body-secondary");
+              if (liveApp) liveApp.style.pointerEvents = "";
+              document.removeEventListener("mousemove", move);
+              document.removeEventListener("mouseup", up);
+            }
+            document.addEventListener("mousemove", move);
+            document.addEventListener("mouseup", up);
+          });
+        })();
         function pollEvents() {
           if (eventsStopped) return;
           fetch(eventsUrl + "?since=" + since, {headers: {"X-Requested-With": "fetch"}})
             .then(function (r) { return r.json(); })
             .then(function (d) {
-              // Only reveal the log once Codex is actually generating (re-grade
-              // has no generation => stays hidden).
-              if (d.generating || (d.events && d.events.length)) card.style.display = "";
+              // Only an operator re-grade runs without generation; a queued or
+              // rate-limited new submission keeps "세션 준비 중...".
+              if (emptyLine && d.regrade) emptyLine.textContent = "재채점 중...";
               enqueue(d.events);
               since = d.next != null ? d.next : since;
               if (d.done) { eventsStopped = true; finishStream(); return; }
@@ -299,13 +397,13 @@
             .then(function (r) { return r.json(); })
             .then(function (d) {
               document.getElementById("stage").textContent = d.stage_label;
-              document.getElementById("hint").textContent = d.stage_hint || "";
+              showLiveApp(d);
               var q = document.getElementById("queue");
               q.textContent = d.queue_position ? ("대기열 " + d.queue_position + "번째") : "";
               // Scoring progress bar (percent + which check is running).
               var pw = document.getElementById("progress-wrap");
               if (d.progress && d.progress.total) {
-                pw.style.display = "";
+                pw.classList.remove("d-none");
                 var pct = d.progress.pct || 0;
                 var bar = document.getElementById("progress-bar");
                 bar.style.width = pct + "%";
@@ -315,7 +413,7 @@
                   (phase ? phase + " · " : "") + (d.progress.label || "") +
                   " (" + d.progress.done + "/" + d.progress.total + ")";
               } else {
-                pw.style.display = "none";
+                pw.classList.add("d-none");
               }
               if (d.done) {                       // flush any final events, then reload
                 eventsStopped = true;

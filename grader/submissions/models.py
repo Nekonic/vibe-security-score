@@ -21,6 +21,9 @@ class Submission(models.Model):
         help_text="세션 ID 또는 닉네임 (session/nickname).",
     )
     prompt = models.TextField(help_text="참가자가 제출한 프롬프트.")
+    # The participant's own part of ``prompt`` (without the fixed system prompt):
+    # its length drives the prompt-efficiency multiplier, also on a re-grade.
+    participant_prompt = models.TextField(blank=True, default="")
     submitted_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     status = models.CharField(
@@ -31,16 +34,21 @@ class Submission(models.Model):
     )
 
     final_score = models.FloatField(null=True, blank=True)
+    # Security score before the prompt-efficiency multiplier (final = security × efficiency).
+    security_score = models.FloatField(null=True, blank=True)
+    prompt_chars = models.IntegerField(null=True, blank=True)
+    efficiency = models.FloatField(null=True, blank=True)
     # Weighted category score BEFORE critical penalties (transparency).
     raw_score = models.FloatField(null=True, blank=True)
-    grade = models.CharField(max_length=32, blank=True, default="")
-    pass_fail = models.CharField(max_length=16, blank=True, default="")
     findings = models.JSONField(default=list, blank=True)
     # App-wide-exploitable defects deducted from the final score, each with a
     # severity + reproduction + live evidence (shown to justify the deduction).
     critical_penalties = models.JSONField(default=list, blank=True)
 
     generation_retries = models.IntegerField(default=0)
+    # Separate from generation_retries: hitting the Codex usage limit is not a
+    # failure and must never use up the generation-error retry budget.
+    rate_limit_retries = models.IntegerField(default=0)
     scoring_retries = models.IntegerField(default=0)
     # Operator re-run: score the EXISTING generated code again (skip Codex) — e.g.
     # after a scoring-config change. Set by the admin re-run button; the worker

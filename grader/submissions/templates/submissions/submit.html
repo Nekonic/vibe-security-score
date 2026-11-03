@@ -1,35 +1,36 @@
 {% extends "submissions/base.html" %}
 {% block title %}프롬프트 제출 · One Prompt Secure Coding Challenge{% endblock %}
-{% block content_width %}1160px{% endblock %}
+{% block body_class %}d-flex flex-column vh-100 overflow-hidden{% endblock %}
+{% block main_class %}container d-flex flex-column flex-grow-1 overflow-hidden pb-3{% endblock %}
 {% block body %}
   <h1 class="h4 mb-3">One Prompt Secure Coding Challenge</h1>
 
   {% if user.is_authenticated %}
-    <form method="post" action="{% url 'submissions:submit' %}">
+    <form method="post" action="{% url 'submissions:submit' %}" class="d-flex flex-column flex-grow-1 overflow-hidden">
       {% csrf_token %}
-      <div class="row g-3">
-        <div class="col-6">
-          <div class="card shadow-sm h-100">
+      <div class="row g-3 flex-grow-1 overflow-hidden">
+        <div class="col-6 h-100">
+          <div class="card shadow-sm h-100 d-flex flex-column">
             <div class="card-header d-flex align-items-center py-2">
               <span class="fw-semibold">시스템 프롬프트</span>
               <span class="badge text-bg-secondary ms-2">고정 · 읽기 전용</span>
             </div>
-            <div class="card-body">
-              <textarea class="form-control font-monospace bg-body-secondary text-body"
-                        rows="20" readonly>{{ system_prompt }}</textarea>
+            <div class="card-body d-flex flex-column overflow-hidden">
+              <textarea class="form-control font-monospace bg-body-secondary text-body flex-grow-1"
+                        readonly>{{ system_prompt }}</textarea>
             </div>
           </div>
         </div>
-        <div class="col-6">
-          <div class="card shadow-sm h-100">
+        <div class="col-6 h-100">
+          <div class="card shadow-sm h-100 d-flex flex-column">
             <div class="card-header py-2 fw-semibold d-flex justify-content-between align-items-center">
               <span>프롬프트</span>
               {% if max_prompt_chars %}<small class="text-body-secondary fw-normal">최대 {{ max_prompt_chars }}자</small>{% endif %}
             </div>
-            <div class="card-body">
-              <textarea class="form-control font-monospace" name="prompt" rows="20"
+            <div class="card-body d-flex flex-column overflow-hidden">
+              <textarea class="form-control font-monospace flex-grow-1" name="prompt"
                         autocomplete="off" required>{{ prompt }}</textarea>
-              {% if max_prompt_chars %}<small class="text-body-secondary d-block mt-1">남은 글자: <span id="prompt-chars">{{ max_prompt_chars }}</span></small>{% endif %}
+              {% if max_prompt_chars %}<small class="text-body-secondary d-block mt-1">남은 글자: <span id="prompt-chars">{{ max_prompt_chars }}</span>{% if efficiency %} · 효율 <span id="prompt-eff">×1.00</span> <span class="text-body-tertiary">· {{ efficiency.free_chars }}자까지 ×1.00 · {{ max_prompt_chars }}자 ×{{ efficiency.min_multiplier|floatformat:2 }}</span>{% endif %}</small>{% endif %}
             </div>
           </div>
         </div>
@@ -39,9 +40,9 @@
 
       <div class="row g-3 mt-1 align-items-end">
         <div class="col-8">
-          <label for="nickname" class="form-label">닉네임 <span class="text-secondary">(선택)</span></label>
+          <label for="nickname" class="form-label">닉네임 <span class="text-secondary">· 선택</span></label>
           <input type="text" class="form-control" id="nickname" name="nickname"
-                 maxlength="120" placeholder="비워두면 자동으로 배정돼요">
+                 maxlength="120" placeholder="자동배정">
         </div>
         <div class="col-4 text-end">
           <button type="submit" class="btn btn-primary">제출하고 채점받기</button>
@@ -57,6 +58,7 @@
         if (t && typeof updatePromptChars === "function") updatePromptChars();
       });
       var MAX_PROMPT_CHARS = {{ max_prompt_chars|default:0 }};
+      var EFF = {% if efficiency %}{free: {{ efficiency.free_chars }}, min: {{ efficiency.min_multiplier }}}{% else %}null{% endif %};
       function updatePromptChars() {
         var t = document.querySelector('textarea[name="prompt"]');
         var out = document.getElementById("prompt-chars");
@@ -66,6 +68,11 @@
         var left = MAX_PROMPT_CHARS - used;
         out.textContent = left;
         out.classList.toggle("text-danger", left < 0);
+        var eff = document.getElementById("prompt-eff");
+        if (eff && EFF) {  // mirrors scoring/engine/efficiency.multiplier
+          var m = used <= EFF.free ? 1 : 1 - (1 - EFF.min) * (Math.min(used, MAX_PROMPT_CHARS) - EFF.free) / (MAX_PROMPT_CHARS - EFF.free);
+          eff.textContent = "×" + m.toFixed(2);
+        }
       }
       (function () {
         var t = document.querySelector('textarea[name="prompt"]');

@@ -198,6 +198,7 @@ class Orchestrator:
         self, sub: Submission, err: Exception, attempt: int
     ) -> None:
         from codex_runner.errors import (
+            ContractFailedError,
             GenerationError,
             GenerationTimeoutError,
             RateLimitError,
@@ -216,13 +217,15 @@ class Orchestrator:
             state.to_failed(sub, err, reason=reason)
             return None
 
-        # (b) Rate limit — NOT a failure. Hold, backoff, re-queue.
+        # (b) Rate limit — NOT a failure. Hold, backoff, re-queue. Counted on its own
+        # counter so usage limits never eat the generation-error retry budget.
         if isinstance(err, RateLimitError):
             state.to_rate_limited(sub, err)
+            hits = sub.rate_limit_retries
             retry_after = getattr(err, "retry_after", None)
-            wait = float(retry_after) if retry_after is not None else self.config.backoff(attempt)
-            sub.generation_retries = attempt + 1
-            state.save_fields(sub, "generation_retries")
+            wait = float(retry_after) if retry_after is not None else self.config.backoff(hits)
+            sub.rate_limit_retries = hits + 1
+            state.save_fields(sub, "rate_limit_retries")
             logger.info(
                 "submission #%s rate-limited; re-queue after %.1fs", sub.pk, wait
             )
@@ -230,7 +233,15 @@ class Orchestrator:
             state.back_to_queued(sub)
             return None
 
-        # (c) Timeout / generic generation error — retry up to generation_max.
+        # (c) The app never passed the functional contract within the Codex budget:
+        # a final generation failure. Not graded, and not regenerated.
+        if isinstance(err, ContractFailedError):
+            logger.warning("submission #%s failed the functional contract: %s",
+                           sub.pk, getattr(err, "detail", "") or err)
+            state.to_failed(sub, err)
+            return None
+
+        # (d) Timeout / generic generation error — retry up to generation_max.
         if isinstance(err, (GenerationTimeoutError, GenerationError)):
             if attempt + 1 < self.config.generation_max:
                 sub.generation_retries = attempt + 1
@@ -247,7 +258,7 @@ class Orchestrator:
             state.to_failed(sub, err)
             return None
 
-        # (d) Anything else — treat as a hard generation failure (fault-isolated).
+        # (e) Anything else — treat as a hard generation failure (fault-isolated).
         logger.warning("submission #%s unexpected generation error: %s", sub.pk, err)
         state.to_failed(sub, err)
         return None
@@ -278,7 +289,13 @@ class Orchestrator:
                     logger.warning("submission #%s scoring failed permanently: %s", sub.pk, err)
                     state.to_failed(sub, err)
                     return
-                # success
+                # success: fold in the prompt-efficiency multiplier (the
+                # participant's own prompt length, not the system prompt's)
+                from scoring.config import load_config
+                from scoring.engine import efficiency
+
+                report = efficiency.apply(report, len(sub.participant_prompt),
+                                          self._scoring_config or load_config())
                 state.to_done(sub, report)
                 return
         finally:
@@ -325,9 +342,9 @@ class Orchestrator:
         Future or None. Fault-isolated: any error fails only this one."""
         try:
             # Operator re-grade: score the existing generated code, NEVER Codex.
+            # The flag stays set until the run ends (state.to_done / to_failed) so
+            # the result page knows this run is a re-grade, not a fresh generation.
             if sub.regrade_only:
-                sub.regrade_only = False
-                state.save_fields(sub, "regrade_only")
                 wd = Path(sub.workdir) if sub.workdir else None
                 if wd is not None and wd.is_dir():
                     # Move out of QUEUED synchronously so the worker loop won't

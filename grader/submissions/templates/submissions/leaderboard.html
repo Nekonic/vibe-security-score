@@ -1,33 +1,58 @@
 {% extends "submissions/base.html" %}
 {% block title %}순위 · One Prompt Secure Coding Challenge{% endblock %}
+{% block body_class %}d-flex flex-column vh-100 overflow-hidden{% endblock %}
+{% block main_class %}container d-flex flex-column flex-grow-1 overflow-hidden pb-3{% endblock %}
 {% block body %}
   <h1 class="h4 mb-3">순위</h1>
   {% if rows %}
-    <div class="card shadow-sm">
-      <div class="table-responsive">
-        <table class="table table-striped align-middle mb-0">
-          <thead>
-            <tr>
-              <th style="width:3rem">#</th>
-              <th>닉네임</th>
-              <th class="text-end">점수</th>
-              <th class="text-end">등급</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for sub in rows %}
-              <tr>
-                <td>{{ forloop.counter }}</td>
-                <td><a href="{% url 'submissions:result' pk=sub.pk %}">{{ sub.participant }}</a></td>
-                <td class="text-end fw-semibold">{{ sub.final_score }}</td>
-                <td class="text-end">{{ sub.grade }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+    <div class="row g-3 flex-grow-1 overflow-hidden">
+      <div class="col-lg-7 d-flex flex-column h-100">
+        <div class="card shadow-sm overflow-hidden">
+          <div class="table-responsive overflow-auto">
+            <table class="table table-hover align-middle mb-0">
+              <thead class="sticky-top">
+                <tr>
+                  <th>#</th>
+                  <th>닉네임</th>
+                  <th class="text-end">점수</th>
+                  <th class="text-end text-nowrap">프롬프트</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for sub in rows %}
+                  <tr{% if sub.pk == selected.pk %} class="table-active"{% endif %}>
+                    <td>{{ forloop.counter }}</td>
+                    <td><a href="{% url 'submissions:result' pk=sub.pk %}">{{ sub.participant }}</a></td>
+                    <td class="text-end fw-semibold">{{ sub.final_score }}</td>
+                    <td class="text-end text-nowrap">
+                      {% if sub.participant_prompt %}
+                        <a href="?p={{ sub.pk }}" class="link-secondary">{{ sub.prompt_chars }}자</a>
+                      {% else %}
+                        <span class="text-secondary">—</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-5 d-flex flex-column h-100">
+        <div class="card shadow-sm d-flex flex-column overflow-hidden h-100">
+          {% if selected %}
+            <div class="card-header d-flex justify-content-between">
+              <span class="fw-semibold">{{ selected.participant }}</span>
+              <span class="text-secondary">{{ selected.prompt_chars }}자</span>
+            </div>
+            <div class="card-body overflow-auto small text-break">{{ selected.participant_prompt|linebreaksbr }}</div>
+          {% else %}
+            <div class="card-body text-secondary">프롬프트 없음</div>
+          {% endif %}
+        </div>
       </div>
     </div>
   {% else %}
-    <div class="card shadow-sm"><div class="card-body text-secondary">아직 완료된 제출이 없어요.</div></div>
+    <div class="card shadow-sm"><div class="card-body text-secondary">제출 없음</div></div>
   {% endif %}
 {% endblock %}

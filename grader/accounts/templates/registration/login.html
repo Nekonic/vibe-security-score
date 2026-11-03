@@ -6,14 +6,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>로그인 · One Prompt Secure Coding Challenge</title>
   <link rel="stylesheet" href="{% static 'submissions/bootstrap.min.css' %}">
-  <style>body{background:#f6f7f9}</style>
 </head>
-<body>
-  <main class="container" style="max-width:380px;margin-top:12vh">
+<body class="bg-body-tertiary">
+  <main class="container pt-5 mt-5">
+   <div class="row justify-content-center"><div class="col-sm-8 col-md-6 col-lg-4">
     <h1 class="h4 mb-4 text-center">One Prompt Secure Coding Challenge</h1>
 
     {% if form.errors %}
-      <div class="alert alert-danger py-2">아이디 또는 비밀번호가 올바르지 않습니다.</div>
+      <div class="alert alert-danger py-2">아이디 또는 비밀번호 오류</div>
     {% endif %}
 
     <form method="post" action="{% url 'login' %}">
@@ -29,6 +29,7 @@
       <input type="hidden" name="next" value="{{ next }}">
       <button class="btn btn-primary w-100" type="submit">로그인</button>
     </form>
+   </div></div>
   </main>
 </body>
 </html>

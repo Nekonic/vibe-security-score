@@ -1,0 +1,28 @@
+{% load static %}<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · 제출 #{{ sub.id }}</title>
+  <link rel="stylesheet" href="{% static 'submissions/bootstrap.min.css' %}">
+</head>
+{# Standalone (no site chrome): this page also renders inside the result page's live-app frame. #}
+<body class="bg-body-tertiary">
+  <main class="container py-5">
+   <div class="row justify-content-center"><div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-body d-flex align-items-center gap-3">
+        <div class="flex-grow-1">
+          <h1 class="h5 mb-1">{{ title }}</h1>
+          {% if message %}<p class="mb-0 text-secondary">{{ message }}</p>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% if logs %}
+      <pre class="mt-3 p-3 bg-light border rounded small overflow-auto">{{ logs }}</pre>
+    {% endif %}
+    <p class="mt-3"><a href="{% url 'submissions:result' pk=sub.id %}" target="_top">← 결과로 돌아가기</a></p>
+   </div></div>
+  </main>
+</body>
+</html>

@@ -17,49 +17,66 @@ def visible_findings(sub: Submission):
     return items
 
 
-_CATEGORY_ORDER: list = []
-_CATEGORY_LABELS: dict = {}
-_CATEGORY_WEIGHTS: dict = {}
+_META: dict = {}
 
 
-def _category_meta():
-    """Config-driven rubric category order + labels + normalized weights (once)."""
-    global _CATEGORY_ORDER, _CATEGORY_LABELS, _CATEGORY_WEIGHTS
-    if not _CATEGORY_ORDER:
+def _meta():
+    """Config-driven category order/labels + per-check standard tags (loaded once)."""
+    if not _META:
         try:
             from scoring.config import load_config
             cfg = load_config()
-            _CATEGORY_LABELS = cfg.category_labels
-            _CATEGORY_ORDER = list(cfg.category_labels.keys())
-            _CATEGORY_WEIGHTS = cfg.category_weights
+            _META.update(order=list(cfg.category_labels.keys()), labels=cfg.category_labels,
+                         standards=cfg.get("standards", {}) or {})
         except Exception:
-            _CATEGORY_LABELS, _CATEGORY_ORDER, _CATEGORY_WEIGHTS = {}, [], {}
-    return _CATEGORY_ORDER, _CATEGORY_LABELS
+            _META.update(order=[], labels={}, standards={})
+    return _META
 
 
-def category_groups(sub: Submission):
-    """Group visible findings into rubric categories (config order), each with its
-    weighted-average score — the per-category breakdown of the rubric."""
-    findings = visible_findings(sub)
-    order, labels = _category_meta()
+def breakdown(sub: Submission):
+    """Result-page breakdown: per-category points (earned / max, summing to the raw
+    score) and, per check, the real points it lost plus its standard tags. Weight-0
+    categories and checks go to ``reference`` (shown, never scored)."""
+    meta = _meta()
     by_cat: dict = {}
-    for f in findings:
-        by_cat.setdefault(f.get("category", ""), []).append(f)
-    ordered = order + [c for c in by_cat if c not in order]
-    groups = []
-    for cat in ordered:
+    for f in sub.findings or []:
+        if not f.get("skipped"):
+            by_cat.setdefault(f.get("category", ""), []).append(f)
+    crit = {p.get("check_id"): p.get("penalty") for p in sub.critical_penalties or []}
+    domains, reference = [], []
+    for cat in meta["order"] + [c for c in by_cat if c not in meta["order"]]:
         items = by_cat.get(cat)
         if not items:
             continue
-        tw = sum(float(i.get("weight", 0) or 0) for i in items)
-        score = (sum(float(i.get("score", 0)) * float(i.get("weight", 0) or 0) for i in items) / tw) if tw else 0.0
-        label = items[0].get("category_label") or labels.get(cat, cat)
-        # Show real points (e.g. 8.7 / 15), not a 0-100 scale. max_points is the
-        # category's share of 100; earned scales by the 0-100 category score.
-        max_points = round(_CATEGORY_WEIGHTS.get(cat, 0.0) * 100.0, 1)
-        earned = round(score / 100.0 * max_points, 1)
-        groups.append({
-            "key": cat, "label": label, "score": round(score, 1),
-            "earned": earned, "max_points": max_points, "findings": items,
+        label = meta["labels"].get(cat) or items[0].get("category_label") or cat
+        # The category's share of the final score, stamped on each finding at grading.
+        share = max(float(f.get("category_weight", 0) or 0) for f in items)
+        if share == 0:
+            reference += items
+            continue
+        scored = [f for f in items if float(f.get("weight", 0) or 0) > 0]
+        reference += [f for f in items if f not in scored]
+        if not scored:
+            continue
+        max_points = share * 100.0
+        tw = sum(float(f["weight"]) for f in scored)
+        rows = []
+        for f in scored:
+            row = dict(f, tags=meta["standards"].get(f.get("check_id"), []),
+                       critical=crit.get(f.get("check_id")))
+            pts = max_points * float(f["weight"]) / tw
+            row["points"] = round(pts, 1)
+            row["lost"] = round(pts * (100.0 - float(f.get("score", 0))) / 100.0, 1)
+            rows.append(row)
+        rows.sort(key=lambda r: (-r["lost"], r.get("label", "")))
+        lost = [r for r in rows if not r.get("passed") or r["lost"] > 0]
+        earned = max_points - sum(r["lost"] for r in rows)
+        domains.append({
+            "key": cat, "label": label,
+            "max_points": round(max_points, 1),
+            # + 0.0 turns a rounded -0.0 into 0.0 so the page never shows "-0.0".
+            "earned": round(max(earned, 0.0), 1) + 0.0,
+            "pct": round(100.0 * earned / max_points),
+            "failed": lost, "passed": [r for r in rows if r not in lost],
         })
-    return groups
+    return {"domains": domains, "reference": reference}

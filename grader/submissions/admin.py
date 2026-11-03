@@ -19,11 +19,9 @@ class SubmissionAdmin(admin.ModelAdmin):
         "colored_status",
         "queue_pos",
         "final_score",
-        "grade",
-        "pass_fail",
         "submitted_at",
     )
-    list_filter = ("status", "pass_fail")
+    list_filter = ("status",)
     search_fields = ("participant", "prompt")
     date_hierarchy = "submitted_at"
     ordering = ("-submitted_at",)
@@ -31,8 +29,6 @@ class SubmissionAdmin(admin.ModelAdmin):
     readonly_fields = (
         "submitted_at",
         "final_score",
-        "grade",
-        "pass_fail",
         "findings_pretty",
         "findings",
         "generation_retries",

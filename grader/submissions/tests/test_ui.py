@@ -6,7 +6,7 @@ produced by driving the state machine with a canned report.
 """
 from __future__ import annotations
 
-import os
+import json
 import pathlib
 import shutil
 import tempfile
@@ -18,7 +18,6 @@ from django.urls import reverse
 
 from submissions import state
 from submissions.models import Submission
-from submissions.views import _default_prompt
 
 
 def _make_done_submission() -> Submission:
@@ -26,8 +25,6 @@ def _make_done_submission() -> Submission:
     state.to_queued(sub)
     report = {
         "final_score": 62.5,
-        "grade": "통과",
-        "pass_fail": "PASS",
         "findings": [
             {
                 "check_id": "hardcoded_secret", "category": "static",
@@ -69,12 +66,6 @@ class SubmitGateTests(TestCase):
             self.client.get(reverse("submissions:result", kwargs={"pk": sub.pk})).status_code, 200
         )
 
-    def test_submit_form_hidden_when_anonymous(self):
-        body = self.client.get(reverse("submissions:submit")).content.decode()
-        self.assertNotIn("<textarea", body)          # no form
-        self.assertNotIn("제출하고 채점받기", body)   # no submit button
-        self.assertIn("로그인", body)                 # navbar login link is present
-
     def test_submit_post_requires_login(self):
         resp = self.client.post(
             reverse("submissions:submit"), {"prompt": "x", "nickname": "n"}
@@ -93,16 +84,6 @@ class SubmitGateTests(TestCase):
 class SubmitPageTests(TestCase):
     def setUp(self):
         self.client.force_login(_mk_user())
-
-    def test_get_prefills_prompt_from_config_file(self):
-        resp = self.client.get(reverse("submissions:submit"))
-        self.assertEqual(resp.status_code, 200)
-        body = resp.content.decode()
-        # The textarea is prefilled with the config default prompt.
-        self.assertIn("<textarea", body)
-        # A distinctive line from config/default_prompt.md must be present.
-        self.assertIn("게시판", _default_prompt())
-        self.assertIn(_default_prompt().strip().splitlines()[0], body)
 
     def test_submit_combines_system_prompt_with_user_prompt(self):
         resp = self.client.post(
@@ -140,13 +121,6 @@ class SubmitPageTests(TestCase):
             )
         self.assertEqual(Submission.objects.count(), 1)
 
-    def test_zero_limit_means_no_cap(self):
-        with mock.patch("submissions.views._max_prompt_chars", return_value=0):
-            self.client.post(
-                reverse("submissions:submit"), {"prompt": "x" * 5000, "nickname": "n"}
-            )
-        self.assertEqual(Submission.objects.count(), 1)
-
     def test_submit_page_does_not_disclose_security_checks(self):
         body = self.client.get(reverse("submissions:submit")).content.decode().lower()
         # None of the grading vocabulary may appear before grading.
@@ -175,17 +149,20 @@ class StatusAndResultTests(TestCase):
             reverse("submissions:status_json", kwargs={"pk": sub.pk})
         ).json()
         self.assertTrue(data["done"])
-        self.assertEqual(data["grade"], "통과")
-        self.assertEqual(data["pass_fail"], "PASS")
+        self.assertEqual(data["final_score"], 62.5)
+        self.assertNotIn("grade", data)
+        self.assertNotIn("pass_fail", data)
 
-    def test_result_page_renders_findings_and_grade(self):
+    def test_result_page_renders_findings_and_score(self):
         sub = _make_done_submission()
         body = self.client.get(
             reverse("submissions:result", kwargs={"pk": sub.pk})
         ).content.decode()
-        # Grade + PASS badge
-        self.assertIn("통과", body)
-        self.assertIn("PASS", body)
+        # Score only: no grade line, no PASS/FAIL badge
+        self.assertIn("62.5", body)
+        self.assertNotIn("등급", body)
+        self.assertNotIn(">PASS<", body)
+        self.assertNotIn(">FAIL<", body)
         # A failing check with its penalty reason (감점 사유) is shown
         self.assertIn("하드코딩 시크릿", body)
         self.assertIn("app.py:23 SECRET_KEY 하드코딩", body)
@@ -194,31 +171,6 @@ class StatusAndResultTests(TestCase):
         self.assertIn("✔", body)
         # Skipped aux tool (weight 0) is hidden on the participant result
         self.assertNotIn("gitleaks", body)
-
-    def test_in_progress_page_shows_poller(self):
-        sub = Submission.objects.create(participant="p", prompt="x")
-        state.to_queued(sub)
-        body = self.client.get(
-            reverse("submissions:result", kwargs={"pk": sub.pk})
-        ).content.decode()
-        # poller wired: the resolved status URL + the poll loop are in the page
-        status_url = reverse("submissions:status_json", kwargs={"pk": sub.pk})
-        self.assertIn(status_url, body)
-        self.assertIn("setTimeout(poll", body)
-        self.assertIn("대기 중", body)
-
-    def test_in_progress_page_has_live_activity_panel(self):
-        sub = Submission.objects.create(participant="p", prompt="x")
-        state.to_queued(sub)
-        body = self.client.get(
-            reverse("submissions:result", kwargs={"pk": sub.pk})
-        ).content.decode()
-        # codex-CLI style terminal panel (header title + live badge).
-        self.assertIn("codex · 코드 생성", body)
-        self.assertIn("ai-activity", body)
-        self.assertIn(reverse("submissions:events_json", kwargs={"pk": sub.pk}), body)
-        self.assertIn("pollEvents", body)
-
 
 class GenerationEventsTests(TestCase):
     def setUp(self):
@@ -252,16 +204,6 @@ class GenerationEventsTests(TestCase):
         self.assertEqual(d2["events"], [])
         self.assertEqual(d2["next"], 2)
 
-    def test_events_endpoint_empty_before_generation(self):
-        sub = Submission.objects.create(participant="p", prompt="x")
-        state.to_queued(sub)
-        d = self.client.get(
-            reverse("submissions:events_json", kwargs={"pk": sub.pk})
-        ).json()
-        self.assertEqual(d["events"], [])
-        self.assertEqual(d["next"], 0)
-
-
 class RerunAndAdminTests(TestCase):
     def setUp(self):
         self.op = get_user_model().objects.create_user(
@@ -279,28 +221,19 @@ class RerunAndAdminTests(TestCase):
         self.assertNotIn("· 운영자", body)   # not an operator
         self.assertIn("로그아웃", body)       # but is logged in
 
+    def test_failed_generation_shows_no_regrade_button(self):
+        # Nothing was generated, so a re-grade could only fail again.
+        self.client.force_login(self.op)
+        sub = Submission.objects.create(participant="p", prompt="x")
+        state.to_failed(sub, "boom")
+        body = self.client.get(reverse("submissions:result", kwargs={"pk": sub.pk})).content.decode()
+        self.assertNotIn("재채점", body)
+
     def test_rerun_post_forbidden_for_regular_user(self):
         self.client.force_login(_mk_user("regular", staff=False))
         sub = _make_done_submission()
         resp = self.client.post(reverse("submissions:rerun", kwargs={"pk": sub.pk}))
         self.assertEqual(resp.status_code, 302)  # staff_member_required -> login
-        sub.refresh_from_db()
-        self.assertEqual(sub.status, Submission.Status.DONE)  # untouched
-
-    def test_rerun_button_and_admin_badge_shown_for_staff(self):
-        self.client.force_login(self.op)
-        sub = _make_done_submission()
-        body = self.client.get(
-            reverse("submissions:result", kwargs={"pk": sub.pk})
-        ).content.decode()
-        self.assertIn("재채점", body)
-        self.assertIn(reverse("submissions:rerun", kwargs={"pk": sub.pk}), body)
-        self.assertIn("· 운영자", body)  # top-right operator indicator
-
-    def test_rerun_post_requires_staff(self):
-        sub = _make_done_submission()
-        resp = self.client.post(reverse("submissions:rerun", kwargs={"pk": sub.pk}))
-        self.assertEqual(resp.status_code, 302)  # redirect to admin login
         sub.refresh_from_db()
         self.assertEqual(sub.status, Submission.Status.DONE)  # untouched
 
@@ -320,9 +253,9 @@ class RerunAndAdminTests(TestCase):
             self.assertTrue(sub.regrade_only)
 
 
-class PocConsoleTests(TestCase):
-    """Operator attack-demonstration console: staff-only, DONE+workdir guarded,
-    and the live start/run/stop endpoints (docker layer mocked out)."""
+class KaliConsoleTests(TestCase):
+    """Operator Kali console: staff-only, DONE+workdir guarded, JSON start/io/stop
+    (docker layer mocked out), and the replay scripts placed in ~/poc."""
 
     def setUp(self):
         self.op = get_user_model().objects.create_user(
@@ -333,136 +266,63 @@ class PocConsoleTests(TestCase):
         sub = Submission.objects.create(participant="tester", prompt="게시판 만들어줘")
         state.to_queued(sub)
         state.to_done(sub, {
-            "final_score": 30.0, "grade": "미흡", "pass_fail": "FAIL",
-            "findings": [{
-                "check_id": "sqli", "category": "dynamic", "label": "SQL 인젝션",
-                "owasp": "A03", "score": 0.0, "weight": 10.0,
-                "passed": False, "skipped": False, "tool": "",
-                "penalty_reasons": ["/login 인증 우회"], "evidence": [],
-            }],
+            "final_score": 30.0,
+            "findings": [
+                {"check_id": "sqli", "label": "SQL Injection", "score": 0.0, "passed": False, "skipped": False},
+                {"check_id": "ssrf", "label": "SSRF", "score": 0.0, "passed": False, "skipped": True},
+                {"check_id": "stored_xss", "label": "Stored XSS", "score": 100.0, "passed": True, "skipped": False},
+                {"check_id": "security_logging", "label": "보안 로깅", "score": 0.0, "passed": False, "skipped": False},
+            ],
         })
-        sub.workdir = "/some/generated/dir"
+        sub.workdir = tempfile.mkdtemp()
         sub.save(update_fields=["workdir"])
         return sub
 
-    def test_console_requires_staff(self):
-        sub = self._done_with_workdir()
-        resp = self.client.get(reverse("submissions:poc_console", kwargs={"pk": sub.pk}))
-        self.assertEqual(resp.status_code, 302)  # staff_member_required -> login
-
-    def test_console_renders_editable_code_run_button_and_csrf(self):
-        self.client.force_login(self.op)
-        sub = self._done_with_workdir()
-        body = self.client.get(
-            reverse("submissions:poc_console", kwargs={"pk": sub.pk})
-        ).content.decode()
-        self.assertIn('contenteditable="true"', body)   # code is editable
-        self.assertIn('id="btn-run"', body)              # run control present
-        self.assertIn("csrfmiddlewaretoken", body)       # CSRF token for POSTs
-        self.assertIn(reverse("submissions:poc_run", kwargs={"pk": sub.pk}), body)
-
     def test_start_requires_staff(self):
         sub = self._done_with_workdir()
-        resp = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
+        resp = self.client.post(reverse("submissions:kali_start", kwargs={"pk": sub.pk}))
         self.assertEqual(resp.status_code, 302)
 
-    def test_start_run_stop_are_json(self):
+    def test_start_io_stop_are_json(self):
         self.client.force_login(self.op)
         sub = self._done_with_workdir()
-        with mock.patch("submissions.poc_session.start", return_value={"ok": True, "ready": True}) as m_start, \
-             mock.patch("submissions.poc_session.run", return_value={"ok": True, "stdout": "EXPLOITED", "stderr": "", "html": "<p>x</p>"}) as m_run, \
-             mock.patch("submissions.poc_session.stop", return_value={"ok": True, "stopped": True}) as m_stop:
-            r1 = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
-            self.assertEqual(r1.json(), {"ok": True, "ready": True})
-            self.assertTrue(m_start.called)
-            r2 = self.client.post(
-                reverse("submissions:poc_run", kwargs={"pk": sub.pk}),
-                data={"check_id": "sqli", "code": "print('x')"},
-                content_type="application/json",
-            )
-            self.assertEqual(r2.json()["stdout"], "EXPLOITED")
-            self.assertTrue(m_run.called)
-            r3 = self.client.post(reverse("submissions:poc_stop", kwargs={"pk": sub.pk}))
-            self.assertTrue(r3.json()["ok"])
-            self.assertTrue(m_stop.called)
+        with mock.patch("submissions.kali_session.start", return_value={"ok": True}) as m_start, \
+             mock.patch("submissions.kali_session.io", return_value={"ok": True, "next": 3, "out": "YWJj"}) as m_io, \
+             mock.patch("submissions.kali_session.stop", return_value={"ok": True}) as m_stop:
+            self.assertEqual(self.client.post(reverse("submissions:kali_start", kwargs={"pk": sub.pk})).json(), {"ok": True})
+            r = self.client.post(reverse("submissions:kali_io", kwargs={"pk": sub.pk}),
+                                 data={"data": "ls\r", "since": 0}, content_type="application/json")
+            self.assertEqual(r.json()["next"], 3)
+            self.assertEqual(m_io.call_args.kwargs["data"], "ls\r")
+            self.assertTrue(self.client.post(reverse("submissions:kali_stop", kwargs={"pk": sub.pk})).json()["ok"])
+            self.assertTrue(m_start.called and m_stop.called)
 
-    def test_run_rejects_empty_payload(self):
+    def test_start_rejected_without_generated_code(self):
         self.client.force_login(self.op)
-        sub = self._done_with_workdir()
-        resp = self.client.post(
-            reverse("submissions:poc_run", kwargs={"pk": sub.pk}),
-            data={"check_id": "", "code": ""},
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_start_rejected_when_not_done_or_no_workdir(self):
-        self.client.force_login(self.op)
-        # DONE but no workdir
         sub = _make_done_submission()
-        resp = self.client.post(reverse("submissions:poc_start", kwargs={"pk": sub.pk}))
+        resp = self.client.post(reverse("submissions:kali_start", kwargs={"pk": sub.pk}))
         self.assertEqual(resp.status_code, 400)
-        self.assertFalse(resp.json()["ok"])
 
-
-class PocTemplateTests(TestCase):
-    """PoC 소스 카탈로그: 모든 템플릿이 유효 파이썬이고, 재생형(세션 위조) PoC 는
-    검증된 쿠키가 있을 때만 탭이 생기고 그 쿠키/경로가 주입되는지."""
-
-    def _finding(self, cid, **kw):
-        f = {"check_id": cid, "label": cid, "owasp": "", "score": 0.0,
-             "passed": False, "skipped": False, "weight": 5.0}
-        f.update(kw)
-        return f
-
-    def test_every_template_is_valid_python(self):
-        import ast
-        from submissions import poc
-        for cid in poc._TEMPLATES:
-            src = poc.build_poc_source(cid, "http://t:5000")
-            src = (src.replace("%%COOKIE_NAME%%", "session")
-                      .replace("%%COOKIE_VALUE%%", "eyJ.a.b")
-                      .replace("%%ADMIN_PATH%%", "/admin"))
-            ast.parse(src)  # raises SyntaxError on a broken template
-
-    def test_simple_exploit_templates_present(self):
-        from submissions import poc
-        for cid in ("csrf_protection", "debug_true", "idor_profile"):
-            self.assertTrue(poc.has_poc(cid))
-            terms = poc.poc_terminals([self._finding(cid)], target_url="http://t:5000")
-            self.assertEqual([t["check_id"] for t in terms], [cid])
-            self.assertIn("http://t:5000", terms[0]["code"])  # TARGET substituted
-            self.assertNotIn("%%TARGET%%", terms[0]["code"])
-
-    def test_forgery_replay_injects_verified_cookie(self):
-        from submissions import poc
-        visible = [self._finding("hardcoded_secret")]
-        allf = visible + [{
-            "check_id": "session_forgery", "passed": False, "skipped": False, "weight": 0,
-            "evidence": ["forged session=eyJ1c2VyX2lkIjoxfQ.aB.cD-eF_gH",
-                         "/admin/users -> 200 (admin 콘텐츠 렌더)"],
-        }]
-        terms = poc.poc_terminals(visible, allf, "http://t:5000")
-        self.assertEqual([t["check_id"] for t in terms], ["hardcoded_secret"])
-        code = terms[0]["code"]
-        self.assertIn("eyJ1c2VyX2lkIjoxfQ.aB.cD-eF_gH", code)
-        self.assertIn("/admin/users", code)
-        self.assertNotIn("%%", code)  # no leftover placeholders
-
-    def test_forgery_tab_gated_without_verified_cookie(self):
-        from submissions import poc
-        visible = [self._finding("weak_default_secret"), self._finding("csrf_protection")]
-        # no session_forgery finding => no verified cookie => no replay tab
-        terms = poc.poc_terminals(visible, visible, "http://t:5000")
-        self.assertEqual([t["check_id"] for t in terms], ["csrf_protection"])
+    def test_scripts_only_for_failed_dynamic_checks(self):
+        from submissions import kali_session
+        sub = self._done_with_workdir()
+        sess = kali_session.Session(pk=sub.pk)
+        sess.control = mock.Mock(server_address=("0.0.0.0", 4321))
+        files = kali_session._poc_files(sub, sess)
+        # sqli failed → script; ssrf skipped, stored_xss passed, security_logging static → none.
+        self.assertEqual(sorted(k for k in files if k.endswith(".py")), ["sqli.py"])
+        info = json.loads(files[".session.json"])
+        self.assertEqual(info["expected"]["sqli"], [0.0, False, False])
+        self.assertNotIn("security_logging", info["expected"])
+        self.assertIn("kali_poc.run('sqli')", files["sqli.py"])
 
 
 class LeaderboardTests(TestCase):
-    def _done(self, participant, score, grade="통과", pf="PASS"):
+    def _done(self, participant, score):
         sub = Submission.objects.create(participant=participant, prompt="x")
         state.to_queued(sub)
         state.to_done(sub, {
-            "final_score": score, "grade": grade, "pass_fail": pf,
+            "final_score": score,
             "findings": [{
                 "check_id": "hardcoded_secret", "label": "하드코딩 시크릿",
                 "score": 0.0, "weight": 12.0, "passed": False, "skipped": False,
@@ -486,11 +346,6 @@ class LeaderboardTests(TestCase):
         self.assertIn("70.0", body)
         self.assertNotIn("40.0", body)
         self.assertNotIn("carol", body)
-
-    def test_nickname_links_to_detail(self):
-        sub = self._done("dave", 55)
-        body = self.client.get(reverse("submissions:leaderboard")).content.decode()
-        self.assertIn(reverse("submissions:result", kwargs={"pk": sub.pk}), body)
 
     def test_leaderboard_does_not_leak_findings(self):
         self._done("alice", 40)

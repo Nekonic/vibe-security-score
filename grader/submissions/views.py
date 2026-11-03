@@ -4,8 +4,10 @@ disclosed pre-grading (findings appear only on the result screen)."""
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Optional
 
 from django.conf import settings
+from django.db.models import F
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import redirect_to_login
 from django.http import JsonResponse
@@ -41,6 +43,19 @@ def _build_prompt(user_prompt: str) -> str:
     return f"{_default_prompt().rstrip()}\n\n{user_prompt.strip()}\n"
 
 
+def _efficiency() -> Optional[dict]:
+    """Prompt-efficiency rule shown on the submit page (None when disabled)."""
+    try:
+        from scoring.config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    if not cfg.get("efficiency.enabled", False):
+        return None
+    return {"free_chars": int(cfg.get("efficiency.free_chars", 200)),
+            "min_multiplier": float(cfg.get("efficiency.min_multiplier", 0.8))}
+
+
 def _max_prompt_chars() -> int:
     """Config cap (characters incl. whitespace) on the participant's prompt; 0 => no limit."""
     try:
@@ -61,7 +76,7 @@ def submit(request):
                 request,
                 "submissions/submit.html",
                 {"system_prompt": _default_prompt(), "prompt": user_prompt,
-                 "error": "프롬프트를 입력해 주세요."},
+                 "error": "프롬프트 없음"},
                 status=400,
             )
         limit = _max_prompt_chars()
@@ -71,31 +86,19 @@ def submit(request):
                 request,
                 "submissions/submit.html",
                 {"system_prompt": _default_prompt(), "prompt": user_prompt,
-                 "error": f"프롬프트가 너무 깁니다 ({size} / {limit}자). "
-                          f"{limit}자 이하로 줄여 주세요.",
-                 "max_prompt_chars": limit},
+                 "error": f"{size}자 · 최대 {limit}자",
+                 "max_prompt_chars": limit, "efficiency": _efficiency()},
                 status=400,
             )
-        sub = DBQueueBackend().enqueue(_participant(request), _build_prompt(user_prompt))
+        sub = DBQueueBackend().enqueue(_participant(request), _build_prompt(user_prompt), user_prompt)
         return redirect("submissions:result", pk=sub.pk)
 
     return render(
         request,
         "submissions/submit.html",
         {"system_prompt": _default_prompt(), "prompt": "",
-         "max_prompt_chars": _max_prompt_chars()},
+         "max_prompt_chars": _max_prompt_chars(), "efficiency": _efficiency()},
     )
-
-
-# Stage descriptions shown to the participant (progress, not the checks).
-_STAGE_HINT = {
-    Submission.Status.QUEUED: "대기열에서 순서를 기다리고 있어요.",
-    Submission.Status.RATE_LIMITED: "생성 한도 회복을 기다리는 중이에요. 잠시만요.",
-    Submission.Status.GENERATING: "AI가 코드를 생성하고 있어요.",
-    Submission.Status.SCORING: "생성된 코드를 채점하고 있어요.",
-    Submission.Status.DONE: "채점이 끝났어요.",
-    Submission.Status.FAILED: "처리 중 문제가 발생했어요.",
-}
 
 
 def result(request, pk: int):
@@ -104,14 +107,14 @@ def result(request, pk: int):
     ctx = {
         "sub": sub,
         "stage_label": sub.get_status_display(),
-        "stage_hint": _STAGE_HINT.get(sub.status, ""),
         "queue_position": sub.queue_position(),
         "done": done,
         "failed": sub.status == Submission.Status.FAILED,
         "boot_log": sub.boot_log if done else "",
         "findings": rubric.visible_findings(sub) if done else [],
-        "category_groups": rubric.category_groups(sub) if done else [],
+        "breakdown": rubric.breakdown(sub) if done else None,
         "critical_penalties": (sub.critical_penalties or []) if done else [],
+        "critical_total": round(sum(float(p.get("penalty", 0) or 0) for p in sub.critical_penalties or []), 1),
     }
     return render(request, "submissions/result.html", ctx)
 
@@ -131,16 +134,19 @@ def generation_events_json(request, pk: int):
     except (TypeError, ValueError):
         since = 0
     items = []
-    try:
-        from codex_runner.activity import read_activity
-        items = read_activity(_scoring_config(), str(sub.pk))
-    except Exception:
-        items = []
+    # A re-grade runs no generation: don't replay the original run's activity.
+    if not sub.regrade_only:
+        try:
+            from codex_runner.activity import read_activity
+            items = read_activity(_scoring_config(), str(sub.pk))
+        except Exception:
+            items = []
     return JsonResponse(
         {
             "events": items[since:],
             "next": len(items),
             "generating": sub.status == Submission.Status.GENERATING,
+            "regrade": sub.regrade_only,
             "done": sub.is_terminal,
         }
     )
@@ -161,6 +167,18 @@ def rerun(request, pk: int):
     return redirect("submissions:result", pk=pk)
 
 
+def _app_live(sub) -> bool:
+    """Whether the app being generated is answering yet, so the result page loads the
+    live view once instead of reloading a placeholder."""
+    if sub.status != Submission.Status.GENERATING:
+        return False
+    from codex_runner.activity import read_preview_port
+    from .preview_session import answers
+
+    port = read_preview_port(_scoring_config(), str(sub.pk))
+    return port is not None and answers(port, timeout=0.5)
+
+
 def status_json(request, pk: int):
     sub = get_object_or_404(Submission, pk=pk)
     progress = None
@@ -172,12 +190,10 @@ def status_json(request, pk: int):
             "id": sub.pk,
             "status": sub.status,
             "stage_label": sub.get_status_display(),
-            "stage_hint": _STAGE_HINT.get(sub.status, ""),
             "queue_position": sub.queue_position(),
             "final_score": sub.final_score,
-            "grade": sub.grade,
-            "pass_fail": sub.pass_fail,
             "progress": progress,  # {pct,label,phase,done,total} during SCORING, else null
+            "app_live": _app_live(sub),  # Codex's self-test server is up -> show it live
             "done": sub.is_terminal,  # done OR failed -> stop polling / reload
         }
     )
@@ -193,7 +209,8 @@ def leaderboard(request):
         Submission.objects.filter(
             status=Submission.Status.DONE, final_score__isnull=False
         )
-        .order_by("-final_score", "finished_at")
+        # Equal score → the shorter prompt ranks first (then the earlier finisher).
+        .order_by("-final_score", F("prompt_chars").asc(nulls_last=True), "finished_at")
     )
     rows = []
     seen = set()
@@ -204,4 +221,8 @@ def leaderboard(request):
         rows.append(sub)
         if len(rows) >= LEADERBOARD_SIZE:
             break
-    return render(request, "submissions/leaderboard.html", {"rows": rows})
+    # The prompt panel shows one ranked row: ?p=<pk>, else the top one with a prompt.
+    with_prompt = [s for s in rows if s.participant_prompt]
+    selected = next((s for s in with_prompt if str(s.pk) == request.GET.get("p")),
+                    with_prompt[0] if with_prompt else None)
+    return render(request, "submissions/leaderboard.html", {"rows": rows, "selected": selected})

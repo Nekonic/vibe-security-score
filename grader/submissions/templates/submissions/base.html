@@ -6,10 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}One Prompt Secure Coding Challenge{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'submissions/bootstrap.min.css' %}">
-  <style>.app-width { max-width: {% block content_width %}780px{% endblock %}; }</style>
 </head>
-<body class="bg-body-tertiary">
-  <nav class="navbar bg-primary mb-4" data-bs-theme="dark">
+{# One-screen pages set body_class "d-flex flex-column vh-100 overflow-hidden" and a #}
+{# flex main_class; overflow-hidden/-auto on a flex child lets it shrink to fit.     #}
+<body class="bg-body-tertiary {% block body_class %}{% endblock %}">
+  <nav class="navbar bg-primary mb-3 flex-shrink-0" data-bs-theme="dark">
     <div class="container-fluid px-4 d-flex justify-content-between align-items-center">
       <a class="navbar-brand mb-0 h1" href="{% url 'submissions:submit' %}">One Prompt Secure Coding Challenge</a>
       <div class="d-flex align-items-center gap-3">
@@ -30,7 +31,7 @@
       </div>
     </div>
   </nav>
-  <main class="container app-width pb-5">
+  <main class="{% block main_class %}container pb-5{% endblock %}">
     {% block body %}{% endblock %}
   </main>
 </body>

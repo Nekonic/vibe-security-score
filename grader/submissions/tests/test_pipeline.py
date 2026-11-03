@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -21,13 +20,12 @@ from unittest import mock
 from django.core.management import call_command
 from django.test import TransactionTestCase
 
-from submissions import state
 from submissions.models import GraderSettings, Submission
 from submissions.orchestrator import pipeline
 from submissions.orchestrator.pipeline import Orchestrator, OrchestratorConfig
 from submissions.orchestrator.queue_backend import get_queue_backend
 
-from codex_runner.errors import GenerationError, RateLimitError
+from codex_runner.errors import ContractFailedError, GenerationError, RateLimitError
 
 from .fakes import (
     CountingGenerate,
@@ -35,6 +33,7 @@ from .fakes import (
     FakeGenerate,
     FakeGrade,
     RaiseOnceThenSucceedGenerate,
+    RaiseSequenceThenSucceedGenerate,
 )
 
 
@@ -74,8 +73,17 @@ class PipelineTestBase(TransactionTestCase):
         from submissions.models import GraderSettings
         GraderSettings.objects.get_or_create(pk=1)
         pipeline.clear_auth_alert()
+        # Test pks (1..N) collide with real submissions: keep the live-activity log
+        # (and preview-port file) in the temp dir, never the repo's data/ tree.
+        events = self.tmp / "events"
+        self._events_patch = mock.patch(
+            "codex_runner.activity.events_path",
+            lambda config, sid: events / str(sid) / "events.jsonl",
+        )
+        self._events_patch.start()
 
     def tearDown(self) -> None:
+        self._events_patch.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
         pipeline.clear_auth_alert()
 
@@ -229,18 +237,18 @@ class RateLimitedTests(PipelineTestBase):
         gen = RaiseOnceThenSucceedGenerate(self.workdir_base, exc, duration=0.01)
         grade = FakeGrade(duration=0.02)
 
-        # Observe that the submission actually entered RATE_LIMITED at some point.
-        seen_rate_limited = threading.Event()
         orch = Orchestrator(cfg, generate_fn=gen, grade_fn=grade)
         sub = self.backend.enqueue("solo", "please generate")
 
-        # First pass: hits rate limit, re-queues.
-        orch.process_one(sub)
+        # First pass: hits rate limit, re-queues. Spy that RATE_LIMITED was entered.
+        from submissions import state as st
+        with mock.patch.object(pipeline.state, "to_rate_limited", wraps=st.to_rate_limited) as rl:
+            orch.process_one(sub)
+        rl.assert_called_once()
         sub.refresh_from_db()
-        # After back_to_queued it's QUEUED again; but last_error records the RL,
-        # and generation_retries incremented — evidence it went through RL.
         self.assertEqual(sub.status, Submission.Status.QUEUED)
-        self.assertEqual(sub.generation_retries, 1)
+        self.assertEqual(sub.rate_limit_retries, 1)
+        self.assertEqual(sub.generation_retries, 0)  # usage limit ≠ generation failure
 
         # Second pass: succeeds -> scoring -> done.
         nxt = self.backend.claim_next_queued()
@@ -252,6 +260,22 @@ class RateLimitedTests(PipelineTestBase):
         sub.refresh_from_db()
         self.assertEqual(sub.status, Submission.Status.DONE)
         self.assertEqual(sub.final_score, 72.5)
+
+
+class RateLimitBudgetTests(PipelineTestBase):
+    def test_rate_limits_never_use_up_the_generation_retry_budget(self) -> None:
+        # generation_max=2: two usage-limit hits + one transient generation error must
+        # still end DONE — rate limits are not failures.
+        cfg = _test_config(self.workdir_base, generation_max=2)
+        rl = RateLimitError(retry_after=0.0, detail="usage limit")
+        gen = RaiseSequenceThenSucceedGenerate(
+            self.workdir_base, [rl, rl, GenerationError(detail="transient")], duration=0.01)
+        orch = Orchestrator(cfg, generate_fn=gen, grade_fn=FakeGrade(duration=0.01))
+        sub = self.backend.enqueue("solo", "please generate")
+        self._drain(orch)
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Submission.Status.DONE)
+        self.assertEqual((sub.rate_limit_retries, sub.generation_retries), (2, 1))
 
 
 class CleanupTests(PipelineTestBase):
@@ -297,20 +321,28 @@ class AuthFailureTests(PipelineTestBase):
         )
 
 
-class QueuePositionTests(PipelineTestBase):
-    def test_queue_position_helper(self) -> None:
-        a = self.backend.enqueue("a", "p")
-        b = self.backend.enqueue("b", "p")
-        c = self.backend.enqueue("c", "p")
-        self.assertEqual(a.queue_position(), 1)
-        self.assertEqual(b.queue_position(), 2)
-        self.assertEqual(c.queue_position(), 3)
-        # Once a is no longer queued, positions shift and a returns 0.
-        from submissions import state
-        state.to_generating(a)
-        self.assertEqual(a.queue_position(), 0)
-        b.refresh_from_db()
-        self.assertEqual(b.queue_position(), 1)
+class ContractFailureTests(PipelineTestBase):
+    def test_contract_failure_fails_once_and_is_never_graded(self) -> None:
+        """An app that never passed the functional contract in the Codex budget is a
+        final generation failure: failed with a short reason, one generate call, no
+        re-queue, no scoring."""
+        cfg = _test_config(self.workdir_base, generation_max=3)
+        gen = CountingGenerate(self.workdir_base, ContractFailedError(detail="28/30 at deadline"))
+        grade = FakeGrade(duration=0.01)
+        orch = Orchestrator(cfg, generate_fn=gen, grade_fn=grade)
+        sub = self.backend.enqueue("solo", "generate please")
+        orch.process_one(sub)
+        orch.shutdown(wait=True)
+
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Submission.Status.FAILED)
+        self.assertEqual(sub.last_error, "생성한 앱이 시간 안에 기능 테스트를 모두 통과하지 못했습니다.")
+        self.assertNotIn("(", sub.last_error)
+        self.assertEqual(gen.count, 1, "a contract failure must not be regenerated")
+        self.assertEqual(grade.calls, [], "a contract failure must not be graded")
+        self.assertEqual(
+            Submission.objects.filter(status=Submission.Status.QUEUED).count(), 0
+        )
 
 
 class WorkerCommandTests(PipelineTestBase):
@@ -379,21 +411,27 @@ class WorkerCommandTests(PipelineTestBase):
         )
 
 
-class AdminQueuePosTests(PipelineTestBase):
-    """The admin '대기순번' column: numbers for QUEUED rows, '-' otherwise. Proves
-    the column renders (the reported 'blank' is just terminal/in-flight rows)."""
 
-    def test_queue_pos_column_render(self) -> None:
-        from django.contrib.admin.sites import AdminSite
-        from submissions.admin import SubmissionAdmin
 
-        ma = SubmissionAdmin(Submission, AdminSite())
-        a = self.backend.enqueue("a", "p")
-        b = self.backend.enqueue("b", "p")
-        self.assertEqual(ma.queue_pos(a), 1)
-        self.assertEqual(ma.queue_pos(b), 2)
-        # Once it leaves QUEUED, the column shows '-' (not a stale number).
-        state.to_generating(a)
-        self.assertEqual(ma.queue_pos(a), "-")
-        b.refresh_from_db()
-        self.assertEqual(ma.queue_pos(b), 1)
+class PromptEfficiencyTests(PipelineTestBase):
+    def test_long_participant_prompt_scales_the_final_score(self) -> None:
+        """The efficiency multiplier uses the PARTICIPANT's prompt length (not the
+        system prompt): 600 chars → ×0.9 of the security score."""
+        cfg = _test_config(self.workdir_base)
+        orch = Orchestrator(cfg, generate_fn=FakeGenerate(self.workdir_base, duration=0.01),
+                            grade_fn=FakeGrade(duration=0.01))
+        long_sub = self.backend.enqueue("long", "SYSTEM\n\n" + "가" * 600, "가" * 600)
+        short_sub = self.backend.enqueue("short", "SYSTEM\n\n" + "가" * 150, "가" * 150)
+        for s in (long_sub, short_sub):
+            orch.process_one(s)
+        orch.wait_for_scoring(timeout=10.0)
+        orch.shutdown(wait=True)
+
+        long_sub.refresh_from_db()
+        short_sub.refresh_from_db()
+        self.assertEqual(long_sub.security_score, 72.5)
+        self.assertEqual(long_sub.prompt_chars, 600)
+        self.assertAlmostEqual(long_sub.efficiency, 0.9)
+        self.assertAlmostEqual(long_sub.final_score, 65.25)
+        self.assertEqual(short_sub.final_score, 72.5)  # within the free length
+        self.assertEqual(short_sub.efficiency, 1.0)

@@ -78,26 +78,26 @@ def to_done(sub: Submission, report: Mapping[str, Any]) -> Submission:
     """Terminal success: copy result fields out of the grading report."""
     sub.status = Submission.Status.DONE
     sub.final_score = report.get("final_score")
+    sub.security_score = report.get("security_score")
+    sub.prompt_chars = report.get("prompt_chars")
+    sub.efficiency = report.get("efficiency")
     sub.raw_score = report.get("raw_score")
-    sub.grade = str(report.get("grade", "") or "")
-    # pass_fail may arrive as a string or be derivable from ``passed``.
-    pf = report.get("pass_fail")
-    if pf is None and "passed" in report:
-        pf = "pass" if report.get("passed") else "fail"
-    sub.pass_fail = str(pf or "")
     sub.findings = list(report.get("findings", []) or [])
     sub.critical_penalties = list(report.get("critical_penalties", []) or [])
     sub.boot_log = str(report.get("boot_log", "") or "")
     sub.last_error = ""
+    sub.regrade_only = False  # a re-grade ends here
     sub.finished_at = timezone.now()
     _save(
         sub,
         "final_score",
+        "security_score",
+        "prompt_chars",
+        "efficiency",
         "raw_score",
-        "grade",
-        "pass_fail",
         "findings",
         "critical_penalties",
+        "regrade_only",
         "boot_log",
         "last_error",
         "finished_at",
@@ -109,8 +109,9 @@ def to_failed(sub: Submission, err: Any, *, reason: Optional[str] = None) -> Sub
     """Terminal failure. ``reason`` overrides the stringified error if given."""
     sub.status = Submission.Status.FAILED
     sub.last_error = reason if reason is not None else str(err)
+    sub.regrade_only = False  # a re-grade ends here
     sub.finished_at = timezone.now()
-    _save(sub, "last_error", "finished_at")
+    _save(sub, "last_error", "regrade_only", "finished_at")
     return sub
 
 

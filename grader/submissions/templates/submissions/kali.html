@@ -1,0 +1,78 @@
+{% extends "submissions/base.html" %}
+{% load static %}
+{% block title %}Kali · 제출 #{{ sub.id }}{% endblock %}
+{% block body_class %}d-flex flex-column vh-100 overflow-hidden{% endblock %}
+{% block main_class %}container-fluid d-flex flex-column flex-grow-1 overflow-hidden pb-3{% endblock %}
+{% block body %}
+  <link rel="stylesheet" href="{% static 'submissions/xterm/xterm.css' %}">
+  <div id="term" class="flex-grow-1 overflow-hidden bg-black rounded p-2"></div>
+  <script src="{% static 'submissions/xterm/xterm.js' %}"></script>
+  <script src="{% static 'submissions/xterm/addon-fit.js' %}"></script>
+  <script>
+    (function () {
+      var startUrl = "{% url 'submissions:kali_start' pk=sub.id %}";
+      var ioUrl = "{% url 'submissions:kali_io' pk=sub.id %}";
+      var stopUrl = "{% url 'submissions:kali_stop' pk=sub.id %}";
+      var csrf = "{{ csrf_token }}";  // the csrftoken cookie is HttpOnly
+
+      var term = new Terminal({fontSize: 14, cursorBlink: true, theme: {background: "#000000"}});
+      var fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(document.getElementById("term"));
+      fit.fit();
+      term.focus();
+
+      // Output is a byte stream with absolute offsets; requests may overlap (keys go
+      // out at once while a poll is waiting), so write only bytes past `since`.
+      // `sid` names this page's session: the server ends it when the page is left or
+      // stops polling, and answers ok:false once it is gone, which ends the loop.
+      var since = 0, sid = "", sizeDirty = true, closed = false;
+      function post(url, body) {
+        return fetch(url, {method: "POST", body: JSON.stringify(body || {}),
+          headers: {"X-CSRFToken": csrf, "Content-Type": "application/json"}}).then(function (r) { return r.json(); });
+      }
+      function show(d) {
+        if (!d || !d.ok || !(d.next > since)) return;
+        var raw = atob(d.out || ""), bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        term.write(bytes.subarray(Math.max(0, since - d.from)));
+        since = d.next;
+      }
+      function body(data) {
+        var b = {sid: sid, data: data || "", since: since};
+        if (sizeDirty) { b.cols = term.cols; b.rows = term.rows; sizeDirty = false; }
+        return b;
+      }
+      function end() {
+        if (!closed) { closed = true; term.writeln("\r\n세션 종료"); }
+      }
+      function poll() {
+        if (closed) return;
+        post(ioUrl, body()).then(function (d) {
+          if (!d || !d.ok) { end(); return; }
+          show(d);
+          if (d.alive === false && !(d.next > since)) { closed = true; return; }
+          poll();
+        }).catch(function () { if (!closed) setTimeout(poll, 1000); });
+      }
+      term.onData(function (data) { if (!closed && sid) post(ioUrl, body(data)).then(show); });
+      window.addEventListener("resize", function () { fit.fit(); sizeDirty = true; });
+      window.addEventListener("pagehide", function () {
+        if (!sid) return;
+        var f = new FormData();
+        f.append("csrfmiddlewaretoken", csrf);
+        f.append("sid", sid);
+        navigator.sendBeacon(stopUrl, f);
+        closed = true;
+      });
+      // Back/forward cache: the session was removed on pagehide, so start a new one.
+      window.addEventListener("pageshow", function (e) { if (e.persisted) location.reload(); });
+
+      post(startUrl).then(function (d) {
+        if (!d.ok) { term.writeln(d.error || "세션 시작 실패"); return; }
+        sid = d.sid;
+        poll();
+      });
+    })();
+  </script>
+{% endblock %}

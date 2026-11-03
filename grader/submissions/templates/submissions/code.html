@@ -1,0 +1,25 @@
+{% extends "submissions/base.html" %}
+{% load static %}
+{% block title %}코드 · 제출 #{{ sub.id }}{% endblock %}
+{% block body_class %}d-flex flex-column vh-100 overflow-hidden{% endblock %}
+{% block main_class %}container-fluid d-flex flex-column flex-grow-1 overflow-hidden pb-3{% endblock %}
+{% block body %}
+  {% if code is not None %}
+    <div id="editor" class="flex-grow-1 border rounded overflow-hidden"></div>
+    {{ code|json_script:"app-code" }}
+    <script src="{% static 'submissions/monaco/vs/loader.js' %}"></script>
+    <script>
+      // Absolute URL: Monaco's web workers can't resolve a root-relative path.
+      require.config({paths: {vs: new URL("{% static 'submissions/monaco/vs' %}", location.href).href}});
+      require(["vs/editor/editor.main"], function () {
+        monaco.editor.create(document.getElementById("editor"), {
+          value: JSON.parse(document.getElementById("app-code").textContent),
+          language: "python", theme: "vs-dark", readOnly: true, automaticLayout: true,
+          fontSize: 13, scrollBeyondLastLine: false,
+        });
+      });
+    </script>
+  {% else %}
+    <div class="alert alert-secondary">app.py 없음</div>
+  {% endif %}
+{% endblock %}

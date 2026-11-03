@@ -12,7 +12,7 @@ from .. import state
 class QueueBackend:
     """Abstract queue interface. Subclasses implement the transport."""
 
-    def enqueue(self, participant: str, prompt: str) -> Submission:
+    def enqueue(self, participant: str, prompt: str, participant_prompt: str = "") -> Submission:
         raise NotImplementedError
 
     def claim_next_queued(self, exclude_ids: Iterable[int] = ()) -> Optional[Submission]:
@@ -24,8 +24,9 @@ class DBQueueBackend(QueueBackend):
     consumer, so claim needs no locking; ``exclude_ids`` skips rows already
     dispatched to the generation pool but not yet moved out of QUEUED."""
 
-    def enqueue(self, participant: str, prompt: str) -> Submission:
-        sub = Submission.objects.create(participant=participant, prompt=prompt)
+    def enqueue(self, participant: str, prompt: str, participant_prompt: str = "") -> Submission:
+        sub = Submission.objects.create(participant=participant, prompt=prompt,
+                                        participant_prompt=participant_prompt)
         state.to_queued(sub)
         return sub
 
