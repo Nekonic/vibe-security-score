@@ -1,0 +1,7 @@
+[Unit]
+Description=vibe-security-score daily backup (booth VM)
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/app/deploy/vm/backup.sh

@@ -1,0 +1,21 @@
+# Booth VM: the submission pipeline. On start it fails submissions a crash left in
+# flight (run_worker._recover_orphans) and removes leftover sandbox containers and
+# work folders (run_worker._startup_sweep).
+[Unit]
+Description=vibe-security-score pipeline worker (booth VM)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app/grader
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/vibe-grader.env
+ExecStart=/home/ubuntu/app/.venv/bin/python manage.py run_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=vibe-security-score daily backup (booth VM)
+
+[Timer]
+# 04:00 in Korea, outside booth hours, whatever the VM's own time zone.
+OnCalendar=*-*-* 04:00:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

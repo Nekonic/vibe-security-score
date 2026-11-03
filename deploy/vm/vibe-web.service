@@ -1,0 +1,21 @@
+# Booth VM (ubuntu@192.168.2.214, code in ~/app): the web UI as it has run there,
+# runserver on :8000, started at boot and restarted when it exits.
+[Unit]
+Description=vibe-security-score web UI (booth VM)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app/grader
+Environment=PYTHONUNBUFFERED=1
+# DEBUG off, the secret key and the hosts: see vibe-grader.env.example. With DEBUG
+# off runserver serves static files only with --insecure.
+EnvironmentFile=/etc/vibe-grader.env
+ExecStart=/home/ubuntu/app/.venv/bin/python manage.py runserver 0.0.0.0:8000 --insecure
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

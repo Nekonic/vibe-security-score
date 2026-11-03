@@ -53,9 +53,10 @@ sudo chown -R vibe:vibe /opt/vibe-security-score
 
 ```bash
 sudo apt install -y golang-go pipx
-sudo env GOBIN=/usr/local/bin go install github.com/google/osv-scanner/cmd/osv-scanner@latest
+# osv-scanner·sqlmap은 점수에 직접 영향 → 버전 고정 (Kali 공격 이미지의 sqlmap과 같아야 함)
+sudo env GOBIN=/usr/local/bin go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
 sudo env GOBIN=/usr/local/bin go install github.com/gitleaks/gitleaks/v8@latest
-sudo pipx install --global semgrep && sudo pipx install --global sqlmap
+sudo pipx install --global semgrep && sudo pipx install --global sqlmap==1.10.10
 # 확인 (워커와 같은 PATH에서 잡혀야 함)
 for t in osv-scanner gitleaks semgrep sqlmap; do command -v "$t" || echo "MISSING: $t"; done
 ```
@@ -104,9 +105,24 @@ cd /opt/vibe-security-score
 uv python install 3.12
 uv sync --extra prod --no-dev
 
-# Docker 이미지: 샌드박스(참가자 앱 실행, 채점 필수) + 공격(운영자 PoC 콘솔)
+# Docker 이미지: 샌드박스(참가자 앱 실행, 채점 필수) + Kali(운영자 공격 시연 콘솔)
 docker build -t vibe-sec-sandbox:latest sandbox/
+docker build -t vibe-sec-kali:latest sandbox/kali/
 docker build -f sandbox/attack/Dockerfile -t vibe-sec-attack:latest .
+# 앱별 의존성 이미지 vibe-sec-deps:<해시>는 따로 빌드하지 않는다. 생성 직후 워커가
+# requirements.txt 해시별로 한 번 빌드하고, 그 뒤 모든 컨테이너는 설치 없이 바로 켠다.
+# 이미지가 없는 예전 앱은 처음 켤 때 빌드된다. 샌드박스 이미지를 다시 빌드하면 해시가 바뀐다.
+
+# CVE 조회용 로컬 OSV DB (행사 전에 한 번 · 행사 중에는 갱신하지 않음)
+printf 'flask==3.1.3\n' > /tmp/osv-seed.txt   # PyPI 패키지 하나면 PyPI DB 전체를 받는다
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=data/osv_db osv-scanner scan \
+  --offline-vulnerabilities --download-offline-databases --lockfile requirements.txt:/tmp/osv-seed.txt
+
+# Codex 설치: Kali 이미지와 같은 버전의 공식 패키지. 서버에 Node가 필요 없다.
+# codex 바이너리만 깔면 셸 도구용 codex-code-mode-host가 없어 생성이 바로 실패한다
+curl -fsSLo /tmp/codex-package.tgz https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-package-x86_64-unknown-linux-musl.tar.gz
+sudo mkdir -p /opt/codex-0.164.0 && sudo tar xzf /tmp/codex-package.tgz -C /opt/codex-0.164.0
+sudo ln -sfn /opt/codex-0.164.0/bin/codex /usr/local/bin/codex
 
 # Codex 로그인 (ChatGPT 계정, API 키 아님). vibe 홈이 코드 경로라 ~/.codex = env의 CODEX_HOME
 codex login                                    # 헤드리스면: codex login --device-auth
@@ -189,6 +205,8 @@ journalctl -u vibe-grader-worker -f                 # 워커 로그
   ```
   `sandbox/`(entrypoint·Dockerfile·sitecustomize) 또는 `sandbox/attack/`가 바뀐 업데이트면 vibe 셸에서
   해당 이미지를 다시 빌드한다(5장) — 재시작만으론 반영되지 않는다.
+  샌드박스 이미지를 다시 빌드하면 의존성 이미지는 처음 쓸 때 새로 빌드된다. 예전 것은
+  `docker images vibe-sec-deps`로 보고 쓰지 않는 것만 `docker rmi`로 지운다.
 - **Codex 세션 만료**: 워커가 감지해 `journalctl`에 `OPERATOR ALERT` 로그를 남긴다. vibe 셸에서
   `codex login`으로 재로그인한 뒤, 해당 제출을 **다시 제출**한다. (결과 페이지의 **재채점**은
   기존 생성 코드를 다시 채점할 뿐 Codex를 재호출하지 않으므로, 생성 자체가 실패해 코드가 없는
