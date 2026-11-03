@@ -1,6 +1,6 @@
 #!/bin/sh
-# Inside the sandbox: pip-install the participant's requirements (non-fatal on
-# failure — the boot/functional gate decides), then boot the Flask app.
+# Inside the sandbox: copy the app to /work and boot it. Nothing is installed here:
+# the requirements are already in the deps image (scoring/shared/deps_image.py).
 set -u
 
 SRC="${APP_DIR:-/app}"
@@ -20,11 +20,6 @@ cd "$WORK" || exit 97
 # 채점 tmpfs 는 빈 디렉터리를 harvest 하지 않아 FileNotFoundError 로 부팅 실패. 이 순서
 # 슬립은 보안 신호가 아니므로, 미리 만들어 앱이 부팅돼 실제 보안 항목이 채점되게 한다.
 mkdir -p logs log instance var/log 2>/dev/null || true
-
-if [ -f requirements.txt ]; then
-    pip install --user --no-warn-script-location -r requirements.txt \
-        || echo "[sandbox] pip install failed (continuing to boot attempt)" >&2
-fi
 
 if [ -f app.py ]; then
     exec python app.py

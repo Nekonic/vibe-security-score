@@ -1,6 +1,8 @@
 # Sandbox image for participant apps. Build: docker build -t vibe-sec-sandbox:latest sandbox/
-# App dir mounts at /app; requirements install INSIDE this container only.
-FROM python:3.11-slim
+# App dir mounts at /app. Requirements go into a deps image built FROM this one
+# (scoring/shared/deps_image.py), never at container start.
+# The grader server is x86_64: build for it everywhere (local dev: colima x64 VM).
+FROM --platform=linux/amd64 python:3.11-slim
 
 # Non-root (uid matches config sandbox.run_as_uid).
 RUN useradd -u 10001 -m -s /usr/sbin/nologin runner

@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "summary"],
+  "properties": {
+    "summary": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "title", "endpoint", "severity", "confirmed", "evidence"],
+        "properties": {
+          "class": {
+            "type": "string",
+            "enum": ["sqli", "stored_xss", "reflected_xss", "csrf", "ssrf", "idor", "admin_access",
+                     "privilege_escalation", "default_credentials", "session_forgery", "debug_rce",
+                     "file_upload", "open_redirect", "csv_injection", "otp_bruteforce",
+                     "account_enumeration", "login_bruteforce", "weak_password_policy",
+                     "session_management", "info_disclosure", "security_headers", "other"]
+          },
+          "title": {"type": "string"},
+          "endpoint": {"type": "string"},
+          "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+          "confirmed": {"type": "boolean"},
+          "evidence": {"type": "string"}
+        }
+      }
+    }
+  }
+}

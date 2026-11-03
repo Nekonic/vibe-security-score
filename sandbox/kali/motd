@@ -1,0 +1,9 @@
+
+  One Prompt Secure Coding Challenge — 공격 실습 레인지
+  ─────────────────────────────────────────────
+  대상 앱:  http://target:5000     (같은 가상망의 생성된 게시판 앱)
+  도구:     curl · nmap · sqlmap · nikto · ffuf · whatweb · dirb · wfuzz · python3(requests)
+  예시:     curl -i http://target:5000/posts
+            sqlmap -u "http://target:5000/search?q=a" --batch
+            nikto -h http://target:5000
+
