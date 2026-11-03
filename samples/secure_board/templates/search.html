@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<form method="get" action="{{ url_for('search_posts') }}">
+  <input type="text" name="q" value="{{ q }}">
+  <select name="sort">
+    <option value="newest" {% if sort=='newest' %}selected{% endif %}>newest</option>
+    <option value="oldest" {% if sort=='oldest' %}selected{% endif %}>oldest</option>
+    <option value="title" {% if sort=='title' %}selected{% endif %}>title</option>
+  </select>
+  <button>search</button>
+</form>
+{% if q %}<div>q: {{ q }}</div>{% endif %}
+<ul>
+  {% for p in results %}
+    <li><a href="{{ url_for('post_detail', post_id=p['id']) }}">{{ p['title'] }}</a> by {{ p['author'] }}</li>
+  {% endfor %}
+</ul>
+{% endblock %}

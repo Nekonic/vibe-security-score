@@ -1,18 +1,31 @@
 <!doctype html>
-<html lang="ko">
+<html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Board</title>
+  <title>Secure Flask Board</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <nav>
-    <a href="{{ url_for('posts') }}">Posts</a>
-    <form method="get" action="{{ url_for('search') }}" style="display:inline">
-      <input name="q" maxlength="100">
-      <button>Search</button>
-    </form>
-  </nav>
-  {% block body %}{% endblock %}
+  <header>
+    <h1><a href="{{ url_for('index') }}">Secure Board</a></h1>
+    <nav>
+      <a href="{{ url_for('list_posts') }}">posts</a>
+      <a href="{{ url_for('search_posts') }}?q=">search</a>
+      {% if user %}
+        <span class="muted">{{ user.username }} | <a href="{{ url_for('logout') }}" id="logout-link" onclick="return false;">logout</a></span>
+      {% else %}
+        <a href="{{ url_for('index') }}">login/signup</a>
+      {% endif %}
+      {% if user and user.is_admin %}<a href="{{ url_for('admin_home') }}">admin</a>{% endif %}
+    </nav>
+  </header>
+  <main>
+    {% with msgs = get_flashed_messages() %}
+      {% if msgs %}<div class="flash">{{ msgs[0] }}</div>{% endif %}
+    {% endwith %}
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="ok">{{ message }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

@@ -1,0 +1,10 @@
+h1,a{font-family: Georgia, 'Times New Roman', serif;}
+body{margin:20px;background:linear-gradient(180deg,#f3f7ff,#fff);font-family:Georgia,sans-serif;color:#112;}
+header{padding-bottom:10px;border-bottom:1px solid #a0a0a0;margin-bottom:12px}
+main{max-width:900px}
+.flash,.ok{color:#084}
+.error{color:#a00}
+nav a{margin-right:8px}
+pre{white-space:pre-wrap;background:#f7f7fb;padding:10px}
+img{max-width:300px;display:block;margin:8px 0}
+ul{padding-left:18px}

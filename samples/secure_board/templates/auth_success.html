@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="ok">Welcome {{ username }}. You are logged in.</div>
+<a href="{{ url_for('list_posts') }}">Go to posts</a>
+<form method="post" action="{{ url_for('logout') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button>Logout</button>
+</form>
+{% endblock %}

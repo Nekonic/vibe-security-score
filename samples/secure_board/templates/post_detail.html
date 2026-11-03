@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block content %}
+<article>
+  <h2>{{ post['title'] }}</h2>
+  <p>by {{ post['author'] }} @ {{ post['created_at'] }}</p>
+  <pre>{{ post['content'] }}</pre>
+  {% if post['image_url'] %}<img src="{{ post['image_url'] }}" alt="post image">{% endif %}
+  {% if post['preview_title'] or post['preview_summary'] %}
+    <section>
+      <h3>Link preview</h3>
+      {% if post['preview_title'] %}<p><strong>{{ post['preview_title'] }}</strong></p>{% endif %}
+      {% if post['preview_summary'] %}<p>{{ post['preview_summary'] }}</p>{% endif %}
+      {% if post['link_url'] %}<a href="{{ post['link_url'] }}">원문 링크</a>{% endif %}
+    </section>
+  {% endif %}
+</article>
+
+<section>
+  <h3>Comments</h3>
+  <ul>
+    {% for c in comments %}
+      <li><strong>{{ c['author'] }}</strong>: {{ c['content'] }}</li>
+    {% else %}
+      <li>no comments</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <h3>Add comment</h3>
+  <form method="post" action="{{ url_for('create_comment', post_id=post['id']) }}">
+    <textarea name="content" required></textarea>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button>comment</button>
+  </form>
+</section>
+{% endblock %}

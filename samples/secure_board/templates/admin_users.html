@@ -1,7 +1,9 @@
-{% extends "base.html" %}
-{% block body %}
-<h1>Users</h1>
-{% for u in users %}
-  <p>{{ u.id }} {{ u.username }} {{ u.email }} admin={{ u.is_admin }}</p>
-{% endfor %}
+{% extends 'base.html' %}
+{% block content %}
+<h2>Admin users</h2>
+<ul>
+  {% for u in users %}
+    <li>{{ u['id'] }} {{ u['username'] }} {{ u['phone'] }} {% if u['is_admin'] %}(admin){% endif %}</li>
+  {% endfor %}
+</ul>
 {% endblock %}
