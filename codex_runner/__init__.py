@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .errors import (
     CodexRunnerError,
+    ContractFailedError,
     GenerationError,
     GenerationTimeoutError,
     RateLimitError,
@@ -16,4 +17,5 @@ __all__ = [
     "RateLimitError",
     "GenerationTimeoutError",
     "GenerationError",
+    "ContractFailedError",
 ]

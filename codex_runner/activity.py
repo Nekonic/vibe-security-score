@@ -21,11 +21,17 @@ _REL_AFTER_WORKDIR = re.compile(r"/codexgen_[^/]*/(?P<rel>.*)$")
 _WORKDIR_PREFIX = re.compile(r"[^\s'\"]*/codexgen_[^/\s'\"]*/")
 
 
+# Any other absolute host path (weak models wander into the OS temp dir or home
+# dirs, e.g. ``find /private/var/folders/...``) is masked too.
+_HOST_PATH = re.compile(r"(?:/private)?/var/folders/[^\s'\"]*|/(?:Users|home)/[^\s'\"]*|/tmp/[^\s'\"]*")
+
+
 def _redact(text: str) -> str:
-    """Remove absolute temp-workdir prefixes from free text (commands, messages)."""
+    """Remove the temp-workdir prefix from free text (commands, messages), then mask
+    any remaining absolute host path."""
     if not text:
         return text
-    return _WORKDIR_PREFIX.sub("", text)
+    return _HOST_PATH.sub("…", _WORKDIR_PREFIX.sub("", text))
 
 
 def _rel_path(path: str) -> str:
@@ -45,9 +51,12 @@ def to_activity(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if et == "thread.started":
         return {"kind": "status", "text": "세션 시작"}
     if et == "turn.completed":
-        return {"kind": "status", "text": "생성 완료"}
+        # One Codex turn ended; the functional test and any repair round still follow.
+        return {"kind": "status", "text": "작성 마침, 기능 테스트 중"}
     if et == "error":
         return {"kind": "status", "text": "오류 발생"}
+    if et == "contract.result":  # the runner's own contract-loop status (not codex)
+        return {"kind": "status", "text": str(event.get("text", ""))}
     if et != "item.completed":
         return None  # drop turn.started / item.started noise
 
@@ -88,6 +97,36 @@ def events_path(config, submission_id: str) -> pathlib.Path:
     if not p.is_absolute():
         p = _REPO_ROOT / p
     return p / "events.jsonl"
+
+
+def _preview_port_path(config, submission_id: str) -> pathlib.Path:
+    return events_path(config, submission_id).parent / "preview_port"
+
+
+def write_preview_port(config, submission_id: str, port: int) -> None:
+    """Record the port this generation's self-test server binds to, so the web can
+    proxy the app live while Codex is still building it."""
+    path = _preview_port_path(config, submission_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(port), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_preview_port(config, submission_id: str) -> None:
+    try:
+        _preview_port_path(config, submission_id).unlink()
+    except OSError:
+        pass
+
+
+def read_preview_port(config, submission_id: str) -> Optional[int]:
+    try:
+        text = _preview_port_path(config, submission_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
 
 
 def open_sink(config, submission_id: str) -> Tuple[Callable[[Dict[str, Any]], None], pathlib.Path]:

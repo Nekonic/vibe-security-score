@@ -41,3 +41,16 @@ class GenerationError(CodexRunnerError):
         detail: Optional[str] = None,
     ):
         super().__init__(message, detail=detail)
+
+
+class ContractFailedError(GenerationError):
+    """The app never passed the whole functional contract within the Codex time
+    budget. Terminal: it is not graded and not regenerated."""
+
+    def __init__(
+        self,
+        message: str = "생성한 앱이 시간 안에 기능 테스트를 모두 통과하지 못했습니다.",
+        *,
+        detail: Optional[str] = None,
+    ):
+        super().__init__(message, detail=detail)

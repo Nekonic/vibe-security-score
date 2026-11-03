@@ -1,0 +1,2 @@
+{# 폼 안에 include한다. csrf_token이 없으면 아무것도 내보내지 않는다. #}
+{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is callable else csrf_token }}">{% endif %}

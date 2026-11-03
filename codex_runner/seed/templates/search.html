@@ -1,0 +1,30 @@
+{#
+  GET /search?q=&sort=. 검색어와 결과.
+  변수
+    q      입력한 검색어
+    posts  검색 결과. 항목은 posts.html과 같다
+    sort   newest, oldest, title
+  이 화면에는 검색 결과 말고 다른 글을 보여주지 않는다.
+#}
+{% extends "base.html" %}
+{% block title %}검색{% endblock %}
+{% block content %}
+<form action="/search" method="get" class="d-flex gap-2 mb-3" role="search">
+  <input class="form-control" type="search" name="q" value="{{ q or '' }}" placeholder="제목이나 내용" aria-label="검색어">
+  <select class="form-select w-auto" name="sort" aria-label="정렬">
+    <option value="newest" {% if sort == 'newest' or not sort %}selected{% endif %}>최신순</option>
+    <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>오래된순</option>
+    <option value="title" {% if sort == 'title' %}selected{% endif %}>제목순</option>
+  </select>
+  <button class="btn btn-primary text-nowrap" type="submit">검색</button>
+</form>
+
+<h1 class="h5 mb-3">"{{ q }}" 검색 결과 {{ posts|length }}건</h1>
+<div class="list-group">
+  {% for post in posts %}
+    {% include "_post_item.html" %}
+  {% else %}
+    <div class="list-group-item text-body-secondary">결과가 없습니다</div>
+  {% endfor %}
+</div>
+{% endblock %}
