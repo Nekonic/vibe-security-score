@@ -237,6 +237,7 @@ data/submissions/
 data/codex_transcripts/
 data/generation_events/
 data/scoring_progress/
+data/preview_sessions/
 .codex/
 node_modules/
 *package-lock.json

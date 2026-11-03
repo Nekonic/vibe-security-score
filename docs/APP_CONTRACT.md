@@ -38,7 +38,7 @@ flowchart LR
 
 | 엔티티 | 필수 필드 | 채점상 의미 |
 |---|---|---|
-| **user** | `id`(순차 정수 PK), `username`(고유·로그인 식별자), `phone`, `password_hash`, `is_admin`/`role` | `phone` = **PII 기준**(IDOR). 로그인은 `username`\|`phone`. `is_admin`/`role`은 **서버가 정한다**(id=1=admin). 클라이언트 본문에서 신뢰 금지(§4.7). |
+| **user** | `id`(정수 또는 UUID 같은 문자열 PK), `username`(고유·로그인 식별자), `phone`, `password_hash`, `is_admin`/`role` | `phone` = **PII 기준**(IDOR). 로그인은 `username`\|`phone`. `is_admin`/`role`은 **서버가 정한다**(id=1=admin). 클라이언트 본문에서 신뢰 금지(§4.7). |
 | **post** | `id`, `title`, `content`, `author_id`(→user), `created_at` | 소유자(`author_id`)로 **객체 인가**(§4.1) 판정. 본문 필드명은 `content`. |
 | **comment** | `id`, `post_id`(→post), `author_id`(→user), `content` | 두 번째 저장형 XSS·인가 표면(§4.4). |
 
@@ -173,7 +173,7 @@ flowchart LR
 | `auth_session_management` | 인증 상태(로그아웃 후 소멸) · 비번변경 정상경로 | 정상경로 못 세우면 각 절반 skip |
 | `transport_security` | 로그인 후 세션 쿠키 | 로그인 실패면 판정 불가 |
 | `weak_password_policy` | 인증 상태 | 필드 어긋나면 가입 실패로 오판 |
-| `session_forgery` | 관리자 콘텐츠 + admin=id1 | 관례 다르면 위조 미성립(정적 `weak_default_secret` 유지) |
+| `session_forgery` | 관리자 콘텐츠 + admin=id1 | 관례 다르면 위조 미성립 → 치명 감점 없음. 정적 `weak_default_secret`은 참고만 |
 
 ---
 

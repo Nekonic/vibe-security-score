@@ -1,0 +1,9 @@
+# Repo-root build context (sandbox/attack/Dockerfile): send only what images copy.
+*
+!pyproject.toml
+!uv.lock
+!config/scoring.yaml
+!scoring/
+scoring/tests/
+**/__pycache__/
+!sandbox/attack/

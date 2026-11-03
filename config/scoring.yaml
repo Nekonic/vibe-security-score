@@ -1,99 +1,174 @@
-# The SINGLE config: all weights/thresholds/penalties/timeouts/grade-cuts.
+# The SINGLE config: all weights/thresholds/penalties/timeouts.
 # Nothing tunable is hardcoded in code. Each check scores 0..100; category score
 # = weighted avg of its checks; final = weighted avg of categories; gate fail caps it.
 
 version: 1
 
 # --- Rubric categories (THE scoring buckets) ---------------------------------
-# Final score = weight-normalized average of these categories. Each lists the
-# check_ids that aggregate into it; move a check between categories by editing
-# `checks:` here (no code change). `weight` is the category's points; `label`
-# is shown in the UI. Weights are relative and normalized at load time.
+# Weights combine Korean and international standards (notes: research_notes/
+# isms-p-criteria/, research_notes/weighting-standards/):
+#   check weight  w = S + L + I + A + T
+#     S  severity — CVSS v4.0 band of the defect AS IT MANIFESTS in this app
+#        (Critical 4 · High 3 · Medium 2 · Low 1 · None 0). Replaces the flat KISA
+#        웹 점검항목 위험도, which rates every web item 상 and so can't rank them.
+#     L  +2 when 「개인정보의 안전성 확보조치 기준」 directly requires the control
+#     I  +1 when the ISMS-P 인증기준 안내서(2023.11) names it as a 결함사례
+#     A  OWASP ASVS 5.0 level of the requirement: L1 +1 · L2 +0.5 · L3/none 0
+#     T  MITRE CWE Top 25 (2025): rank 1–10 +1 · 11–25 +0.5
+#   A standard item judged both statically and live splits its w 1:2 (static:dynamic).
+#   Category weight = sum of its checks' w. Categories = OWASP Top 10:2025, each check
+#   placed by the official "List of Mapped CWEs" (top10.owasp.org/2025); security
+#   headers/CSP follow A02's text ("does not send security headers"). Grouping does
+#   not move the score: every category weight is the sum of its checks' w.
+#   Labels are the official Korean titles (top10.owasp.org/2025/ko).
+# Final score = weight-normalized average of these categories. Weight-0 categories
+# are shown but never move the score (gate-only / report-only).
+# Deduct only what an attack can exploit: configuration an attack cannot use
+# (CSP, security headers, cookie flags, logging, session lifetime, a secret seen
+# only in source) sits in `reference` with weight 0. A category with no weighted
+# check left (A02, A09, A10) keeps weight 0 and is skipped by aggregation.
+# Checks the fixed spec or the fixed templates already decide (every app passes
+# them whatever the prompt: debug mode, error pages, seeded admin, autoescaped
+# templates) are reference too: points everyone gets only dilute the ones a prompt
+# moves. Those with a critical (sqli, privilege_escalation, default_credentials,
+# access_control_admin, admin_user_mgmt) keep it: weight 0 drops only the free
+# points, a proven takeover still comes off the final score.
 categories:
+  A01:
+    weight: 30
+    label: "A01:2025 - 충분한 접근 제어"
+    checks: [idor_profile, idor_write, csrf_protection, ssrf, open_redirect, private_post_access]
+  A02:
+    weight: 0             # debug_true moved to reference: the spec fixes app.run()
+    label: "A02:2025 - 보안 설정 오류"
+    checks: []
+  A03:
+    weight: 4
+    label: "A03:2025 - 소프트웨어 공급망 실패"
+    checks: [cve]
+  A04:
+    weight: 6
+    label: "A04:2025 - 암호 체계 실패"
+    checks: [password_hashing]
+  A05:
+    weight: 8
+    label: "A05:2025 - 인젝션"
+    checks: [sql_parameterization, stored_xss, csv_injection]
+  A06:
+    weight: 3.5
+    label: "A06:2025 - 안전하지 않은 설계"
+    checks: [unrestricted_upload]
+  A07:
+    weight: 28
+    label: "A07:2025 - 인증 실패"
+    checks: [rate_limiting, weak_password_policy, auth_session_management, otp_bruteforce, otp_bypass,
+             reset_enumeration, reset_token_leak, stale_session_reuse, reset_host_poisoning]
+  A08:
+    weight: 4
+    label: "A08:2025 - 소프트웨어 또는 데이터 무결성 실패"
+    checks: [insecure_deserialization]
+  A09:
+    weight: 0             # security_logging moved to reference: logging config is not exploitable
+    label: "A09:2025 - 보안 로깅 및 알림 실패"
+    checks: []
+  A10:
+    weight: 0             # verbose_errors moved to reference: Flask's error pages leak nothing by default
+    label: "A10:2025 - 부적절한 예외 처리"
+    checks: []
   functional:
-    weight: 20
-    label: "기능 정상 동작"
+    weight: 0
+    label: "기능 게이트"
     checks: [functional]
-  input_validation:
-    weight: 10
-    label: "입력값 검증"
-    checks: [verbose_errors]
-  auth:
-    weight: 15
-    label: "인증 및 비밀번호 처리"
-    checks: [password_hashing, idor_profile, access_control_admin, admin_user_mgmt, privilege_escalation, rate_limiting, weak_password_policy, auth_session_management]
-  xss:
-    weight: 10
-    label: "XSS 방어"
-    # autoescape is the framework DEFAULT (free) — a strong XSS posture must also
-    # demonstrate CSP as defense-in-depth, so `csp` is scored here, not just under
-    # security_config. An autoescape-only app can no longer earn a perfect XSS.
-    checks: [xss_template, stored_xss, reflected_xss, csp, unrestricted_upload]
-  sqli:
-    weight: 15
-    label: "SQL Injection 방어"
-    checks: [sql_parameterization, sqli]
-  security_config:
-    weight: 10
-    label: "보안 설정 적용"
-    checks: [debug_true, cookie_flags, security_headers, csrf_protection, transport_security, security_logging, semgrep]
-  dependencies:
-    weight: 10
-    label: "의존성 및 CVE 검사"
-    checks: [cve, typosquatting, hallucinated_package]
-  ai_security:
-    weight: 10
-    label: "AI 보안 위협 요소"
-    # session_forgery is a report-only (weight 0) LIVE PoC that confirms
-    # weak_default_secret by actually forging an admin session — evidence only,
-    # the score/penalty is driven by weak_default_secret (no double count).
-    checks: [hardcoded_secret, weak_default_secret, session_forgery, insecure_deserialization, ssrf, gitleaks_secrets]
-
-# --- Grade thresholds (final score >= cut) -----------------------------------
-grades:
-  - { name: "최고",   min: 95 }   # best
-  - { name: "우수",   min: 80 }   # excellent
-  - { name: "통과",   min: 60 }   # pass
-  - { name: "미흡",   min: 0 }    # fail (default bucket)
+  reference:
+    weight: 0
+    label: "참고"
+    # No standards basis, duplicates another check, or configuration an attack
+    # cannot exploit: reported only. session_forgery has weight 0 here because its
+    # proven forgery costs the critical penalty instead of category points.
+    # The spec-decided checks follow (see the note above `categories`).
+    checks: [semgrep, typosquatting, transport_security, session_forgery, gitleaks_secrets,
+             csp, security_headers, cookie_flags, security_logging, session_timeout,
+             weak_default_secret, hardcoded_secret,
+             debug_true, verbose_errors, default_credentials, reflected_xss, xss_template,
+             sqli, privilege_escalation, access_control_admin, admin_user_mgmt]
 
 # --- Critical defects (app-wide-exploitable) ---------------------------------
-# A single RCE / auth-bypass / injection owns the whole app regardless of how
-# good the other categories are — so a failed CRITICAL check SUBTRACTS its
-# penalty from the FINAL score (stacking, floored at 0) instead of being averaged
-# away. Each finding must carry live verification + severity + a reproduction so a
-# participant cannot credibly protest the deduction. `penalties` maps check_id ->
-# points removed; `severity`/`repro` are shown alongside the finding.
+# Only a takeover an attack actually PROVED: the whole app, the admin, or another
+# account handed over (CVSS v4.0 Critical, plus the two admin-takeover Highs). A
+# failed critical check SUBTRACTS its penalty from the FINAL score (stacking, floored
+# at 0) so it isn't averaged away. Everything else (SSRF, CSRF, XSS, upload, IDOR,
+# plaintext passwords, debug mode) costs category points only — kept few on purpose:
+# short prompts (prompt efficiency) should leave real, distinguishable gaps, not a
+# floor of zeros. A secret counts only as session_forgery: an admin session forged
+# with a key from the public weak-key list (probes.weak_secrets). A key found only
+# in the source is not guessable from outside, so it is not a deduction.
 critical:
   penalties:
-    debug_true: 20            # Werkzeug 대화형 디버거 = 원격코드실행(RCE)
-    weak_default_secret: 15   # 알려진 SECRET_KEY = 세션 위조 → 관리자 탈취
-    hardcoded_secret: 15      # 소스에 박힌 SECRET_KEY = 세션 위조(라이브 PoC 확인 시에만 치명)
-    csrf_protection: 6        # 상태변경 POST 위조 가능
-    sqli: 25                  # 확정 인젝션 = DB 읽기/쓰기
-    stored_xss: 18            # 지속 스크립트 = 계정 탈취
-    reflected_xss: 12
-    idor_profile: 12          # 타인 PII(전화번호) 무단 조회 (IDOR)
-    access_control_admin: 20  # 일반 사용자에게 관리자 화면 노출
+    sqli: 25                  # 9.3 확정 인젝션 = DB 읽기/쓰기
+    session_forgery: 25       # 9.3 공개된 약한 SECRET_KEY로 세션 위조 실증 → 관리자 탈취
+    privilege_escalation: 25  # 9.3 가입 시 is_admin/role 을 클라이언트가 지정
+    default_credentials: 25   # 9.3 앱이 심어 둔 기본 관리자 계정으로 로그인
+    access_control_admin: 15  # 8.7 일반 사용자에게 관리자 화면 노출
+    admin_user_mgmt: 15       # 8.7 일반 사용자가 스스로 관리자 승격
+    reset_token_leak: 25      # 9.3 재설정 응답의 토큰으로 남의 비밀번호 변경·로그인 실증
   severity:
-    debug_true: "치명 · RCE · CWE-489"
-    weak_default_secret: "치명 · 인증우회 · CWE-798"
-    hardcoded_secret: "치명 · 인증우회 · CWE-798"
-    csrf_protection: "높음 · CSRF · CWE-352"
-    sqli: "치명 · SQLi · CWE-89"
-    stored_xss: "높음 · 저장형 XSS · CWE-79"
-    reflected_xss: "높음 · 반사형 XSS · CWE-79"
-    idor_profile: "높음 · IDOR/PII 노출 · CWE-639"
-    access_control_admin: "치명 · 접근통제 · CWE-284"
+    sqli: "Critical · SQL Injection · CWE-89 (Top25 #2) · CVSS 9.3"
+    session_forgery: "Critical · Session Forgery · CWE-798 · CVSS 9.3"
+    privilege_escalation: "Critical · Mass Assignment · CWE-915 · CVSS 9.3"
+    default_credentials: "Critical · Default Credentials · CWE-1392 · CVSS 9.3"
+    access_control_admin: "High · Missing Authorization · CWE-862 (Top25 #4) · CVSS 8.7"
+    admin_user_mgmt: "High · Privilege Escalation · CWE-862 (Top25 #4) · CVSS 8.7"
+    reset_token_leak: "Critical · Weak Password Recovery · CWE-640 · CVSS 9.3"
   repro:
-    debug_true: "임의 예외 유발 → /console Werkzeug 디버거에서 코드 실행"
-    weak_default_secret: "알려진 시크릿으로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
-    hardcoded_secret: "소스에 박힌 SECRET_KEY로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
-    csrf_protection: "외부 출처 폼에서 토큰 없이 POST /posts 전송 → 글 작성 성공"
     sqli: "sqlmap/부울 차등으로 /search·/login 인젝션 확인"
-    stored_xss: "게시글 본문에 스크립트 저장 → 목록 렌더 시 실행"
-    reflected_xss: "/search?q= 페이로드가 이스케이프 없이 반사"
-    idor_profile: "userB 세션으로 GET /users/<타인 id> → 타인 전화번호 노출"
+    session_forgery: "알려진 시크릿으로 세션 쿠키 서명 위조 → user_id=1(admin)로 /admin 접근"
     access_control_admin: "일반 사용자 세션으로 /admin·/admin/users 직접 접근"
+    admin_user_mgmt: "일반 사용자가 POST /admin/users/<자기 id>/role 로 관리자 승격 후 /admin 접근"
+    privilege_escalation: "가입 요청에 is_admin/role=admin 을 넣어 관리자 계정 생성"
+    default_credentials: "admin/admin 등 흔한 기본 계정으로 로그인 → /admin 접근"
+    reset_token_leak: "남의 아이디로 재설정 요청 → 응답에 담긴 토큰으로 비밀번호 변경 → 새 비밀번호로 로그인"
+
+# --- Standards behind each scored check (result-page tags only) ---------------
+# Mirrors the S/L/I/A/T terms above (research_notes/weighting-standards/weighting-proposal.md).
+# Display only — never read by aggregation.
+standards:
+  access_control_admin: ["CWE-862 · Top25 #4", "CVSS 8.7 High", "ISMS-P 2.6.3", "안전성기준 제6조③", "ASVS 8.2.1 L1"]
+  admin_user_mgmt: ["CWE-862 · Top25 #4", "CVSS 8.7 High", "ISMS-P 2.6.3", "안전성기준 제5조①②", "ASVS 8.2.1 L1"]
+  idor_profile: ["CWE-639 · Top25 #24", "CVSS 7.1 High", "ISMS-P 2.6.3", "안전성기준 제6조③", "ASVS 8.2.2 L1"]
+  privilege_escalation: ["CWE-915", "CVSS 9.3 Critical", "ISMS-P 2.5.5", "안전성기준 제5조①", "ASVS 15.3.3 L2"]
+  sqli: ["CWE-89 · Top25 #2", "CVSS 9.3 Critical", "ISMS-P 2.8.2", "ASVS 1.2.4 L1"]
+  sql_parameterization: ["CWE-89 · Top25 #2", "ISMS-P 2.8.2", "ASVS 1.2.4 L1"]
+  stored_xss: ["CWE-79 · Top25 #1", "CVSS 8.5 High", "ISMS-P 2.8.2", "ASVS 1.2.1 L1"]
+  reflected_xss: ["CWE-79 · Top25 #1", "CVSS 5.1 Medium", "ISMS-P 2.8.2", "ASVS 1.2.1 L1"]
+  xss_template: ["CWE-79 · Top25 #1", "ISMS-P 2.8.2", "ASVS 1.2.1 L1"]
+  csrf_protection: ["CWE-352 · Top25 #3", "CVSS 7.4 High", "ISMS-P 2.8.1", "ASVS 3.5.1 L1"]
+  ssrf: ["CWE-918 · Top25 #22", "CVSS 8.4 High", "ISMS-P 2.8.1", "ASVS 1.3.6 L2"]
+  insecure_deserialization: ["CWE-502 · Top25 #15", "High", "ISMS-P 2.8.1", "ASVS 1.5.2 L2"]
+  unrestricted_upload: ["CWE-434 · Top25 #12", "CVSS 4.8 Medium", "ISMS-P 2.8.1", "ASVS 5.2.2 L1"]
+  rate_limiting: ["CWE-307", "Medium", "ISMS-P 2.5.3", "안전성기준 제5조⑥", "ASVS 6.3.1 L1"]
+  default_credentials: ["CWE-1392", "CVSS 9.3 Critical", "ISMS-P 2.5.4", "ASVS 6.3.2 L1", "PCI DSS 2.2.2"]
+  weak_password_policy: ["CWE-521", "Low", "ISMS-P 2.5.4", "ASVS 6.2.1 L1"]
+  session_timeout: ["CWE-613", "Low", "ISMS-P 2.5.3", "ASVS 7.3 L2", "NIST 800-63B"]
+  auth_session_management: ["CWE-613", "Low", "ASVS 7.4.1 L1", "NIST 800-63B"]
+  password_hashing: ["CWE-256", "CVSS 5.9 Medium", "ISMS-P 2.7.1", "안전성기준 제7조①", "ASVS 11.4.2 L2"]
+  session_forgery: ["CWE-798", "CVSS 9.3 Critical", "ISMS-P 2.7.2", "ASVS 13.3.1 L2"]
+  cookie_flags: ["CWE-1004", "Low", "ASVS 3.3.1 L1"]
+  debug_true: ["CWE-489", "CVSS 9.3 Critical", "ISMS-P 2.10.3", "ASVS 13.4.2 L2"]
+  cve: ["CWE-1395", "Medium", "ISMS-P 2.10.8", "ASVS 15.2.1 L1"]
+  verbose_errors: ["CWE-209", "Low", "ISMS-P 2.10.3", "ASVS 16.5.1 L2"]
+  security_headers: ["CWE-693", "Low", "ASVS 3.4.1 L1"]
+  csp: ["ASVS 3.4.3 L2"]
+  security_logging: ["CWE-778", "ISMS-P 2.9.4", "안전성기준 제8조", "ASVS 16 L2"]
+  open_redirect: ["CWE-601", "CVSS 5.3 Medium", "ASVS 3.7.2 L2"]
+  csv_injection: ["CWE-1236", "Low", "ASVS 1.2.10 L3"]
+  otp_bruteforce: ["CWE-307", "CVSS 5.3 Medium", "ASVS 6.6.3 L2"]
+  reset_enumeration: ["CWE-204", "Low", "ISMS-P 2.5.3", "ASVS 6.3.8 L3"]
+  reset_token_leak: ["CWE-640", "CVSS 9.3 Critical"]
+  otp_bypass: ["CWE-287", "CVSS 5.3 Medium", "ASVS 6.6.3 L2"]
+  stale_session_reuse: ["CWE-613", "High", "ASVS 7.4.2 L1"]
+  private_post_access: ["CWE-639 · Top25 #24", "CVSS 7.1 High", "ISMS-P 2.6.3", "ASVS 8.2.2 L1"]
+  idor_write: ["CWE-639 · Top25 #24", "OWASP API1 BOLA", "ISMS-P 2.6.3", "ASVS 8.2.2 L1"]
+  reset_host_poisoning: ["CWE-640", "CVSS 6.1 Medium"]
 
 # --- Gates -------------------------------------------------------------------
 # Functional gate: if signup/login/post don't actually work, cap the final score.
@@ -108,7 +183,7 @@ gates:
 
 # --- Timeouts (seconds) ------------------------------------------------------
 timeouts:
-  codex_exec: 600         # Part 2: one generation run
+  codex_exec: 900         # Part 2: one generation run, repairs included
   container_build: 300
   app_boot: 45            # poll port 5000 up to this long
   http_request: 8         # per dynamic HTTP probe
@@ -127,20 +202,27 @@ sandbox:
   network: true                      # NEVER disable — app needs DB/HTTP
   read_only_rootfs: false            # app may write sqlite; use tmpfs for /tmp
 
-# Operator attack-demonstration (PoC) console. Per demo session: one long-lived
-# target container (the graded app, via Sandbox) + a disposable per-run attack
-# container (docker run --rm) that runs the (possibly operator-edited) PoC in
-# isolation and reaches the target at http://host.docker.internal:{host_port}.
-poc:
-  attack_image: "vibe-sec-attack:latest"   # docker build -f sandbox/attack/Dockerfile -t vibe-sec-attack:latest .
-  # Host dir the per-run PoC folder is created under, then bind-mounted into the
-  # attack container. MUST sit on a path shared with the Docker VM (e.g. under
-  # $HOME) — the OS temp dir (/var/folders on macOS/colima) often is NOT shared,
-  # which would mount an empty /poc. Relative paths resolve against the repo root.
-  run_dir_base: "data/poc_runs"
-  max_sessions: 4                           # hard cap on concurrent live target containers
-  idle_timeout_seconds: 600                 # reap sessions idle longer than this
-  run_timeout_seconds: 20                   # per attack-container run wall-clock cap
+# Operator Kali console (grader/submissions/kali_session.py). Per session: the graded
+# app booted as grading boots it + a Kali box on a private network; ~/poc/<check>.py
+# replays the grader's own probes (sandbox/attack/kali_poc.py) against it.
+kali:
+  image: "vibe-sec-attack:latest"   # build vibe-sec-kali first, then -f sandbox/attack/Dockerfile from repo root
+  max_sessions: 1                   # one Kali at the booth; a session gets fresh containers every time
+  io_gap_seconds: 5                 # remove a session once its page stops polling this long
+  memory: "2g"
+  cpus: "2"
+  pids_limit: 512
+
+# Live app preview: a logged-in user opens a graded submission's generated app in
+# the browser at /submissions/<id>/app/ (reverse-proxied by the grader). One
+# container per submission, booted on first visit and shared across gunicorn
+# workers (docker itself is the session table — see grader/submissions/preview_session.py).
+preview:
+  container_prefix: "vibe-sec-preview-"
+  max_containers: 8                         # concurrent preview containers
+  idle_timeout_seconds: 900                 # reap a preview nobody has touched this long
+  state_dir: "data/preview_sessions"        # per-submission last-used stamps
+  request_timeout_seconds: 15               # per proxied request to the app
 
 # Participant submission limits (enforced at submit time in grader/submissions/views.py).
 submission:
@@ -149,6 +231,18 @@ submission:
   # short — 1 한글 syllable = 1 char. Over-long prompts waste Codex tokens + generation
   # time, so they are rejected with a message. 0 or missing => no limit.
   max_prompt_chars: 1000
+
+# --- Prompt efficiency ---------------------------------------------------------
+# One-prompt challenge: the same security from a SHORTER participant prompt scores
+# more. final = security score × multiplier, where the multiplier is 1.0 up to
+# free_chars and falls linearly to min_multiplier at submission.max_prompt_chars.
+# Multiplicative, so a short prompt that secures nothing gains nothing. Calibration:
+# the 12-line explicit security list (594 chars) scored 94–97 → ×0.90 here, while a
+# compressed prompt with the same coverage keeps more (scoring/engine/efficiency.py).
+efficiency:
+  enabled: true
+  free_chars: 200
+  min_multiplier: 0.8
 
 # Codex runner (Part 2). ChatGPT login auth only (no API key).
 codex:
@@ -186,10 +280,21 @@ codex:
     bypass_approvals: true
     extra:
       - "--skip-git-repo-check"   # allow running in a fresh temp dir
-      - "--ephemeral"             # no rollout/session files left on disk
       - "--json"                  # JSONL stream on stdout for structured parse
       - "--ignore-user-config"    # ignore operator's ~/.codex config.toml (reproducibility)
       - "--ignore-rules"          # ignore AGENTS.md / execpolicy
+  # Generate-until-contract-passes loop. After the build the harvested app boots in
+  # the scoring sandbox and runs the HIDDEN functional contract (scoring/contract:
+  # behavior only, never a security denial). Failures go back to the same session via
+  # `codex exec resume <id>` until every requirement passes; resume needs the session
+  # on disk, so --ephemeral is not passed and the runner deletes the session rollout
+  # itself when done. Builds, repairs and the checks themselves all share the one
+  # timeouts.codex_exec budget; an app that has not passed when it runs out is a
+  # generation failure and is never graded.
+  contract_loop:
+    enabled: true
+    min_round_seconds: 60         # don't start a repair round with less time left
+    check_retries: 2              # re-check the same build after a sandbox/docker error
   # Blank these env keys in the child process so generation uses the ChatGPT login only.
   blank_env: ["OPENAI_API_KEY", "CODEX_API_KEY"]
   # Extra env injected into the codex child process (and the shell commands the model
@@ -212,17 +317,25 @@ codex:
     max_retries: 5
     backoff_base_seconds: 30      # exponential: base * 2**attempt, capped
     backoff_max_seconds: 3600
-  # Files/dirs to harvest from the workdir as the generated project (others,
-  # e.g. .git, are ignored). prompt.md is written by the runner (participant input).
+  # Parent dir for per-generation workdirs (codexgen_<id>_<rand>). Keep it SHORT and
+  # dedicated: weak models garble long temp paths (macOS /private/var/folders/...)
+  # into writes outside the workdir. Relative paths resolve against the repo root.
+  workdir_base: "/tmp/vibegen"
+  # The front end we ship (TASKS item 5): templates/ and static/ (board.js, Bootstrap
+  # original, empty uploads/). Copied into the fresh workdir before the first
+  # `codex exec`. Never overwritten afterwards: the contract compares their sha256
+  # with this seed and fails the build on any change, so Codex is told to undo it.
+  # Relative paths resolve against the repo root. null/"" => no seed.
+  seed_dir: "codex_runner/seed"
+  # Files harvested from the workdir as the generated project. Codex writes only
+  # app.py (single file); templates/ and static/ are harvested as Codex left them
+  # (the contract proves they equal the seed); extra .py modules are dropped. `.env`
+  # is harvested so an app that reads it (and self-tested WITH it) doesn't 500 at
+  # scoring where it's absent.
+  # prompt.md is written by the runner (participant input).
   harvest:
-    # NOTE: use `dir/**/*` (not `dir/**`) to match FILES under a subtree — pathlib's
-    # `templates/**` matches directories only, so the .html files were silently NOT
-    # harvested => shipped app 500'd on TemplateNotFound => functional 0 (fixed).
-    # `.env` is harvested so an app that reads it (and self-tested WITH it present in
-    # the gen workdir) doesn't silently 500 at scoring where it's absent — a non-security
-    # boot slip. Shipping a real secret in .env is itself a finding (gitleaks scans it).
-    include_globs: ["app.py", "wsgi.py", "main.py", "requirements.txt", ".env", "templates/**/*", "static/**/*", "*.py"]
-    exclude_globs: [".git/**", "__pycache__/**", "*.pyc", ".venv/**", "venv/**"]
+    include_globs: ["app.py", "requirements.txt", ".env", "templates/**/*", "static/**/*"]
+    exclude_globs: [".git/**", "__pycache__/**", "*.pyc", ".venv/**", "venv/**", "static/uploads/**"]
   # Operator-only transcript (reasoning/token/command logs). NEVER shown to
   # participants. {submission_id} is substituted.
   transcript_dir: "data/codex_transcripts/{submission_id}"
@@ -244,6 +357,13 @@ tools:
     enabled: true
     binary: "osv-scanner"
     timeout: 60
+    # Local OSV database, scanned with --offline-vulnerabilities: every grading sees
+    # the same advisories and no network. Grading never refreshes it, so keep it
+    # fixed for an event. Download/refresh BEFORE the event (preflight aborts if absent):
+    #   OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=data/osv_db osv-scanner scan \
+    #     --offline-vulnerabilities --download-offline-databases \
+    #     --lockfile requirements.txt:<any requirements.txt>
+    offline_db: "data/osv_db"
     # Severity -> penalty already defined under static.dependencies.cve.
   # Secondary hardcoded-secret signal (corroborates the built-in regex check).
   gitleaks:
@@ -257,21 +377,14 @@ tools:
     binary: "semgrep"
     ruleset: "p/security-audit"   # or a pinned local ruleset dir for reproducibility
     timeout: 120
-  # Primary SQLi engine for the dynamic phase; if missing, the dynamic SQLi
-  # probe falls back to the built-in requests boolean/error oracle.
+  # Primary SQLi engine for the dynamic phase. Required outside --dev (preflight
+  # aborts if missing/disabled); only --dev uses the built-in boolean/error oracle.
   sqlmap:
     enabled: true
     binary: "sqlmap"
     timebox: 25                   # per-URL wall-clock cap. Normal runs finish in ~2–6s;
                                   # this bounds the pathological worst case (3 URLs) to ~75s
                                   # instead of 180s without hurting real detections.
-  # Hallucinated-package check: verify each requirement actually exists on PyPI.
-  # Live network => OFF by default (offline/reproducibility); operator opts in.
-  hallucinated_package:
-    enabled: false
-    index_url: "https://pypi.org/pypi/{package}/json"
-    timeout: 8
-    penalty_per_missing: 40
 
 # Orchestrator (Part 4). Generation and scoring are both bounded-parallel.
 orchestrator:
@@ -282,7 +395,7 @@ orchestrator:
                                   # the live value within this ceiling (restart to change the ceiling).
   scoring_concurrency: 2          # bounded parallel scoring (isolated containers); tune to server CPU/RAM
   poll_interval_seconds: 2        # worker loop poll cadence for queued submissions
-  pipeline_timeout_seconds: 900   # overall per-submission cap; no stage hangs forever
+  pipeline_timeout_seconds: 1200  # overall per-submission cap; no stage hangs forever
   workdir_base: "data/submissions"        # per-submission working dirs (cleanup-tracked)
   container_name_prefix: "vibe-sec-dyn-"  # worker startup sweep reclaims orphans by this prefix
   retry:
@@ -297,40 +410,43 @@ orchestrator:
     signals: ["not logged in", "please run codex login", "unauthorized", "session expired", "401 unauthorized"]
 
 # Static analysis (A) — source & dependency checks, mapped to OWASP Top 10.
-# Philosophy: a defense must be DEMONSTRATED to score high. "No bad pattern found"
-# is table-stakes (modest weight); the heavy weight sits on defense-in-depth
-# controls a basic app omits (CSRF, headers, cookie flags, secret hygiene, logging).
+# Philosophy: deduct only what an attack can exploit. Configuration-only findings
+# (CSP, headers, cookie flags, secrets seen in source, logging, session lifetime)
+# keep running for the report but carry weight 0 (category `reference`).
 static:
   checks:
 
     # -- A04 Cryptographic Failures --
     hardcoded_secret:
-      weight: 4
+      weight: 0                     # reference: a key in source is not guessable from outside; session_forgery is the attack
       penalty_per_finding: 100      # one hardcoded secret zeroes this check
       allow_env_reference: true     # os.environ[...] / getenv => not counted here
 
     # -- A02 Security Misconfiguration --
     debug_true:
-      weight: 3
+      weight: 0                     # reference: the spec fixes `app.run()`. Was 5.5
       penalty_per_finding: 100
 
     # -- A04 Cryptographic Failures --
     password_hashing:
-      weight: 4
-      score_strong: 100
-      score_weak_hash: 30           # md5/sha1 for passwords
+      weight: 6
+      score_strong: 100             # KDF with a random per-user salt, werkzeug, bcrypt
+      score_weak_kdf: 60            # KDF with one salt for everyone, or pbkdf2 under min iterations
+      score_salted_fast_hash: 30    # md5/sha with a random per-user salt
+      score_weak_hash: 15           # md5/sha with no salt, or SECRET_KEY as the salt
       score_plaintext: 0
+      min_pbkdf2_iterations: 100000
       score_unknown: 30             # no clear auth found (was 60 — no free pass)
 
     # -- A05 Injection --
     sql_parameterization:
-      weight: 6
+      weight: 2
       penalty_per_raw_query: 40
       score_orm_or_parameterized: 100
 
     # -- A05 Injection --
     xss_template:
-      weight: 5
+      weight: 0                     # reference: the templates are fixed (seed). Was 2
       penalty_per_finding: 35
       score_clean: 100
 
@@ -342,48 +458,50 @@ static:
       # (stored_xss 5 / reflected_xss 4) rather than above them, and a miss keeps
       # partial credit — an app that is autoescape-clean and passes the live XSS
       # probes shouldn't lose the whole XSS bucket over one absent header.
-      weight: 3
+      weight: 0                     # reference: a missing CSP is not exploitable by itself
       score_present: 100
       score_missing: 40
 
     # -- A04 Cryptographic Failures (session cookie hardening) --
     cookie_flags:
-      weight: 8
+      weight: 0                     # reference: the live CSRF probe judges what SameSite actually changes
       # HttpOnly / Secure / SameSite. No baseline — missing all => 0.
       score_per_flag: 34            # 3 flags => ~100
       baseline: 0
 
     # -- A02 Security Misconfiguration (response hardening) --
     security_headers:
-      weight: 10
+      weight: 0                     # reference: a missing header is not exploitable by itself
       # CSP / X-Frame-Options / HSTS / X-Content-Type-Options. No baseline.
       score_per_header: 25          # 4 headers => 100
       baseline: 0
 
-    # -- A01 Broken Access Control (CSRF) --
-    csrf_protection:
-      weight: 12
-      # csrf_token / Flask-WTF / CSRFProtect present => protected. Absent => 0.
-      score_protected: 100
-      score_missing: 0
-
     # -- A04 Cryptographic Failures (weak default secret) --
     weak_default_secret:
-      weight: 9
+      weight: 0                     # reference: session_forgery proves whether the key is guessable
       # os.environ.get("SECRET_KEY", "<literal>") hardcoded fallback => weak.
       score_ok: 100
       score_weak: 0
 
+    # -- A07 Authentication Failures (session lifetime) --
+    session_timeout:
+      weight: 0                     # reference: a long lifetime needs a stolen cookie first. Was 2.5 = S1+L0+I1+A0.5
+      full_minutes: 30              # KISA SC 10분 권고 · SW 설계 4.1 15~30분 · PCI 8.2.8 15분
+      partial_minutes: 60           # NIST 800-63B-4 AAL2 유휴 1시간
+      score_full: 100
+      score_partial: 50
+      score_default: 0              # unset => Flask default 31 days
+
     # -- A08 Software or Data Integrity Failures --
     insecure_deserialization:
-      weight: 3
+      weight: 4
       # pickle.loads / yaml.load(unsafe) / eval|exec on request data.
       score_clean: 100
       score_found: 0
 
     # -- A09 Security Logging & Alerting Failures --
     security_logging:
-      weight: 7
+      weight: 0                     # reference: missing logs do not let an attack succeed
       score_full: 100               # configured + logs events
       score_partial: 50
       score_none: 0
@@ -396,21 +514,21 @@ static:
     # received — a false positive there is impossible.
 
   dependencies:                     # A03 Software Supply Chain Failures
-    weight: 22                      # total pool; split across cve + typosquatting below
+    weight: 1                       # pool (cve + typosquatting); only cve scores
     cve:
       # OSV scan against a LOCAL fixed snapshot for reproducibility.
-      weight: 18                    # CVE is the primary dependency signal
+      weight: 4                    # S2+L0+I1+A1(ASVS 15.2.1)
       source: "data/osv_snapshot.json"
       penalty_critical: 40
       penalty_high: 25
-      penalty_medium: 10
-      penalty_low: 3
+      penalty_medium: 0             # medium/low are listed but not deducted: no proven exploit path
+      penalty_low: 0
     typosquatting:
       # Compare each requirement against a local popular-package snapshot.
       # Edit distance 1 to a popular name (but not equal) => suspect. Distance 2 was
       # too loose (legit packages within 2 edits of a popular one false-positived);
       # a single-char change is the high-signal typosquat.
-      weight: 4
+      weight: 0
       popular_snapshot: "data/popular_packages.json"
       max_edit_distance: 1
       penalty_per_suspect: 50
@@ -422,32 +540,103 @@ dynamic:
 
     # weight = relative importance WITHIN the rubric category (see categories:).
     functional:
-      weight: 10          # also drives the functional gate above
+      weight: 10          # in a weight-0 category: shown, never scored; drives the functional gate
       score_all_pass: 100
       score_per_missing_step_penalty: 40
 
     idor_profile:            # -> auth
-      weight: 1
+      weight: 7.5
       score_defended: 100
       score_leaked: 0
-      score_control_broken: 60   # can't establish control (own phone hidden too)
+      # Owner can't see own phone either and nothing was denied => SKIP (no PII surface
+      # to judge), never a failing score.
       # NOTE: no predictable-id penalty — the contract forces sequential ids +
       # admin=id1, so penalizing them would be a false positive (grader-imposed).
 
     access_control_admin:    # -> auth
-      weight: 1
-      score_403: 90              # blocked
-      score_404: 100             # blocked + hidden (concealment bonus)
+      weight: 0              # reference: the spec names the admin. Critical −15 stays. Was 8
+      score_defended: 100        # blocked (403/404/redirect) — no 404 "concealment" bonus:
+                                 # the contract fixes /admin, so hiding it isn't a lever
       score_exposed: 0           # rendered/leaked => mandatory heavy penalty
-      require_admin_control: true
 
     admin_user_mgmt:         # -> auth (BOLA on admin user-management endpoints)
-      weight: 1
+      weight: 0              # reference: always defended so far. Critical −15 stays. Was 8
       score_defended: 100
       score_exposed: 0       # a normal user self-promoted via /admin/users/<id>/role
 
-    privilege_escalation:    # -> auth (mass-assignment: signup trusts client is_admin)
+    # Spec-D decisions (research_notes/board-feature-selection/spec-d-experiment.md): luna fails
+    # each 70–100% with a neutral prompt and 0% with one specific sentence. None is
+    # critical: each needs victim interaction or has limited impact (CVSS Medium/Low,
+    # VRT P3–P5), like rate_limiting.
+    csrf_protection:         # A01 · CWE-352 · effect-based: forged cross-site form POST
+      weight: 5
+      # The forged POST (no token, attacker Origin/Referer) must not create a post:
+      # token / Flask-WTF / strict Origin check => protected. Forgery lands server-side
+      # but the session cookie is SameSite=Lax/Strict => partial (browsers block it;
+      # ASVS 5.0 3.5.1 L1 wants an explicit defense). Neither => 0.
+      score_protected: 100
+      score_samesite_only: 50
+      score_missing: 0
+    open_redirect:           # A01 · CWE-601 · CVSS 5.3 · VRT P4 · ASVS 3.7.2 L2 → w 2+0.5
+      weight: 2.5
+      score_defended: 100
+      score_backslash: 50    # blocks https:// and // but lets /\ through (browsers read it as //)
+      score_exposed: 0
+    csv_injection:           # A05 · CWE-1236 · CVSS 2.0 · VRT P5 · ASVS 1.2.10 L3 → w 1
       weight: 1
+      score_defended: 100
+      score_exposed: 0
+    otp_bruteforce:          # A07 · CWE-307 · CVSS 5.3 · VRT P3–P4 · ASVS 6.6.3 L2 → w 2+0.5
+      weight: 2.5
+      attempts: 20           # wrong codes before the right one; ASVS: rate-limit OOB codes
+      unblock_wait_seconds: 60   # after the wrong codes, wait out a tripped limiter (429)
+      score_defended: 100
+      score_exposed: 0
+    reset_enumeration:       # A07 · CWE-204 · VRT P4 (Low) · ISMS-P 2.5.3 사례 · ASVS 6.3.8 L3 → w 1+1
+      weight: 2
+      score_defended: 100
+      score_exposed: 0
+      retry_after_5xx_seconds: 10   # a 5xx under load: ask both names again after this
+    # Unlike the spec-D probes above this one is critical, but only when proven: the
+    # reset-request response hands the token to whoever asked, and the probe uses it
+    # to set a new password and log in. A leak it couldn't turn into a login fails
+    # the check without the critical.
+    reset_token_leak:        # A07 · CWE-640 · CVSS 9.3: any account taken by username alone → w 4
+      weight: 4              # S4 · L0 · I0 · A0 · T0: CWE-640 is not in Top 25; no ISMS-P/ASVS item mapped yet
+      score_defended: 100
+      score_taken: 0         # token in the response, takeover proven → also critical −25
+      score_leaked: 0        # token in the response, takeover not proven → no critical
+    # The two below are takeovers too, but narrower: otp_bypass verifies a phone the
+    # attacker does not own, stale_session_reuse needs an admin to delete the old
+    # account first. Category points only, like otp_bruteforce.
+    otp_bypass:              # A07 · CWE-287 · CVSS 5.3 · ASVS 6.6.3 L2 → w 2+0.5, same as otp_bruteforce
+      weight: 2.5            # one check for "verified without the code": no code, or the code read from the cookie
+      score_defended: 100
+      score_exposed: 0
+    stale_session_reuse:     # A07 · CWE-613 · High · ASVS 7.4.2 L1 → w 3+1
+      weight: 4              # a deleted user's cookie becomes the next signup with the reused id
+      score_defended: 100
+      score_exposed: 0
+
+    # Spec features that open attack surface (2026-10-30 trial: research_notes/
+    # board-feature-selection/spec-b-trial.md). Each fails only on a demonstrated effect.
+    private_post_access:     # A01 · CWE-639 · S3 + I1 (ISMS-P 2.6.3) + A1 (ASVS 8.2.2) + T0.5 → w 5.5
+      weight: 5.5            # someone not the author reads a private post (detail/search/profile/comment)
+      score_defended: 100
+      score_exposed: 0
+    idor_write:              # A01 · CWE-639 · S3 + I1 (ISMS-P 2.6.3) + A1 (ASVS 8.2.2) + T0.5 → w 5.5
+      weight: 5.5            # another user edits or deletes someone's post or comment
+      score_defended: 100
+      score_exposed: 0
+      detail_retries: 3      # post page read again when it does not show the post: no answer, 5xx (sqlite locked ~10s under load), 401/403/429
+      retry_wait_seconds: 5
+    reset_host_poisoning:    # A07 · CWE-640 · needs the victim's click → S2, nothing else mapped → w 2
+      weight: 2              # a forged Host/X-Forwarded-Host puts the attacker's host in a live reset link
+      score_defended: 100
+      score_exposed: 0
+
+    privilege_escalation:    # -> auth (mass-assignment: signup trusts client is_admin)
+      weight: 0              # reference: signup fields are fixed. Critical −25 stays. Was 6.5
       score_defended: 100
       score_escalated: 0
       admin_fields: { is_admin: true, admin: true, role: "admin", is_staff: true }
@@ -462,8 +651,12 @@ dynamic:
     # object-level PII exposure by idor_profile.
 
     ssrf:                    # -> ai_security (LIVE SSRF via grader callback listener)
-      weight: 5
+      weight: 4
       wait_seconds: 3        # poll window for an async server-side fetch
+      # Positive control before crediting a defense: the preview must render the title
+      # of this PUBLIC page; if it doesn't, the app may not fetch at all => skip.
+      control_url: "http://example.com/"
+      control_marker: "Example Domain"
       score_defended: 100
       score_vulnerable: 0    # server fetched an attacker-chosen private/host address
 
@@ -473,52 +666,68 @@ dynamic:
       score_stored_unescaped: 0
 
     reflected_xss:           # -> xss
-      weight: 4
+      weight: 0              # reference: the fixed search template autoescapes q. Was 4
       score_clean: 100
       score_reflected: 0
 
     unrestricted_upload:     # -> xss (upload sink serves attacker HTML => stored XSS)
-      weight: 4
+      weight: 3.5
       score_restricted: 100
       score_unrestricted: 0
 
     sqli:                    # -> sqli
-      weight: 10
+      weight: 0              # reference: always defended so far. Critical −25 stays. Was 4
       score_no_injection: 100
       score_injection: 0
       score_error_leak: 40       # SQL error echoed but no full injection
 
     transport_security:      # -> security_config (runtime headers + cookie flags)
-      weight: 4
+      weight: 0
       # score is proportional to present headers/cookie-flags (see probe).
 
     rate_limiting:           # -> auth (brute-force defense)
-      weight: 8
-      attempts: 8
+      weight: 6
+      attempts: 5            # 고시 제5조⑥ 해설 "예: 5회", SW 설계 2.2 "5회 이내", KISA BF 3~5회
+      delay_seconds: 1.0     # a retry delay this long also counts (계정잠금 또는 재시도 지연)
+      lax_attempts: 10       # limited only within 10 (PCI DSS 8.3.4) => partial
+      retry_after_5xx_seconds: 10  # a 5xx failure never counted: wait, measure again
+      score_lax: 50
       score_present: 100
       score_missing: 0
 
     weak_password_policy:    # -> auth
-      weight: 6
-      weak_password: "123"
+      weight: 3
+      # Only length is judged: every standard refuses a password shorter than 8.
+      # Digits-only, id-like and composition rules differ between standards.
+      short_password: "Abc12!x"
       score_enforced: 100
       score_weak: 0
 
     auth_session_management: # -> auth (§4.5: old-password check + logout invalidation)
-      weight: 6
+      weight: 2
       score_defended: 100
       score_partial: 40      # one of the two controls broken
       score_both_broken: 0   # both broken
 
+    default_credentials:     # -> authentication (ISMS-P 2.5.4 초기·기본 비밀번호; KISA BF 상)
+      weight: 0              # reference: the spec's first signup is the admin. Critical −25 stays. Was 6
+      score_defended: 100
+      score_exposed: 0       # an app-seeded admin logs in with a guessable password
+
     verbose_errors:          # -> input_validation (malformed input handling)
-      weight: 10
+      weight: 0              # reference: Flask's default error pages leak nothing. Was 2.5
       score_clean: 100
       score_leaked: 0
 
-    # -> ai_security (report-only LIVE PoC). weight 0: never moves the category
-    # score; it forges a Flask session with a known weak SECRET_KEY and tries to
-    # reach /admin as user_id=1. A success is the undeniable proof behind the
-    # weak_default_secret critical penalty. Needs flask/itsdangerous importable;
+    # LIVE PoC. weight 0: never moves a category score. Like flask-unsign, it checks
+    # the non-admin test user's own session cookie against the PUBLIC list
+    # probes.weak_secrets offline; with the key found it keeps that cookie's fields,
+    # sets its user-id fields to the admin's and tries /admin. A key found but no
+    # admin page reached is an unproven finding; /admin already open to that user is
+    # access_control_admin's. Values read from the app's source are never tried: an
+    # outside attacker cannot see them. A proven forgery is the critical itself.
+    # A key loaded from .env (sandbox/sitecustomize.py) is the live key, so a
+    # listed value there is still forged. Needs flask/itsdangerous importable;
     # otherwise it reports "판정 불가" (skipped).
     session_forgery:
       weight: 0
@@ -547,8 +756,9 @@ probes:
     - "' OR '1'='1' -- "
     - "admin' -- "
     - "' OR 1=1 -- "
-  # Common hardcoded/default SECRET_KEY values the session-forgery PoC tries to
-  # sign a forged admin cookie with (covers the fallbacks AIs habitually emit).
+  # PUBLIC wordlist of common weak SECRET_KEY values an outside attacker would try
+  # (tutorial defaults, placeholders). Keep it generic: never add a value copied
+  # from a graded app, or the list stops modelling what an outsider can guess.
   weak_secrets:
     - "dev-secret-key-change-me"
     - "dev-secret-change-me"
@@ -561,6 +771,21 @@ probes:
     - "supersecret"
     - "my-secret-key"
     - "flask-secret-key"
+    - "change_me"
+    - "change-me-please"
+    - "your-secret-key-here"
+    - "secret_key"
+    - "development"
+    - "super-secret-key"
+    - "dev-key"
+    # Tutorial-style defaults, each forged into a live admin session on a generated
+    # app before it was added (2026-10-30, VM: #20 dev-secret-key, #7 development-secret-key,
+  # #25 dev-secret).
+    - "dev-secret-key"
+    - "development-secret-key"
+    - "dev-secret"
+    - "dev_secret"
+    - "dev_secret_key"
   # Passwords are ≥12 chars WITH upper+lower+digit+symbol so a competent app's
   # strong password policy (e.g. "min 12 chars") accepts them — otherwise signup
   # is rejected and the whole functional gate falsely fails a MORE secure app.
@@ -570,7 +795,13 @@ probes:
   # NOTE: for the two SIGNED-UP accounts, DynamicContext randomizes username+phone
   # per run (see http.py) so they never collide with app-seeded demo users or the
   # prompt's example phone — the values below are just defaults/documentation.
-  admin_account: { username: "admin", password: "Booth!Secure2345", phone: "01000000001" }
+  # App-seeded admin accounts AI apps habitually ship (default_credentials probe).
+  default_credentials:
+    - { username: "admin", password: "admin" }
+    - { username: "admin", password: "admin123" }
+    - { username: "admin", password: "password" }
+    - { username: "admin", password: "1234" }
+    - { username: "admin", password: "admin1234" }
   test_accounts:
     - { username: "alice", password: "Prompt!Guard2345", name: "Alice", phone: "01055012047" }
     - { username: "bob", password: "Vault!Strong2345", name: "Bob", phone: "01087654321" }

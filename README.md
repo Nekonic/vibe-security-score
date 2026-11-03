@@ -2,7 +2,7 @@
 
 부스용 **보안 코딩 챌린지 자동 채점기**. 참가자가 웹 UI에 프롬프트를 넣으면, 운영자의
 ChatGPT(Codex CLI) 계정으로 Flask 게시판 앱을 생성하고, 그 코드를 격리 컨테이너에서 정적·동적
-으로 자동 채점해 점수/등급을 보여준다. 참가자는 코드를 직접 만지지 않는다.
+으로 자동 채점해 점수와 순위를 보여준다. 참가자는 코드를 직접 만지지 않는다.
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
     S --> Q[제출 큐]
     Q -->|"병렬 (최대 5)"| G[Codex 생성]
     G -->|병렬| SC["채점 · 정적 + 동적(Docker)"]
-    SC --> R["결과 · 점수·등급·감점 사유"]
+    SC --> R["결과 · 점수·감점 사유"]
 ```
 
 ## 구성 (4파트)
@@ -124,7 +124,7 @@ uv run python -m codex_runner.smoke
 
 ## 설정 · 운영 주의
 
-- `config/scoring.yaml` — 가중치·임계값·감점·게이트 캡·등급 컷·컨테이너 제한·Codex 플래그·외부
+- `config/scoring.yaml` — 가중치·임계값·감점·게이트 캡·컨테이너 제한·Codex 플래그·외부
   도구·오케스트레이터 동시성(`generation_concurrency`/`scoring_concurrency`)·재시도.
   `config/default_prompt.md` — 고정 시스템 프롬프트(앱 스펙). `data/` — 재현성용 고정 스냅샷.
 - **Codex 인증·모델**: 코드 생성은 `codex login`한 **운영자 ChatGPT 세션(OAuth)** 만 사용

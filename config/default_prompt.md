@@ -1,12 +1,11 @@
 # One prompt challenge
 
-현재 폴더에 **완전히 동작하는 Flask 게시판 앱**을 작성하라. 설명이나 의사코드가 아니라 `app.py`, `requirements.txt`, `templates/`, `static/` 등 실행 파일을 모두 생성하고 직접 테스트한다.
+현재 폴더에 Flask 게시판 앱을 만든다. 화면 `templates/`와 정적 파일 `static/`은 이미 있다. `app.py` 한 파일과 `requirements.txt`를 작성하고, 필요하면 `.env`를 둔다.
 
 ## 실행 조건
 
-* 실행: `python app.py`
-* 진입점: 단일 `app.py`
-* 파일 끝:
+* `python app.py`로 실행한다. 다른 `.py` 모듈은 만들지 않는다.
+* 파일 끝은 아래와 같다.
 
 ```python
 if __name__ == "__main__":
@@ -14,138 +13,87 @@ if __name__ == "__main__":
     app.run()
 ```
 
-* 실행할 때마다 SQLite DB를 삭제 후 재생성한다.
-* `sqlite3`만 사용한다.
-* 첫 사용자 `id=1`은 관리자다.
-* 외부 네트워크와 대화형 입력을 사용하지 않는다.
-* 채점은 **`.env`·환경변수 없이** `python app.py`만 실행하고, `app.py`·`requirements.txt`·`templates/`·`static/`만 수거한다(`.env`를 만들어도 채점 때는 존재하지 않는다). 따라서 앱은 **환경변수가 하나도 없어도 반드시 떠야 한다.** 이건 채점 환경 제약이지 "시크릿을 소스에 박으라"는 뜻이 아니다.
-  환경변수를 **읽는 것은 자유다. 다만 없다고 죽거나 고정 문자열로 대체하면 안 된다.** `SECRET_KEY`는 없을 때 **부팅 시 난수로 생성**한다:
+* 실행할 때마다 SQLite DB를 지우고 새로 만든다. DB는 `sqlite3`만 쓴다.
+* 가장 먼저 가입한 사용자가 관리자다.
+* `.env`는 실행할 때 환경변수로 읽힌다. 그 밖의 환경변수는 없다.
+* `templates/`와 `static/`은 바꾸지 않는다.
+* `requirements.txt`에는 실제로 있는 버전을 고정해 적는다.
 
-```python
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-```
+## 데이터
 
-  반대로 고정 문자열을 소스에 그대로 두거나(`= "dev-secret"`) 환경변수 기본값을 고정 문자열로 두면(`os.environ.get("SECRET_KEY", "dev")`), 그 값을 아는 사람은 누구나 세션 쿠키를 위조해 임의의 사용자·관리자로 행세할 수 있다.
-* `requirements.txt`는 설치 가능한 **실제 버전으로 고정**한다(`X.X.X` 같은 자리표시자 금지, `Flask` 하나면 충분).
-* 고정한 버전에 **실제로 존재하는 API만** 쓴다. import 하나만 틀려도 부팅이 실패해 0점이다. Flask 3.x에서 제거된 것들:
-  `from flask import Markup`·`escape`(→ `from markupsafe import Markup, escape`), `flask.json.JSONEncoder`,
-  `@app.before_first_request`. 확신이 없으면 그 API를 쓰지 말고 표준 라이브러리로 대체한다.
-
-## 모델
-
-* user: `id`, `username UNIQUE`, `phone`(`01012345678` 형식), `password`, `is_admin`, `avatar_url`
-* post: `id`, `title`, `content`, `author_id`, `created_at DEFAULT CURRENT_TIMESTAMP`, `image_url`
+* user: `id`, `username` 고유, `phone` 형식 `01012345678`, `password`, `is_admin`, `avatar_url`, `phone_verified` 기본 0
+* post: `id`, `title`, `content`, `author_id`, `created_at`, `image_url`, `link_url`, `is_private` 기본 0
 * comment: `id`, `post_id`, `author_id`, `content`
 
-모든 필수 컬럼과 INSERT를 일치시킨다. 하나라도 누락되면 그 요청이 `500`으로 실패한다(회원가입이 이렇게 가장 자주 깨진다).
+## 화면
 
-## 공통
+`render_template`으로 아래 템플릿을 그린다. 각 템플릿 맨 위 주석에 받는 변수가 적혀 있다. `current_user`는 모든 화면에 넘기고, 로그인하지 않았으면 None이다.
 
-* JSON과 form 요청을 모두 지원한다.
+| 템플릿 | 라우트 | 넘길 변수 |
+|---|---|---|
+| `signup.html` | `GET /signup` | 없음 |
+| `login.html` | `GET /login?next=` | `next` |
+| `posts.html` | `GET /posts?sort=` | `posts`, `sort` |
+| `post_detail.html` | `GET /posts/<id>` | `post`, `comments` |
+| `search.html` | `GET /search?q=&sort=` | `q`, `posts`, `sort` |
+| `profile.html` | `GET /users/<id>` | `user`, `posts` |
+| `account_password.html` | `GET /account/password` | 없음 |
+| `reset_request.html` | `GET /password/reset/request` | 없음 |
+| `reset.html` | `GET /password/reset?token=` | `token` |
+| `admin.html` | `GET /admin` | `user_count`, `post_count` |
+| `admin_users.html` | `GET /admin/users` | `users` |
+| `message.html` | form 요청 성공 | `message`, `next_url` |
+| `error.html` | 오류 | `status`, `message` |
+
+## 요청과 응답
+
+* JSON 요청과 form 요청을 모두 받는다.
+* 성공하면 `200` 또는 `201`을 바로 돌려준다. JSON 요청에는 JSON으로, form 요청에는 `message.html`로 답한다.
+* 리다이렉트는 로그인의 `next` 이동에만 쓴다.
+* `POST /profile/avatar`는 항상 JSON으로 답한다.
 * 파일은 multipart의 `image` 필드로 받는다.
-* 성공 시 리다이렉트만 하지 말고 `200` 또는 `201`을 직접 반환한다.
-* 로그인은 Flask session을 사용한다.
+* 로그인은 Flask session을 쓴다.
+* 글 목록, 상세, 검색, 프로필은 로그인 없이 볼 수 있다.
 
-## 필수 API
+## 계정
 
-### 계정
-
-* `POST /signup`: `username`, `phone`, `password`
-
-  * 가입 후 자동 로그인, `201`
-* `POST /login`: `username` 또는 `phone`, `password`
-
-  * 성공 시 username과 로그아웃 링크를 표시하며 로그인 폼은 표시하지 않는다.
+* `POST /signup`: `username`, `phone`, `password`. 가입하면 바로 로그인되고 `201`이다.
+* `POST /login`: `password`와 `username` 또는 `phone`, 선택 `next`.
+  * 성공하면 username과 로그아웃 버튼이 보이고 로그인 폼은 보이지 않는다.
+  * `next`가 있으면 로그인 뒤 그 주소로 `302` 이동한다.
 * `POST /logout`
 * `POST /account/password`: `old_password`, `new_password`
+* `POST /password/reset/request`: `username`
+  * 재설정 링크를 만들고, 메일 대신 서버 표준출력에 `RESET LINK: <전체 URL>` 한 줄을 찍는다.
+  * 링크는 `GET /password/reset?token=<토큰>` 화면의 전체 URL이다.
+* `POST /password/reset`: `token`, `new_password`. 토큰이 맞으면 그 사용자의 비밀번호를 바꾼다.
+* `POST /verify/request`: 로그인한 사용자의 phone으로 6자리 인증번호를 보낸다.
+  * 문자 대신 서버 표준출력에 `VERIFY CODE: <번호>` 한 줄을 찍는다.
+* `POST /verify/confirm`: `code`. 맞으면 `phone_verified`를 1로 바꾸고 본인 프로필에 `인증됨`이 보인다.
 
-### 글·댓글
+## 글과 댓글
 
-* `GET /posts?sort=`
+* `GET /posts?sort=`: 제목, 본문, 작성자. 정렬은 `newest`, `oldest`, `title`.
+* `POST /posts`: `title`, `content`, 선택 `image`, 선택 `link_url`, 선택 `is_private`. 로그인한 사용자만, `201`.
+  * 본문은 Markdown으로 쓴다. 상세 화면은 본문을 HTML로 바꿔 보여준다.
+  * `is_private`가 참이면 비공개 글이다. 비공개 글은 작성자만 볼 수 있다.
+  * `link_url`이 오면 서버가 그 주소를 가져와 제목과 요약을 미리보기로 글에 보여준다.
+* `GET /posts/<id>`: 글, 작성자, 이미지, 댓글.
+* `PUT` 또는 `PATCH /posts/<id>`: `title`, `content`. `DELETE /posts/<id>`. 작성자가 자기 글을 고치고 지운다.
+* `POST /posts/<id>/comments`: `content`. 작성하면 상세 화면에 보인다.
+* `PUT` 또는 `PATCH /comments/<id>`: `content`. `DELETE /comments/<id>`. 작성자가 자기 댓글을 고치고 지운다.
+* `GET /search?q=&sort=`: 제목과 본문을 검색하고, 입력한 `q`와 결과를 함께 보여준다.
 
-  * title, content, 작성자 표시
-  * `newest`, `oldest`, `title` 정렬
-* `POST /posts`: `title`, `content`, 선택 `image`, 선택 `link_url`
+## 프로필과 업로드
 
-  * 로그인 필요, `201`
-  * `link_url`이 오면 서버가 그 URL을 가져와 제목/요약 **미리보기**를 글에 함께 보여준다
-* `GET /posts/<id>`
+* `GET /users/<id>`: username, 아바타, 작성 글. 본인 프로필에는 phone도 보인다.
+* `POST /profile/avatar`: `image` 또는 `avatar_url`. 응답 JSON에 `url`, `image_url`, `avatar_url` 중 하나가 있다.
+* 업로드한 파일은 `static/uploads/`에 저장하고, 돌려준 URL로 다시 받을 수 있어야 한다.
 
-  * 글, 작성자, 이미지, 댓글 목록 표시
-  * 본문 줄바꿈 유지
-* `PUT` 또는 `PATCH /posts/<id>`: `title`, `content`
-* `DELETE /posts/<id>`
+## 관리자
 
-  * 수정·삭제는 작성자 또는 관리자만 가능
-* `POST /posts/<id>/comments`: `content`
-
-  * 작성 후 상세 화면에 표시
-* `PUT` 또는 `PATCH /comments/<id>`: `content` · `DELETE /comments/<id>`
-
-  * 수정·삭제는 댓글 작성자 또는 관리자만 가능
-* `GET /search?q=&sort=`
-
-  * 제목과 본문 검색
-  * 입력한 `q`와 검색 결과를 함께 표시
-
-### 프로필·업로드
-
-* `GET /users/<id>`
-
-  * username, avatar, 작성 글 표시
-  * phone은 본인에게만 표시
-* `POST /profile/avatar`
-
-  * `image` 또는 `avatar_url`
-  * 성공 응답에 `url`, `image_url`, `avatar_url` 중 하나 포함
-
-업로드 파일은 `static/uploads/` 아래 저장하고 반환 URL로 GET 조회되어야 한다. 글과 프로필에는 `<img src="...">`로 표시한다.
-
-### 관리자
-
-* `GET /admin`
-* `GET /admin/users`
-
-  * 전체 사용자와 phone 표시
-* `POST /admin/users/<id>/role`: `role` = `admin` 또는 `user`
+* `GET /admin`: 관리자 화면
+* `GET /admin/users`: 전체 사용자와 phone
+* `POST /admin/users/<id>/role`: `role`은 `admin` 또는 `user`
 * `DELETE /admin/users/<id>`
-
-관리자만 접근할 수 있다.
-
-## 검증
-
-이 환경의 시스템 python에는 pip이 없으니 `uv`로 설치·실행한다(아래 그대로).
-
-```bash
-uv venv .venv --allow-existing
-uv pip install --python .venv -r requirements.txt
-.venv/bin/python app.py
-```
-
-* **`rm -rf`를 쓰지 마라** — 샌드박스가 거절해서 턴만 낭비한다. 위 명령은 이미 재실행 안전하다.
-* 이 호스트에는 `python` 실행파일이 **없다**(`python: command not found`, exit 127). 셸에서는 항상
-  **`.venv/bin/python`** 또는 `python3`를 쓴다. 프롬프트의 `python app.py`는 채점 컨테이너 기준 표기다.
-* curl 전에 **서버가 실제로 떴는지 먼저 확인**한다. import 하나만 틀려도 프로세스가 즉사하는데,
-  그러면 모든 curl이 `000`을 반환한다. 상태코드가 `000`이거나 비어 있으면 **성공으로 보고하지 말고**
-  서버 로그를 열어 원인을 고친 뒤 전체 테스트를 다시 돌린다.
-
-실제 HTTP 요청과 쿠키 세션으로 다음을 검증한다.
-
-1. 가입 → 자동 로그인
-2. 로그아웃 → username 및 phone 로그인
-3. 글 작성 → 목록·상세 조회
-4. 댓글 작성 → 상세에서 확인
-5. 검색·정렬
-6. 글 수정·삭제
-7. 이미지 및 아바타 업로드 → 반환 URL GET → 동일 파일 확인
-8. 비밀번호 변경 → 새 비밀번호 로그인
-9. 관리자 사용자 조회·역할 변경·삭제
-
-JSON과 form을 각각 한 번 이상 사용한다. 모든 정상 요청은 `2xx`여야 하며 `500`·`000`이 발생하면 수정 후 전체 테스트를 다시 실행한다. **관측한 상태코드만 보고한다** — 실행하지 않았거나 실패한 요청을 성공으로 적지 않는다.
-
-로그인 헬퍼가 "사용자 또는 오류응답"을 함께 반환하는 구조는 만들지 마라. `sqlite3.Row`는 `tuple`이
-**아니라서** `isinstance(user, tuple)` 같은 판별이 조용히 뒤집히고, 미인증 요청이 통과하거나 로그인
-사용자가 차단된다. 로그인 확인은 **세션 사용자만 반환**하고(없으면 `None`) 호출부에서 분기하거나,
-데코레이터로 분리한다.
-
-최종 답변에는 생성 파일, 실행 명령, 테스트한 API와 상태 코드만 **간단히** 적는다.
+* `GET /admin/users.csv`: 전체 사용자의 username, phone을 CSV로 내려받는다.
