@@ -1,0 +1,2 @@
+<!doctype html><meta charset='utf-8'><title>{{post.title}}</title><main><a href='/posts'>목록</a><h1>{{post.title}}</h1><small>{{post.username}}</small><p style='white-space:pre-wrap'>{{post.content}}</p>{% if post.image_url %}<img src='{{post.image_url}}'>{% endif %}<h2>댓글</h2>{% for c in comments %}<p>{{c.username}}: {{c.content}}</p>{% endfor %}</main>
+

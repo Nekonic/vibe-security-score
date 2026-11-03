@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>게시글 목록</h2>
+<form method="get" action="/posts">
+  <label>정렬</label>
+  <select name="sort">
+    <option value="newest" {% if sort=='newest' %}selected{% endif %}>최신순</option>
+    <option value="oldest" {% if sort=='oldest' %}selected{% endif %}>오래된순</option>
+    <option value="title" {% if sort=='title' %}selected{% endif %}>제목순</option>
+  </select>
+  <button type="submit">정렬</button>
+</form>
+
+{% if query is not none %}
+  <p>검색어: {{ query }} / 결과 {{ posts|length }}건</p>
+{% endif %}
+
+{% if user %}
+<section>
+  <h3>글쓰기</h3>
+  <form method="post" action="/posts" enctype="multipart/form-data">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input name="title" placeholder="제목" required>
+    <textarea name="content" placeholder="내용" required></textarea>
+    <input type="text" name="link_url" placeholder="미리보기 URL(선택)">
+    <input type="file" name="image" accept="image/*">
+    <button type="submit">등록</button>
+  </form>
+</section>
+{% endif %}
+
+<ul>
+  {% for p in posts %}
+    <li>
+      <a href="/posts/{{ p.id }}">{{ p.title }}</a><br>
+      작성자: {{ p.author }} | {{ p.created_at }}
+    </li>
+  {% else %}
+    <li>게시글이 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

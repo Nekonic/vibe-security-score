@@ -3,8 +3,11 @@ stored and reflected XSS probes.
 """
 from __future__ import annotations
 
+import os
+import pathlib
 import re
 import uuid
+from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
 import requests
@@ -123,6 +126,26 @@ def _block_bypasses_escape(block: str, escaping_filters=()) -> bool:
     return True
 
 
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _seed_templates(config) -> dict:
+    """{relative path: text} of the templates we ship (``codex.seed_dir``). Their
+    ``|safe`` is ours, not the app's: post_detail.html inserts the app's
+    Markdown-to-HTML output as is, and whether that output is safe is judged by the
+    stored_xss probe on the rendered page."""
+    seed = config.get("codex.seed_dir", None) if config is not None else None
+    if not seed:
+        return {}
+    root = pathlib.Path(str(seed))
+    root = root if root.is_absolute() else _REPO_ROOT / root
+    tpl = root / "templates"
+    if not tpl.is_dir():
+        return {}
+    return {f.relative_to(root).as_posix(): f.read_text(encoding="utf-8", errors="replace")
+            for f in tpl.rglob("*") if f.is_file()}
+
+
 def check_xss_template(check, sctx, cfg):
     penalty = float(cfg.get("penalty_per_finding", 35))
     score_clean = float(cfg.get("score_clean", 100))
@@ -148,7 +171,10 @@ def check_xss_template(check, sctx, cfg):
                 reasons.append(f"{path}:{i} autoescape=False 설정")
                 evidence.append(f"{path}:{i}: {line.strip()}")
 
+    shipped = _seed_templates(getattr(sctx, "config", None))
     for path, text in sctx.templates:
+        if shipped.get(path.replace(os.sep, "/")) == text:
+            continue  # our own front end, unchanged
         for i, line in enumerate(text.splitlines(), start=1):
             if any(_block_bypasses_escape(b.group(0), escaping_filters) for b in _BRACE_BLOCK.finditer(line)):
                 reasons.append(f"{path}:{i} |safe 필터로 자동 이스케이프 우회")
@@ -178,7 +204,7 @@ def check_csp(check, sctx, cfg):
         return result(check, cfg, score=cfg.get("score_present", 100), passed=True,
                       evidence=[hit.group(0)])
     return result(check, cfg, score=cfg.get("score_missing", 0), passed=False,
-                  reasons=["Content-Security-Policy 미설정 → 자동escape 우회(속성/JS 컨텍스트) XSS에 무방비. "
+                  reasons=["Content-Security-Policy 미설정 → autoescape 우회(속성·JS context) XSS에 무방비. "
                            "autoescape는 프레임워크 기본값일 뿐 CSP로 스크립트 출처를 제한해야 함"])
 
 
@@ -218,26 +244,21 @@ def dynamic_stored_xss(check, ctx, cfg):
             _marker, sig = hit
             at = body.find(sig)
             return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
-                          reasons=[f"{path} 렌더에 XSS 페이로드가 이스케이프 없이 노출됨 → 저장형 XSS (payload={sig!r})"],
+                          reasons=[f"{path} 렌더에 XSS 페이로드가 이스케이프 없이 노출됨 → Stored XSS (payload={sig!r})"],
                           evidence=[_snip(f"{path}: …{body[max(0, at - 40): at + 100]}…")])
 
-    # Post-detail sink: rich-text / markdown rendering usually happens on the detail
-    # page (/posts/<id>), not the list — an app can escape the list yet render the body
-    # raw there (|safe, render_template_string, unsanitized markdown). Store every
-    # payload in one body and read it back on detail.
-    combined = " ".join(p for _m, p, _s in variants)
-    dpid = create_post_id(ctx, sess, "xssd-" + uuid.uuid4().hex[:8], combined)
-    if dpid is not None:
-        detail = ctx.get(sess, f"/posts/{dpid}", headers={"Accept": "text/html"})
-        if _is_html_response(detail):
-            dbody = _body_text(detail)
-            dhit = _find_unescaped(dbody, variants)
-            if dhit:
-                _dm, dsig = dhit
-                at = dbody.find(dsig)
-                return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
-                              reasons=[f"/posts/{dpid} 상세 본문 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS (payload={dsig!r})"],
-                              evidence=[_snip(f"/posts/{dpid}: …{dbody[max(0, at - 40): at + 100]}…")])
+    # Post-detail sink: the spec's body is Markdown shown as HTML, and post_detail.html
+    # inserts the app's converted HTML as is. Raw HTML in the Markdown that comes out
+    # as a live element (a <script>, an on* handler) runs when the page is opened.
+    # Judged on the parsed page, never by string matching: a sanitizer may keep the
+    # payload as harmless text, and a ``javascript:`` link needs a click (not judged).
+    hit = _markdown_raw_html(ctx, sess)
+    if hit is not None:
+        path, what, resp, snippet = hit
+        if not _csp_blocks_inline_script(resp):
+            return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                          reasons=[f"{path} 상세에서 Markdown 본문의 HTML이 그대로 렌더되어 {what}가 실행됨 → Stored XSS"],
+                          evidence=[_snip(f"{path}: …{snippet}…")])
 
     # Comment sink: comments are a second stored-XSS surface — an app can escape
     # post bodies yet forget comments. Needs a post id; skip the pass if unavailable.
@@ -253,43 +274,120 @@ def dynamic_stored_xss(check, ctx, cfg):
                 _cm, csig = chit
                 at = cbody.find(csig)
                 return result(check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
-                              reasons=[f"/posts/{pid} 댓글 렌더에 XSS 페이로드가 이스케이프 없이 노출 → 저장형 XSS(댓글) (payload={csig!r})"],
+                              reasons=[f"/posts/{pid} 댓글 렌더에 XSS 페이로드가 이스케이프 없이 노출 → Stored XSS(댓글) (payload={csig!r})"],
                               evidence=[_snip(f"/posts/{pid} 댓글: …{cbody[max(0, at - 40): at + 100]}…")])
 
-    # URL-bearing fields are a distinct HTML attribute sink. Escaping quotes does
-    # not neutralize a ``javascript:`` scheme placed intact in href/src. Exercise
-    # the contract's link_url field and require the dangerous scheme to appear in
-    # an actual href attribute, rather than merely as escaped text.
-    url_marker = uuid.uuid4().hex[:10]
-    js_url = f"javascript:alert('xss-{url_marker}')"
-    upid = create_post_id(
-        ctx, sess, "xssu-" + url_marker, "url-xss-" + url_marker,
-        extra={"link_url": js_url, "url": js_url},
-    )
-    if upid is not None:
-        udetail = ctx.get(sess, f"/posts/{upid}", headers={"Accept": "text/html"})
-        if _is_html_response(udetail):
-            ubody = _body_text(udetail)
-            href = re.search(
-                r"href\s*=\s*[\"']\s*javascript:[^\"']*" + re.escape(url_marker),
-                ubody,
-                re.IGNORECASE,
+    # A ``javascript:`` link_url is not judged: it runs only if a viewer clicks the
+    # link, while every other stored-XSS path here runs when the page is opened.
+
+    # Attribute-breakout sink: avatar_url lands in <img src=...>. Autoescaping does
+    # not protect an UNQUOTED attribute (`src={{url}}`): a value with a space adds a
+    # new attribute. Judge on the parsed DOM — an on* event-handler attribute carrying
+    # our marker — not on string matching, so a quoted (inert) value never trips it.
+    hit = _avatar_attribute_breakout(ctx, sess)
+    if hit is not None:
+        path, attr, resp = hit
+        if not _csp_blocks_inline_script(resp):
+            return result(
+                check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
+                reasons=[f"{path}의 avatar_url이 따옴표 없는 속성에 렌더되어 {attr} 이벤트 핸들러가 주입됨 → Stored XSS"],
+                evidence=[_snip(f"{path}: <img {attr}=…> (avatar_url 속성 탈출)")],
             )
-            # A `javascript:` URI executes as inline script, so a CSP whose script-src
-            # (or default-src fallback) omits 'unsafe-inline' BLOCKS it in a compliant
-            # browser — the click-to-run vector is neutralized. Flagging it then as an
-            # unmitigated CRITICAL stored-XSS (−18, auto-runs on render) overstates a
-            # click-required, CSP-blocked defect. Only fail when the CSP does NOT stop it.
-            if href and not _csp_blocks_inline_script(udetail):
-                return result(
-                    check, cfg, score=cfg.get("score_stored_unescaped", 0), passed=False,
-                    reasons=[f"/posts/{upid}의 link_url이 javascript: href로 렌더됨 → 클릭형 저장 XSS"],
-                    evidence=[_snip(href.group(0))],
-                )
 
     note = "입력이 거부되어 저장 안됨" if rejected else "저장되었으나 출력 시 이스케이프됨"
     return result(check, cfg, score=cfg.get("score_escaped_or_rejected", 100), passed=True,
                   evidence=[_snip(f"XSS 방어됨 ({note}); {len(variants)}종 페이로드 검증")])
+
+
+class _EventHandlerAttrs(HTMLParser):
+    """Collect (tag, attribute) pairs whose name is an on* handler containing ``marker``."""
+
+    def __init__(self, marker: str):
+        super().__init__(convert_charrefs=True)
+        self.marker = marker
+        self.hits: List[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name.lower().startswith("on") and self.marker in (value or ""):
+                self.hits.append(name.lower())
+
+
+class _LiveScript(HTMLParser):
+    """Live script carriers holding ``marker``: a <script> element whose text has it,
+    or an on* event-handler attribute whose value has it. Escaped text never parses
+    into either, so a sanitized or escaped body is never a hit."""
+
+    def __init__(self, marker: str):
+        super().__init__(convert_charrefs=True)
+        self.marker = marker
+        self.hits: List[str] = []
+        self._in_script = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "script":
+            self._in_script = True
+        for name, value in attrs:
+            if name.lower().startswith("on") and self.marker in (value or ""):
+                self.hits.append(f"<{tag.lower()} {name.lower()}>")
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "script":
+            self._in_script = False
+
+    def handle_data(self, data):
+        if self._in_script and self.marker in data:
+            self.hits.append("<script>")
+
+
+def _markdown_raw_html(ctx, sess):
+    """Post a Markdown body whose blocks are raw HTML payloads and parse the detail
+    page. Returns (path, what runs, response, snippet) or None."""
+    marker = "md" + uuid.uuid4().hex[:10]
+    body = "\n\n".join([
+        f"**{marker}**",
+        f"<img src=x onerror=alert('{marker}')>",
+        f"<script>alert('{marker}')</script>",
+        f"<svg onload=alert('{marker}')></svg>",
+        f"text <img src=x onerror=alert('{marker}')> inline",
+    ])
+    pid = create_post_id(ctx, sess, "xssd-" + marker, body)
+    if pid is None:
+        return None
+    path = f"/posts/{pid}"
+    resp = ctx.get(sess, path, headers={"Accept": "text/html"})
+    if not _is_html_response(resp):
+        return None
+    text = _body_text(resp)
+    parser = _LiveScript(marker)
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:
+        return None
+    if not parser.hits:
+        return None
+    at = max(text.find(f"alert('{marker}')"), 0)
+    return path, parser.hits[0], resp, text[max(0, at - 60): at + 60]
+
+
+def _avatar_attribute_breakout(ctx, sess):
+    """Set avatar_url to ``x onerror=…`` and look for an injected on* attribute on
+    the owner's profile. Returns (path, attribute, response) or None."""
+    if ctx.userA is None or ctx.userA.user_id is None:
+        return None
+    marker = "xssattr" + uuid.uuid4().hex[:8]
+    ctx.post(sess, "/profile/avatar", {"avatar_url": f"x onerror=alert('{marker}')"})
+    path = f"/users/{ctx.userA.user_id}"
+    resp = ctx.get(sess, path, headers={"Accept": "text/html"})
+    if not _is_html_response(resp):
+        return None
+    parser = _EventHandlerAttrs(marker)
+    try:
+        parser.feed(_body_text(resp))
+    except Exception:
+        return None
+    return (path, parser.hits[0], resp) if parser.hits else None
 
 
 # ── reflected_xss  (dynamic) — payload echoed back in /search or error pages.
@@ -306,10 +404,10 @@ def dynamic_reflected_xss(check, ctx, cfg):
             if sig and sig in body:
                 at = body.find(sig)
                 return result(check, cfg, score=cfg.get("score_reflected", 0), passed=False,
-                              reasons=[f"{path} 응답에 입력 페이로드가 이스케이프 없이 반사됨 → 반사형 XSS (payload={sig!r})"],
+                              reasons=[f"{path} 응답에 입력 페이로드가 이스케이프 없이 반사됨 → Reflected XSS (payload={sig!r})"],
                               evidence=[_snip(f"{path}: …{body[max(0, at - 40): at + 100]}…")])
     return result(check, cfg, score=cfg.get("score_clean", 100), passed=True,
-                  evidence=[_snip(f"반사형 XSS 미검출; {len(variants)}종 페이로드 검증")])
+                  evidence=[_snip(f"Reflected XSS 미검출; {len(variants)}종 페이로드 검증")])
 
 
 # A payload is "unescaped" if its dangerous raw fragment survives verbatim in the
@@ -332,8 +430,8 @@ def _find_unescaped(body: str, variants: List[Tuple[str, str, str]]) -> Optional
 
 
 CHECKS = [
-    Check("xss_template", "XSS 템플릿", "static", check_xss_template),
-    Check("csp", "CSP(XSS 심층방어)", "static", check_csp),
-    Check("stored_xss", "저장형 XSS", "dynamic", dynamic_stored_xss),
-    Check("reflected_xss", "반사형 XSS", "dynamic", dynamic_reflected_xss),
+    Check("xss_template", "템플릿 autoescape", "static", check_xss_template),
+    Check("csp", "CSP", "static", check_csp),
+    Check("stored_xss", "Stored XSS", "dynamic", dynamic_stored_xss),
+    Check("reflected_xss", "Reflected XSS", "dynamic", dynamic_reflected_xss),
 ]

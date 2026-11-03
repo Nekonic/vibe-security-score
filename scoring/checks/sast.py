@@ -48,6 +48,6 @@ def _parse_semgrep(data: object) -> Tuple[List[str], List[str]]:
 
 
 CHECKS = [
-    Check("semgrep", "정적 룰셋(semgrep)", "static", check_semgrep,
+    Check("semgrep", "Semgrep", "static", check_semgrep,
           cfg_path="tools", report_only=True),
 ]

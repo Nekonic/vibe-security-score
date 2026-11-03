@@ -24,9 +24,6 @@ def build_report(submission_id: str, result: GradeResult, boot_log: str = "") ->
         "submission_id": submission_id,
         "final_score": round(float(result.score), 2),
         "raw_score": round(float(result.raw_score), 2),
-        "grade": result.grade,
-        "pass_fail": "PASS" if result.passed else "FAIL",
-        "passed": bool(result.passed),
         "capped": bool(result.capped),
         "cap_reason": result.cap_reason,
         "functional_failed": bool(result.functional_failed),
@@ -109,6 +106,7 @@ def grade_submission(
         try:
             checks = list(run_static(code_dir, cfg, on_check=_tick("static")))
             box = boot_future.result()  # boot_sandbox never raises (boot_failed flag)
+            box.raise_if_infra_error()  # docker failed, not the app: retry, don't score 0
             dyn_checks, functional_failed, boot_failed, boot_log = run_dynamic(
                 code_dir, cfg, on_check=_tick("dynamic"), box=box
             )

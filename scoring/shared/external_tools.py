@@ -10,7 +10,8 @@ import json
 import os
 import shutil
 import subprocess
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 from ..models import CheckResult
 
@@ -21,6 +22,8 @@ _SKIP_DEV = "검사 생략(--dev: 내장 검사 사용, 외부 도구 미실행)
 # External tools required in the DEFAULT (non-dev) mode. --dev uses the built-in
 # checks instead and does NOT require these.
 _REQUIRED_TOOLS = ("osv_scanner", "gitleaks", "semgrep", "sqlmap")
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _tool_cfg(config, name: str) -> dict:
@@ -47,7 +50,21 @@ def missing_required_tools(config) -> List[str]:
             missing.append(f"{binary}(비활성화)")
         elif bool(tcfg.get("enabled", False)) and not resolve_binary(binary):
             missing.append(binary)
+    db = osv_offline_db(config)
+    if bool(_tool_cfg(config, "osv_scanner").get("enabled", False)) and db \
+            and not os.path.isfile(os.path.join(db, "osv-scalibr", "PyPI", "all.zip")):
+        missing.append(f"osv-scanner 오프라인 DB {db}")
     return missing
+
+
+def osv_offline_db(config) -> Optional[str]:
+    """Absolute path of the local OSV database (``tools.osv_scanner.offline_db``);
+    None = query the online OSV API."""
+    d = _tool_cfg(config, "osv_scanner").get("offline_db")
+    if not d:
+        return None
+    p = Path(str(d))
+    return str(p if p.is_absolute() else _REPO_ROOT / p)
 
 
 def _gate(config, name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -90,12 +107,14 @@ def _skipped(check_id: str, label: str, tool: str, reason: str) -> CheckResult:
     )
 
 
-def _run_json(cmd: List[str], timeout: float, cwd: Optional[str] = None) -> Optional[object]:
+def _run_json(cmd: List[str], timeout: float, cwd: Optional[str] = None,
+              env: Optional[Dict[str, str]] = None) -> Optional[object]:
     """Run ``cmd`` and parse stdout as JSON. None on any failure. A non-zero exit
     is NOT an error as long as stdout parses (osv-scanner exits non-zero on finds)."""
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+            env={**os.environ, **env} if env else None,
         )
     except (OSError, subprocess.SubprocessError):
         return None

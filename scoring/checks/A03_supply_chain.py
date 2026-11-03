@@ -14,7 +14,8 @@ from typing import Dict, List, Optional, Tuple
 
 from ..models import CheckResult
 from ..shared.external_tools import (
-    _SKIP_DEV, _SKIP_DISABLED, _gate, _run_json, _skipped, _stub_command, _tool_cfg,
+    _gate, _run_json, _stub_command, _tool_cfg,
+    osv_offline_db,
 )
 from .base import Check
 
@@ -104,8 +105,8 @@ def _severity_penalties(cve_cfg: dict) -> dict:
     return {
         "critical": float(cve_cfg.get("penalty_critical", 40)),
         "high": float(cve_cfg.get("penalty_high", 25)),
-        "medium": float(cve_cfg.get("penalty_medium", 10)),
-        "low": float(cve_cfg.get("penalty_low", 3)),
+        "medium": float(cve_cfg.get("penalty_medium", 0)),
+        "low": float(cve_cfg.get("penalty_low", 0)),
     }
 
 
@@ -151,7 +152,7 @@ def _match_cve(requirements: List[Tuple[str, str]], dep_cfg: dict) -> CheckResul
         label="의존성 CVE",
         score=score,
         weight=float(dep_cfg.get("weight", 0)),
-        passed=not reasons,
+        passed=total_penalty <= 0,  # medium/low CVEs are listed, not deducted
         penalty_reasons=reasons,
         evidence=evidence,
     )
@@ -208,7 +209,7 @@ def check_typosquatting(requirements: List[Tuple[str, str]], dep_cfg: dict) -> C
         if best_dist is not None and 1 <= best_dist <= max_dist:
             total_penalty += penalty_per
             reasons.append(
-                f"{name} — 인기 패키지 '{best_name}'와 편집거리 {best_dist} (오타 스쿼팅 의심)"
+                f"{name} — 인기 패키지 '{best_name}'와 편집거리 {best_dist} (Typosquatting 의심)"
             )
             evidence.append(f"{name} ~ {best_name} (dist={best_dist})")
 
@@ -216,7 +217,7 @@ def check_typosquatting(requirements: List[Tuple[str, str]], dep_cfg: dict) -> C
     return CheckResult(
         check_id="typosquatting",
         category="static",
-        label="오타 스쿼팅",
+        label="Typosquatting",
         score=score,
         weight=float(dep_cfg.get("weight", 0)),
         passed=not reasons,
@@ -245,12 +246,12 @@ _SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 def _parse_osv_output(data: object) -> List[Tuple[str, str, str, str]]:
     """Extract (pkg, version, cve_id, severity) tuples from osv-scanner JSON.
 
-    De-duplicated by (package, advisory id): osv-scanner can list the same
-    advisory more than once (multiple lockfile entries, or a GHSA + its CVE
-    alias), and double-penalising one CVE is unfair/indefensible. Keeps the
-    highest severity seen for each (package, id)."""
-    seen: Dict[Tuple[str, str], Tuple[str, str, str, str]] = {}
-    order: List[Tuple[str, str]] = []
+    One entry per vulnerability per package: osv-scanner can list the same flaw
+    under several ids (a GHSA and its PYSEC/CVE aliases, or multiple lockfile
+    entries), and double-penalising one CVE is unfair/indefensible. Ids are merged
+    through ``aliases``; the first id seen is shown and the worst severity kept."""
+    out: List[Tuple[str, str, str, str]] = []
+    index: Dict[Tuple[str, str], int] = {}  # (package, any id/alias) -> out position
     if not isinstance(data, dict):
         return []
     for result in data.get("results", []) or []:
@@ -261,14 +262,17 @@ def _parse_osv_output(data: object) -> List[Tuple[str, str, str, str]]:
             for vuln in (pkg.get("vulnerabilities", []) or []):
                 cve_id = vuln.get("id", "UNKNOWN")
                 sev = _extract_osv_severity(vuln, pkg)
-                key = (name.lower(), cve_id)
-                prev = seen.get(key)
-                if prev is None:
-                    seen[key] = (name, version, cve_id, sev)
-                    order.append(key)
-                elif _SEV_RANK.get(sev, 1) > _SEV_RANK.get(prev[3], 1):
-                    seen[key] = (name, version, cve_id, sev)  # keep worst severity
-    return [seen[k] for k in order]
+                ids = [cve_id] + [a for a in (vuln.get("aliases") or []) if isinstance(a, str)]
+                keys = [(name.lower(), i) for i in ids]
+                pos = next((index[k] for k in keys if k in index), None)
+                if pos is None:
+                    pos = len(out)
+                    out.append((name, version, cve_id, sev))
+                elif _SEV_RANK.get(sev, 1) > _SEV_RANK.get(out[pos][3], 1):
+                    out[pos] = (name, version, out[pos][2], sev)  # keep worst severity
+                for k in keys:
+                    index.setdefault(k, pos)
+    return out
 
 
 def _extract_osv_severity(vuln: dict, pkg: dict) -> str:
@@ -327,12 +331,26 @@ def check_cve(
             "--format", "json",
             "--lockfile", f"requirements.txt:{requirements_path}",
         ]
-        data = _run_json(cmd, float(tcfg.get("timeout", 60)))
+        # A fixed local OSV database: same verdict for every grading, no network.
+        # --no-resolve: the lockfile is already the full resolved (pip freeze) list,
+        # and transitive resolution would otherwise still call deps.dev online.
+        db = osv_offline_db(config)
+        env = {"OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY": db} if db else None
+        if db:
+            cmd += ["--offline-vulnerabilities", "--no-resolve"]
+        data = _run_json(cmd, float(tcfg.get("timeout", 60)), env=env)
         result = _osv_result_from_data(data, dep_cfg)
         if result is not None:
             return result
+        # The installed scanner ran but produced nothing usable (offline / timeout).
+        # Fall back to the snapshot so one network blip can't fail a booth grading,
+        # but say so on the result — never a silent substitution.
+        fallback = _match_cve(requirements, dep_cfg)
+        fallback.tool = "osv-snapshot(fallback)"
+        fallback.evidence = ["osv-scanner 실행 결과를 얻지 못해 로컬 OSV 스냅샷으로 대체 판정"] + list(fallback.evidence)
+        return fallback
 
-    # Default / fallback: deterministic local snapshot (offline, reproducible).
+    # --dev / no requirements file: deterministic local snapshot (offline, reproducible).
     return _match_cve(requirements, dep_cfg)
 
 
@@ -359,68 +377,11 @@ def _osv_result_from_data(data: object, dep_cfg: dict) -> Optional[CheckResult]:
         label="의존성 CVE",
         score=score,
         weight=float(dep_cfg.get("weight", 0)),
-        passed=not reasons,
+        passed=total_penalty <= 0,  # medium/low CVEs are listed, not deducted
         penalty_reasons=reasons,
         evidence=evidence,
         tool="osv-scanner",
     )
-
-
-# PyPI existence — hallucinated-package check (opt-in, live network).
-def check_hallucinated_package(requirements: List[Tuple[str, str]], config) -> CheckResult:
-    tcfg = _tool_cfg(config, "hallucinated_package")
-    label = "존재하지 않는 패키지"
-    if not bool(tcfg.get("enabled", False)):
-        return _skipped("hallucinated_package", label, "pypi", _SKIP_DISABLED)
-    if getattr(config, "dev", False):
-        return _skipped("hallucinated_package", label, "pypi", _SKIP_DEV)
-
-    index_url = tcfg.get("index_url", "https://pypi.org/pypi/{package}/json")
-    timeout = float(tcfg.get("timeout", 8))
-    penalty_per_missing = float(tcfg.get("penalty_per_missing", 40))
-
-    missing = _find_missing_packages(requirements, index_url, timeout)
-    reasons = [f"{name} — PyPI에 존재하지 않는 패키지(환각 의심)" for name in missing]
-    evidence = list(missing)
-    score = max(0.0, 100.0 - penalty_per_missing * len(missing))
-    return CheckResult(
-        check_id="hallucinated_package",
-        category="static",
-        label=label,
-        score=score,
-        weight=0.0,
-        passed=not missing,
-        penalty_reasons=reasons,
-        evidence=evidence,
-        skipped=False,
-        tool="pypi",
-    )
-
-
-def _find_missing_packages(
-    requirements: List[Tuple[str, str]], index_url: str, timeout: float
-) -> List[str]:
-    import urllib.error
-    import urllib.request
-
-    missing: List[str] = []
-    seen: Dict[str, bool] = {}
-    for name, _version in requirements:
-        if not name or name in seen:
-            continue
-        seen[name] = True
-        url = index_url.format(package=name)
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as resp:
-                if getattr(resp, "status", 200) == 404:
-                    missing.append(name)
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                missing.append(name)
-        except (urllib.error.URLError, OSError):
-            # network failure => inconclusive, never penalize
-            continue
-    return missing
 
 
 # --- dependencies pool weight split (shared by static + dynamic CVE paths) ---
@@ -444,7 +405,7 @@ def dynamic_cve(box, config) -> CheckResult:
     if not requirements:
         result = _match_cve([], dep_cfg)
         result.tool = "pip-freeze"
-        result.label = "의존성 CVE(실측 전이 포함)"
+        result.label = "의존성 CVE"
         result.evidence = ["pip freeze 실패 → 정적 requirements 결과 유지"]
         return result
 
@@ -461,7 +422,7 @@ def dynamic_cve(box, config) -> CheckResult:
         except OSError:
             pass
     result.tool = "pip-freeze" if result.tool != "osv-scanner" else "osv-scanner+freeze"
-    result.label = "의존성 CVE(실측 전이 포함)"
+    result.label = "의존성 CVE"
     return result
 
 
@@ -480,13 +441,7 @@ def _typosquatting(check, sctx, cfg):
     return check_typosquatting(sctx.requirements, dep_cfg)
 
 
-def _hallucinated_package(check, sctx, cfg):
-    return check_hallucinated_package(sctx.requirements, sctx.config)
-
-
 CHECKS = [
     Check("cve", "의존성 CVE", "static", _cve),
-    Check("typosquatting", "오타 스쿼팅", "static", _typosquatting),
-    Check("hallucinated_package", "존재하지 않는 패키지", "static", _hallucinated_package,
-          report_only=True),
+    Check("typosquatting", "Typosquatting", "static", _typosquatting),
 ]

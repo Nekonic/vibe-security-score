@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<main><h1>관리자</h1>{% for u in users %}<p>{{u.id}} {{u.username}} {{u.phone}} {{u.is_admin}}</p>{% endfor %}</main>{% endblock %}

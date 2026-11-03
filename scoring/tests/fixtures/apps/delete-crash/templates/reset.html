@@ -1,0 +1,25 @@
+{#
+  GET /password/reset?token=. 폼은 POST /password/reset으로 token, new_password를 보낸다.
+  변수 token: 주소에 온 token. 없으면 직접 입력한다.
+#}
+{% extends "base.html" %}
+{% block title %}비밀번호 재설정{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <h1 class="h3 mb-3">비밀번호 재설정</h1>
+    <form action="/password/reset" method="post" class="card card-body">
+      {% include "_csrf.html" %}
+      <div class="mb-3">
+        <label class="form-label" for="token">재설정 토큰</label>
+        <input class="form-control" id="token" name="token" value="{{ token or '' }}" autocomplete="off" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="new_password">새 비밀번호</label>
+        <input class="form-control" id="new_password" name="new_password" type="password" autocomplete="new-password" required>
+      </div>
+      <button class="btn btn-primary w-100" type="submit">재설정</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

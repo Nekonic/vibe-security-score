@@ -37,7 +37,8 @@ def check_debug_true(check, sctx, cfg):
 # ── security_headers  (static) ─────────────────────────────────────────────
 _HEADERS = {
     "Content-Security-Policy": re.compile(r"""Content-Security-Policy|content_security_policy|['"]CSP['"]""", re.IGNORECASE),
-    "X-Frame-Options": re.compile(r"""X-Frame-Options|frame_options""", re.IGNORECASE),
+    # Anti-framing: X-Frame-Options or CSP frame-ancestors (ASVS 5.0 3.4.6 deems XFO obsolete).
+    "X-Frame-Options": re.compile(r"""X-Frame-Options|frame_options|frame-ancestors""", re.IGNORECASE),
     "Strict-Transport-Security": re.compile(r"""Strict-Transport-Security|strict_transport_security|\bhsts\b""", re.IGNORECASE),
     "X-Content-Type-Options": re.compile(r"""X-Content-Type-Options|content_type_options""", re.IGNORECASE),
 }
@@ -111,6 +112,6 @@ def dynamic_transport_security(check, ctx, cfg):
 CHECKS = [
     Check("debug_true", "디버그 모드", "static", check_debug_true),
     Check("security_headers", "보안 헤더", "static", check_security_headers),
-    Check("transport_security", "전송/응답 보안(헤더·쿠키 플래그)", "dynamic",
+    Check("transport_security", "전송 보안", "dynamic",
           dynamic_transport_security),
 ]

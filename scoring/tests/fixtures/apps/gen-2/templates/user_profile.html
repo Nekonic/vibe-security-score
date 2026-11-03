@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{{ user.username }} 님의 프로필</h2>
+{% if user.avatar_url %}
+  <img src="{{ user.avatar_url }}" alt="avatar">
+{% endif %}
+{% if user.phone %}<p>전화번호: {{ user.phone }}</p>{% endif %}
+<h3>작성 글</h3>
+<ul>
+{% for p in user.posts %}
+  <li><a href="/posts/{{ p.id }}">{{ p.title }}</a></li>
+{% else %}
+  <li>작성 글이 없습니다.</li>
+{% endfor %}
+</ul>
+{% endblock %}

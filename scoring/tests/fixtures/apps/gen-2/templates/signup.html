@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>회원가입</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" action="/signup">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <label>사용자명</label>
+  <input name="username" required />
+  <label>전화번호</label>
+  <input name="phone" placeholder="01012345678" required />
+  <label>비밀번호 (8자 이상, 숫자+영문)</label>
+  <input type="password" name="password" required />
+  <button type="submit">가입</button>
+</form>
+<p><a href="/login">로그인</a></p>
+{% endblock %}

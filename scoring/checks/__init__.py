@@ -11,25 +11,33 @@ from typing import List
 
 from . import (
     A01_broken_access_control, A02_security_misconfiguration, A03_supply_chain,
-    A04_cryptographic_failures, A05_injection_sql, A05_injection_xss,
-    A06_insecure_design, A07_authentication_failures, A08_integrity_failures,
+    A04_cryptographic_failures, A05_injection_csv, A05_injection_sql, A05_injection_xss,
+    A06_insecure_design, A07_account_recovery, A07_authentication_failures, A07_reset_link,
+    A08_integrity_failures,
     A09_logging_failures, A10_exceptional_conditions, sast,
 )
 from .base import Check
 
 CHECKS: List[Check] = [
+    # First after functional: the reset-token takeover needs writes that a locked-up
+    # app refuses later in the run.
+    *A07_account_recovery.EARLY,
+    # The reset-link Host check signs up a fresh account and resets its password:
+    # early for the same reason.
+    *A07_reset_link.CHECKS,
     *A01_broken_access_control.CHECKS,
     *A02_security_misconfiguration.CHECKS,
     *A03_supply_chain.CHECKS,
     *A04_cryptographic_failures.CHECKS,
     *A05_injection_sql.CHECKS,
     *A05_injection_xss.CHECKS,
-    *A06_insecure_design.CHECKS,
+    *A05_injection_csv.CHECKS,
     *A07_authentication_failures.CHECKS,
     *A08_integrity_failures.CHECKS,
     *A09_logging_failures.CHECKS,
     *A10_exceptional_conditions.CHECKS,
     *sast.CHECKS,
+    *A06_insecure_design.CHECKS,
 ]
 
 

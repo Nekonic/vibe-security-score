@@ -19,16 +19,23 @@ class CheckResult:
     # Skipped checks are excluded from aggregation (must not affect the score).
     skipped: bool = False
     tool: str = ""
+    # A failure the attack did not prove (e.g. a leaked reset token that did not
+    # take the account over): costs category points, never a critical penalty.
+    unproven: bool = False
     # OWASP Top 10 tag (e.g. "A01"); informational metadata, not aggregation.
     owasp: str = ""
     # Human label of the rubric category this check aggregates into (for UI).
     category_label: str = ""
+    # The category's share of the final score (0..1, renormalized over scored
+    # categories) — lets the UI show real points lost without re-reading config.
+    category_weight: float = 0.0
 
     def to_dict(self) -> dict:
         return {
             "check_id": self.check_id,
             "category": self.category,
             "category_label": self.category_label,
+            "category_weight": round(float(self.category_weight), 6),
             "label": self.label,
             "score": round(float(self.score), 2),
             "weight": float(self.weight),
@@ -36,6 +43,7 @@ class CheckResult:
             "penalty_reasons": list(self.penalty_reasons),
             "evidence": list(self.evidence),
             "skipped": bool(self.skipped),
+            "unproven": bool(self.unproven),
             "tool": self.tool,
             "owasp": self.owasp,
         }
@@ -85,11 +93,9 @@ class CriticalPenalty:
 @dataclass
 class GradeResult:
     score: float
-    grade: str
     categories: List[CategoryResult] = field(default_factory=list)
     capped: bool = False
     cap_reason: str = ""
-    passed: bool = False
     functional_failed: bool = False
     boot_failed: bool = False
     # Weighted category score BEFORE critical penalties (for transparency in UI).
@@ -100,8 +106,6 @@ class GradeResult:
         return {
             "score": round(float(self.score), 2),
             "raw_score": round(float(self.raw_score), 2),
-            "grade": self.grade,
-            "passed": bool(self.passed),
             "capped": bool(self.capped),
             "cap_reason": self.cap_reason,
             "functional_failed": bool(self.functional_failed),
@@ -114,47 +118,58 @@ class GradeResult:
 # OWASP Top 10:2025 tagging. ``check_id`` -> family code, stamped onto each
 # finding for reporting only (never affects aggregation). Single source of truth.
 OWASP_BY_CHECK: Dict[str, str] = {
-    # A01 Broken Access Control (SSRF folded in for 2025)
+    # Placed by each check's CWE in the official 2025 "List of Mapped CWEs".
+    # A01 Broken Access Control (CWE-639/862/352/918)
     "idor_profile": "A01",
     "access_control_admin": "A01",
-    "privilege_escalation": "A01",
     "admin_user_mgmt": "A01",
     "csrf_protection": "A01",
     "ssrf": "A01",
-    # A02 Security Misconfiguration
+    "open_redirect": "A01",
+    "private_post_access": "A01",
+    # A02 Security Misconfiguration (CWE-489/614/1004; missing security headers)
     "debug_true": "A02",
+    "cookie_flags": "A02",
     "security_headers": "A02",
+    "csp": "A02",
     "transport_security": "A02",
     # A03 Software Supply Chain Failures
     "cve": "A03",
     "typosquatting": "A03",
-    "hallucinated_package": "A03",
-    # A04 Cryptographic Failures
+    # A04 Cryptographic Failures (CWE-321/330/916)
     "hardcoded_secret": "A04",
     "weak_default_secret": "A04",
     "session_forgery": "A04",
     "password_hashing": "A04",
-    "cookie_flags": "A04",
     "gitleaks_secrets": "A04",
     # A05 Injection
     "sql_parameterization": "A05",
     "xss_template": "A05",
-    "csp": "A05",
     "sqli": "A05",
     "stored_xss": "A05",
     "reflected_xss": "A05",
-    # A06 Insecure Design
-    "rate_limiting": "A06",
-    # A07 Authentication Failures
+    "csv_injection": "A05",
+    # A06 Insecure Design (CWE-434)
+    "unrestricted_upload": "A06",
+    # A07 Authentication Failures (CWE-307/1392/521/613)
     "functional": "A07",
+    "rate_limiting": "A07",
+    "default_credentials": "A07",
     "weak_password_policy": "A07",
+    "session_timeout": "A07",
     "auth_session_management": "A07",
-    # A08 Software or Data Integrity Failures
+    "otp_bruteforce": "A07",
+    "reset_enumeration": "A07",
+    "reset_token_leak": "A07",
+    "otp_bypass": "A07",
+    "stale_session_reuse": "A07",
+    "reset_host_poisoning": "A07",
+    # A08 Software or Data Integrity Failures (CWE-915 mass assignment, CWE-502)
+    "privilege_escalation": "A08",
     "insecure_deserialization": "A08",
-    "unrestricted_upload": "A08",
     # A09 Security Logging and Alerting Failures
     "security_logging": "A09",
-    # A10 Mishandling of Exceptional Conditions
+    # A10 Mishandling of Exceptional Conditions (CWE-209)
     "verbose_errors": "A10",
     # General SAST — no single OWASP category.
     "semgrep": "",

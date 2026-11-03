@@ -1,0 +1,30 @@
+{#
+  GET /admin. 관리자 첫 화면.
+  변수
+    user_count  전체 사용자 수
+    post_count  전체 글 수
+  누가 이 화면을 볼 수 있는지는 app.py가 정한다.
+#}
+{% extends "base.html" %}
+{% block title %}관리자{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">관리자</h1>
+<div class="row g-3 mb-4">
+  <div class="col-sm-6">
+    <div class="card card-body">
+      <div class="text-body-secondary small">사용자</div>
+      <div class="fs-3 fw-semibold">{{ user_count }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6">
+    <div class="card card-body">
+      <div class="text-body-secondary small">글</div>
+      <div class="fs-3 fw-semibold">{{ post_count }}</div>
+    </div>
+  </div>
+</div>
+<div class="d-flex gap-2">
+  <a class="btn btn-primary" href="/admin/users">사용자 관리</a>
+  <a class="btn btn-outline-secondary" href="/admin/users.csv">CSV 다운로드</a>
+</div>
+{% endblock %}

@@ -35,6 +35,13 @@ def _assign_categories(checks: List[CheckResult], config: Config) -> None:
         c.category_label = labels.get(name, name)
 
 
+def _has_scored(checks: List[CheckResult]) -> bool:
+    """A category scores only when it holds a decided check with weight > 0. A
+    category whose checks are all report-only (weight 0) has no real score: the
+    unweighted fallback in ``_weighted_avg`` must never stand in for one."""
+    return any(not c.skipped and c.weight > 0 for c in checks)
+
+
 def _weighted_avg(checks: List[CheckResult]) -> float:
     scored = [c for c in checks if not c.skipped]
     total_w = sum(c.weight for c in scored)
@@ -51,8 +58,8 @@ def _apply_critical_penalties(
     A critical is an app-wide-exploitable defect (RCE / auth-bypass / injection):
     it must dominate rather than be averaged away, so it comes off the FINAL score.
     Each carries severity + repro (from config) plus the check's own live evidence
-    so the deduction is defensible. session_forgery, when it live-confirms, is
-    folded into weak_default_secret's evidence (no separate/double penalty)."""
+    so the deduction is defensible. A secret counts only through session_forgery:
+    the live forgery with a public weak-key list is the critical itself."""
     crit = config.get("critical", {}) or {}
     penalties: Dict[str, float] = {
         str(k): float(v) for k, v in (crit.get("penalties", {}) or {}).items()
@@ -61,26 +68,14 @@ def _apply_critical_penalties(
     repro = crit.get("repro", {}) or {}
     by_id = {c.check_id: c for c in checks}
 
-    sf = by_id.get("session_forgery")
-    sf_confirmed = sf is not None and not sf.skipped and not sf.passed
-
     total = 0.0
     out: List[CriticalPenalty] = []
     for cid, pts in penalties.items():
         c = by_id.get(cid)
-        if c is None or c.skipped or c.passed or pts <= 0:
-            continue
-        # hardcoded_secret is critical ONLY when the live session-forgery PoC proves
-        # the key is exploitable (forged an admin session). A hardcoded-but-not-
-        # forgeable key stays a minor static finding — no critical.
-        if cid == "hardcoded_secret" and not sf_confirmed:
+        if c is None or c.skipped or c.passed or c.unproven or pts <= 0:
             continue
         reasons = list(c.penalty_reasons)
         evidence = list(c.evidence)
-        # Fold the live forge PoC into the secret finding that caused it.
-        if cid in ("weak_default_secret", "hardcoded_secret") and sf_confirmed:
-            reasons = reasons + list(sf.penalty_reasons)
-            evidence = evidence + sf.evidence
         total += pts
         out.append(
             CriticalPenalty(
@@ -90,13 +85,6 @@ def _apply_critical_penalties(
             )
         )
     return total, out
-
-
-def _pass_threshold(config: Config) -> float:
-    # Lowest passing score = smallest grade min > 0 (min-0 grade is the fail bucket).
-    mins = [float(g.get("min", 0)) for g in (config.get("grades", []) or [])]
-    positives = [m for m in mins if m > 0]
-    return min(positives) if positives else 60.0
 
 
 def combine_scores(
@@ -128,14 +116,20 @@ def combine_scores(
         )
 
     # Renormalize over present categories so a static-only run scores on static alone.
-    present_weight = sum(cat.weight for cat in categories)
+    # A category whose checks were all skipped has no score, so it must not count.
+    present_weight = sum(cat.weight for cat in categories if _has_scored(cat.checks))
+    for cat in categories:
+        share = cat.weight / present_weight if present_weight > 0 and _has_scored(cat.checks) else 0.0
+        for c in cat.checks:
+            c.category_weight = share
     if present_weight <= 0:
-        final = (
-            sum(cat.score for cat in categories) / len(categories)
-            if categories else 0.0
-        )
+        # Nothing weighted was decided: no score to average. Report-only and
+        # weight-0 categories must not turn into one.
+        final = 0.0
     else:
-        final = sum(cat.score * cat.weight for cat in categories) / present_weight
+        final = sum(
+            cat.score * cat.weight for cat in categories if _has_scored(cat.checks)
+        ) / present_weight
 
     raw_score = final
 
@@ -160,19 +154,11 @@ def combine_scores(
             capped = True
             cap_reason = f"기능 게이트 실패로 최종 점수 {cap} 상한 적용"
 
-    grade = config.grade_for(final)
-    passed = (
-        not boot_failed
-        and not functional_failed
-        and final >= _pass_threshold(config)
-    )
     return GradeResult(
         score=final,
-        grade=grade,
         categories=categories,
         capped=capped,
         cap_reason=cap_reason,
-        passed=passed,
         functional_failed=functional_failed,
         boot_failed=boot_failed,
         raw_score=raw_score,

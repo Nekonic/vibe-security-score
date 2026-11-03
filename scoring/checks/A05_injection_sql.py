@@ -7,6 +7,7 @@ is NOT a fallback for an absent tool (sqlmap that cannot run hard-fails; see
 """
 from __future__ import annotations
 
+import ast
 import re
 import uuid
 from typing import Any, Dict, List, Optional
@@ -35,12 +36,15 @@ def check_sql_parameterization(check, sctx, cfg):
     reasons: List[str] = []
     evidence: List[str] = []
     for path, text in sctx.sources:
+        consts = _ConstQuery.parse(text)
         for m in _EXEC_CALL.finditer(text):
             open_idx = text.index("(", m.end() - 1)
             arg = _balanced_arg(text, open_idx)
             lineno = text.count("\n", 0, m.start()) + 1
             # Only the query (first arg) can carry injection; bound params are safe.
-            if _is_string_built_sql(_first_call_arg(arg)):
+            query = _first_call_arg(arg)
+            if _is_string_built_sql(query, has_params=_has_params(arg, query)) \
+                    and not (consts and consts.constant_query(text, m.end(1))):
                 reasons.append(f"{path}:{lineno} 문자열 조합 SQL을 execute()에 전달")
                 evidence.append(f"{path}:{lineno}: {arg.strip()[:160]}")
 
@@ -49,33 +53,342 @@ def check_sql_parameterization(check, sctx, cfg):
 
 
 _STRUCTURAL_BEFORE = re.compile(r"""(order\s+by|group\s+by)\s*$""", re.IGNORECASE)
+# Names apps give to assembled SQL FRAGMENTS (a WHERE built from fixed `col = ?` pieces,
+# a whitelisted sort, a column list). Only trusted when the values are bound
+# separately (has_params) — the fragment then carries no user value.
+_FRAGMENT_NAME = re.compile(
+    r"""^(?:where|where_sql|where_clause|clause|clauses|cond|conds|condition|conditions|"""
+    r"""filters?|order|order_by|orderby|sort|sort_sql|cols|columns|fields|placeholders|sets?|set_clause)$""",
+    re.IGNORECASE)
 
 
-def _is_string_built_sql(arg: str) -> bool:
-    """True when the execute() argument is a string assembled from an f-string,
-    ``%`` formatting, ``+`` concatenation, or ``.format(...)``."""
+def _has_params(call_args: str, query: str) -> bool:
+    """execute(query, params): a second argument carries the bound values."""
+    q = query.strip()
+    idx = call_args.find(q)
+    if not q or idx < 0:
+        return False
+    rest = call_args[idx + len(q):].strip().rstrip(")").strip()
+    return rest.startswith(",") and bool(rest[1:].strip())
+
+
+def _structural(expr: str, before: str, has_params: bool) -> bool:
+    """A non-literal piece of the query that cannot carry an injected VALUE: an
+    identifier after ORDER/GROUP BY, a column-list join, or a named SQL fragment
+    whose values are bound separately."""
+    expr = expr.strip()
+    if ".join(" in expr or _STRUCTURAL_BEFORE.search(before.rstrip()):
+        return True
+    return has_params and bool(_FRAGMENT_NAME.match(expr))
+
+
+def _concat_parts(arg: str) -> List[str]:
+    """Split a query expression on top-level ``+`` (outside quotes/brackets)."""
+    parts, buf, depth, quote = [], [], 0, ""
+    for ch in arg:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "+" and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+_LITERAL = re.compile(r"""^\s*[rbu]?(['"])(.*)\1\s*$""", re.IGNORECASE | re.DOTALL)
+
+
+def _is_string_built_sql(arg: str, has_params: bool = False) -> bool:
+    """True when the execute() query is assembled with a user VALUE spliced in via an
+    f-string, ``%`` formatting, ``+`` concatenation, or ``.format(...)``. Structural
+    pieces (identifier after ORDER/GROUP BY, column lists, named fragments with bound
+    params) are not injection points — even a whitelisted sort MUST be spliced, and
+    real injection there is caught authoritatively by the dynamic ``/posts?sort=`` probe."""
     if re.search(r"""f['"]""", arg):
-        # Flag only VALUE interpolation. Two interpolations are structural, not
-        # injection, because they land where ``?`` binding is impossible:
-        #   * ``{', '.join(cols)}`` — a column / ``SET a=?, b=?`` list (values still bound).
-        #   * ``ORDER BY {expr}`` / ``GROUP BY {expr}`` — an identifier position; even the
-        #     secure (whitelisted) sort MUST f-string it. Real ORDER BY injection is caught
-        #     authoritatively by the dynamic ``/posts?sort=`` probe, so flagging it here would
-        #     only false-positive on the safe whitelist pattern.
-        # Any OTHER brace (e.g. f"... = '{q}'") is a value interpolation → risky.
         for m in re.finditer(r"\{([^{}]+)\}", arg):
-            if ".join(" in m.group(1):
-                continue
-            if _STRUCTURAL_BEFORE.search(arg[:m.start()].rstrip()):
-                continue
-            return True
+            if not _structural(m.group(1), arg[:m.start()], has_params):
+                return True
     if re.search(r"""['"][^'"]*['"]\s*\.\s*format\s*\(""", arg, re.DOTALL):
         return True
     if re.search(r"""['"][^'"]*['"]\s*%\s*[\(\w]""", arg, re.DOTALL):
         return True
-    if re.search(r"""['"][^'"]*['"]\s*\+|\+\s*['"][^'"]*['"]""", arg, re.DOTALL):
-        return True
+    parts = _concat_parts(arg)
+    if len(parts) > 1:
+        before = ""
+        for part in parts:
+            lit = _LITERAL.match(part)
+            if lit:
+                before += lit.group(2)
+            elif not _structural(part, before, has_params):
+                return True
+            else:
+                before += " ? "
     return False
+
+
+class _Unpacked(ast.AST):
+    """Element ``index`` of ``value``: ``clause, args = visible_clause()``."""
+    _fields = ("value",)
+
+    def __init__(self, value: ast.AST, index: int):
+        super().__init__()
+        self.value, self.index = value, index
+
+
+def _unpacked(target, name: str, value: ast.AST) -> Optional[ast.AST]:
+    """A flat tuple target binding ``name``: its element of ``value``, else None."""
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for i, t in enumerate(target.elts):
+            if isinstance(t, ast.Name) and t.id == name:
+                return _Unpacked(value, i)
+    return None
+
+
+class _ConstQuery:
+    """Second opinion on a query the text heuristics flag: proves with the AST that
+    every piece of it comes from string literals. A base query kept in a variable and
+    grown with fixed `+=` fragments, passed in from call sites that all pass literals,
+    returned by a helper, or picked from a literal whitelist (a dict lookup, a
+    conditional between literals) carries no user value. Anything it cannot resolve
+    stays flagged."""
+
+    _SAFE_METHODS = {"strip", "lstrip", "rstrip", "upper", "lower"}
+    _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    def __init__(self, tree: ast.Module):
+        self.tree = tree
+        self.parent: Dict[ast.AST, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                self.parent[child] = node
+        self.funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, self._FUNCS)}
+
+    @classmethod
+    def parse(cls, text: str) -> Optional["_ConstQuery"]:
+        try:
+            return cls(ast.parse(text))
+        except (SyntaxError, ValueError):
+            return None
+
+    def constant_query(self, text: str, attr_end: int) -> bool:
+        """Whether the execute() call whose attribute name ends at char offset
+        ``attr_end`` gets a query made only of literals."""
+        line = text.count("\n", 0, attr_end) + 1
+        col = len(text[text.rfind("\n", 0, attr_end) + 1:attr_end].encode("utf-8"))
+        for node in ast.walk(self.tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.end_lineno == line and node.func.end_col_offset == col):
+                return bool(node.args) and self._safe(node.args[0], self._scope(node), frozenset())
+        return False
+
+    def _scope(self, node: ast.AST) -> ast.AST:
+        while node in self.parent:
+            node = self.parent[node]
+            if isinstance(node, self._FUNCS):
+                return node
+        return self.tree
+
+    def _safe(self, node, scope, seen) -> bool:
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.JoinedStr):
+            return all(isinstance(v, ast.Constant) or self._safe(v.value, scope, seen)
+                       for v in node.values)
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Mult):  # "?," * len(ids)
+                return self._safe(node.left, scope, seen) or self._safe(node.right, scope, seen)
+            if isinstance(node.op, (ast.Add, ast.Mod)):
+                return self._safe(node.left, scope, seen) and self._safe(node.right, scope, seen)
+            return False
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return all(self._safe(e, scope, seen) for e in node.elts)
+        if isinstance(node, (ast.ListComp, ast.GeneratorExp, ast.SetComp)):
+            return self._safe(node.elt, scope, seen)
+        if isinstance(node, ast.Dict):
+            return all(v is not None and self._safe(v, scope, seen) for v in node.values)
+        if isinstance(node, ast.IfExp):
+            return self._safe(node.body, scope, seen) and self._safe(node.orelse, scope, seen)
+        if isinstance(node, ast.BoolOp):
+            return all(self._safe(v, scope, seen) for v in node.values)
+        if isinstance(node, ast.Subscript):  # {"title": "title ASC"}[key]
+            return self._whitelist(node.value, scope, seen)
+        if isinstance(node, ast.Call):
+            return self._safe_call(node, scope, seen)
+        if isinstance(node, ast.Name):
+            return self._safe_name(node.id, scope, seen)
+        if isinstance(node, _Unpacked):
+            return self._safe_element(node, scope, seen)
+        return False
+
+    def _safe_element(self, node: "_Unpacked", scope, seen) -> bool:
+        """A tuple literal's element, or that element of every tuple a local helper
+        returns."""
+        v, i = node.value, node.index
+
+        def elements(expr) -> Optional[List[ast.AST]]:
+            """Element ``i`` of each tuple ``expr`` can be (a conditional picks one)."""
+            if isinstance(expr, (ast.Tuple, ast.List)):
+                return [expr.elts[i]] if i < len(expr.elts) else None
+            if isinstance(expr, ast.IfExp):
+                a, b = elements(expr.body), elements(expr.orelse)
+                return a + b if a is not None and b is not None else None
+            return None
+
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id in self.funcs:
+            key = ("ret", v.func.id, i)
+            if key in seen:
+                return True
+            fn = self.funcs[v.func.id]
+            found = [elements(n.value) for n in ast.walk(fn) if isinstance(n, ast.Return)]
+            return bool(found) and all(e is not None and all(self._safe(x, fn, seen | {key}) for x in e)
+                                       for e in found)
+        found = elements(v)
+        return found is not None and all(self._safe(x, scope, seen) for x in found)
+
+    def _whitelist(self, node, scope, seen) -> bool:
+        """A dict whose values are all literals, inline or held in a name."""
+        if isinstance(node, ast.Dict):
+            return self._safe(node, scope, seen)
+        if isinstance(node, ast.Name):
+            values = self._assigned(node.id, scope)
+            if values is None and scope is not self.tree:
+                values = self._assigned(node.id, self.tree)
+            return bool(values) and all(isinstance(v, ast.Dict) and self._safe(v, scope, seen)
+                                        for v in values)
+        return False
+
+    def _safe_call(self, node: ast.Call, scope, seen) -> bool:
+        f = node.func
+        if isinstance(f, ast.Attribute):
+            if f.attr == "get" and node.args:  # whitelist.get(key, default)
+                return (self._whitelist(f.value, scope, seen)
+                        and all(self._safe(a, scope, seen) for a in node.args[1:]))
+            if f.attr == "join" and len(node.args) == 1:
+                return self._safe(f.value, scope, seen) and self._safe(node.args[0], scope, seen)
+            if f.attr == "format":
+                return (self._safe(f.value, scope, seen)
+                        and all(self._safe(a, scope, seen) for a in node.args)
+                        and all(self._safe(k.value, scope, seen) for k in node.keywords))
+            if f.attr in self._SAFE_METHODS and not node.args:
+                return self._safe(f.value, scope, seen)
+            return False
+        if isinstance(f, ast.Name) and f.id in ("int", "float", "len") and f.id not in self.funcs:
+            return True  # a number carries no SQL: f"... author_id={int(u['id'])}"
+        if isinstance(f, ast.Name) and f.id in self.funcs:  # a helper returning SQL
+            key = ("ret", f.id)
+            if key in seen:
+                return True
+            fn = self.funcs[f.id]
+            rets = [n.value for n in ast.walk(fn) if isinstance(n, ast.Return)]
+            return bool(rets) and all(r is not None and self._safe(r, fn, seen | {key}) for r in rets)
+        return False
+
+    def _assigned(self, name: str, scope) -> Optional[List[Optional[ast.AST]]]:
+        """Every value ``name`` takes in ``scope``: assignments, augmented ones and
+        list appends; None for one that can't be known (loop/with target, unpacking).
+        None overall when ``name`` is never bound there."""
+        nodes = [n for stmt in scope.body for n in ast.walk(stmt)]
+        if scope is self.tree:  # module level only, not inside defs
+            nodes = [n for n in nodes if self._scope(n) is scope]
+        values: List[Optional[ast.AST]] = []
+        bound = False
+
+        def binds(target) -> bool:
+            return any(isinstance(t, ast.Name) and t.id == name for t in ast.walk(target))
+
+        for n in nodes:
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name) and t.id == name:
+                        values.append(n.value)
+                        bound = True
+                    elif binds(t) and not isinstance(t, (ast.Attribute, ast.Subscript)):
+                        values.append(_unpacked(t, name, n.value))
+                        bound = True
+            elif isinstance(n, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr)):
+                if isinstance(n.target, ast.Name) and n.target.id == name:
+                    values.append(n.value)
+                    bound = True
+            elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if binds(n.target):
+                    values.append(None)
+                    bound = True
+            elif isinstance(n, ast.withitem):
+                if n.optional_vars is not None and binds(n.optional_vars):
+                    values.append(None)
+                    bound = True
+            elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                  and isinstance(n.func.value, ast.Name) and n.func.value.id == name
+                  and n.func.attr in ("append", "extend", "insert")):
+                values.append(n.args[-1] if n.args else None)
+                bound = True
+        return values if bound else None
+
+    def _safe_name(self, name: str, scope, seen) -> bool:
+        key = (id(scope), name)
+        if key in seen:
+            return True  # `sql = sql + " ..."`: the other bindings decide
+        seen = seen | {key}
+        values = self._assigned(name, scope)
+        param = self._param(scope, name)
+        if values is None and param is None:
+            return scope is not self.tree and self._safe_name(name, self.tree, seen)
+        if param is not None and not self._safe_param(scope, name, param, seen):
+            return False
+        return all(v is not None and self._safe(v, scope, seen) for v in values or [])
+
+    def _param(self, scope, name: str):
+        """(position, default) of parameter ``name``; position None for keyword-only."""
+        if not isinstance(scope, self._FUNCS):
+            return None
+        a = scope.args
+        pos = [*a.posonlyargs, *a.args]
+        first_default = len(pos) - len(a.defaults)
+        for i, p in enumerate(pos):
+            if p.arg == name:
+                return i, (a.defaults[i - first_default] if i >= first_default else None)
+        for p, dflt in zip(a.kwonlyargs, a.kw_defaults):
+            if p.arg == name:
+                return None, dflt
+        if (a.vararg and a.vararg.arg == name) or (a.kwarg and a.kwarg.arg == name):
+            return -1, None
+        return None
+
+    def _safe_param(self, fn, name: str, param, seen) -> bool:
+        """A parameter is literal when its default is and every call site passes a
+        literal. A view nobody calls (its values come from the URL) has no call site,
+        so it stays unproven."""
+        pos, default = param
+        if pos == -1:
+            return False
+        calls = [n for n in ast.walk(self.tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == fn.name]
+        if not calls or (default is not None and not self._safe(default, fn, seen)):
+            return False
+        for c in calls:
+            if any(isinstance(a, ast.Starred) for a in c.args) or any(k.arg is None for k in c.keywords):
+                return False
+            given = next((k.value for k in c.keywords if k.arg == name), None)
+            if given is None and pos is not None and pos < len(c.args):
+                given = c.args[pos]
+            if given is None:
+                if default is None:
+                    return False
+                continue
+            if not self._safe(given, self._scope(c), seen):
+                return False
+        return True
 
 
 # sqli (dynamic). Opts out of standard handling (standard=False in CHECKS): outside
@@ -112,7 +425,7 @@ def _has_sql_error(resp: Optional[requests.Response]) -> bool:
     return any(sign in low for sign in _SQL_ERROR_SIGNS)
 
 
-_SQLI_LABEL = "SQL 인젝션(/search, /posts sort)"
+_SQLI_LABEL = "SQL Injection"
 
 
 def dynamic_sqli(ctx: DynamicContext, cfg: Dict[str, Any]) -> CheckResult:
@@ -236,7 +549,7 @@ def _sqli_builtin_oracle(
             return CheckResult(
                 check_id="sqli", category="dynamic", label=label,
                 score=float(cfg.get("score_error_leak", 40)), weight=weight, passed=False,
-                penalty_reasons=["완전한 인젝션은 아니나 SQL 오류/스택트레이스가 응답에 노출됨"],
+                penalty_reasons=["완전한 인젝션은 아니나 SQL 오류/Stack Trace가 응답에 노출됨"],
                 evidence=evidence, tool=tool,
             )
         return CheckResult(
@@ -251,7 +564,7 @@ def _sqli_builtin_oracle(
 
 
 CHECKS = [
-    Check("sql_parameterization", "SQL 파라미터화", "static",
+    Check("sql_parameterization", "Parameterized Query", "static",
           check_sql_parameterization),
     # standard=False: outside --dev this probe RAISES when sqlmap can't run, and that
     # hard-fail must propagate — the runner would otherwise wrap it into a skip.

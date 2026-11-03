@@ -44,16 +44,17 @@ def resolve_cfg(config, check: Check) -> dict:
 
 
 def result(check: Check, cfg: dict, *, score, passed, reasons=(), evidence=(),
-           tool: str = "", weight=None) -> CheckResult:
+           tool: str = "", weight=None, unproven: bool = False) -> CheckResult:
     """A decided verdict. Identity comes from ``check``; ``category`` is the phase.
     ``weight`` defaults to ``cfg['weight']`` (0 for report-only) — pass it only to
-    override (e.g. a fixed score band)."""
+    override (e.g. a fixed score band). ``unproven`` marks a failure the attack did not
+    prove, which never counts as a critical."""
     return CheckResult(
         check_id=check.id, category=check.phase, label=check.label,
         score=_clamp(float(score)),
         weight=_weight(check, cfg, weight),
         passed=passed, penalty_reasons=list(reasons),
-        evidence=list(evidence), tool=tool,
+        evidence=list(evidence), tool=tool, unproven=unproven,
     )
 
 

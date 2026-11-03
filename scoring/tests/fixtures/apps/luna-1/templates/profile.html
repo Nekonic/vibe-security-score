@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block body %}<h1>{{profile.username}}</h1>{% if profile.avatar_url %}<img src="{{profile.avatar_url}}">{% endif %}{% if show_phone %}<p>전화: {{profile.phone}}</p>{% endif %}<h2>작성 글</h2>{% for p in posts %}<p><a href="/posts/{{p.id}}">{{p.title}}</a></p>{% endfor %}{% endblock %}

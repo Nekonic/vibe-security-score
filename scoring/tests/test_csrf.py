@@ -100,3 +100,17 @@ def test_post_with_csrf_adopts_reseeded_token():
     )
     assert r is not None and r.status_code == 200
     assert box["tok"] == "FRESH"
+
+
+# ---- probes and the contract send the same token headers ------------------
+def test_send_post_carries_both_header_spellings():
+    # Flask-WTF reads X-CSRFToken. The contract client sends it, so the probes must
+    # too, or an app that passes the contract 403s every probe POST.
+    seen = {}
+
+    def post(url, json=None, data=None, headers=None):
+        seen.update(headers or {})
+        return _Resp(200 if (headers or {}).get("X-CSRFToken") == "T" else 403)
+
+    assert csrf.send_post(post, "/posts", {"title": "x"}, "T").status_code == 200
+    assert set(seen) == set(csrf.CSRF_HEADERS)

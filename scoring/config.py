@@ -1,8 +1,10 @@
 """Config loader — reads config/scoring.yaml, the single source of tunables."""
 from __future__ import annotations
 
+import copy
 import os
-from typing import Any, Dict, List, Tuple
+import threading
+from typing import Any, Dict, Tuple
 
 import yaml
 
@@ -18,7 +20,6 @@ class Config:
         # Default False => require and run the configured external tools;
         # enable dev mode with the CLI `--dev` flag or grade_submission(dev=True).
         self.dev = bool(raw.get("dev", False))
-        self._grades = self._parse_grades(raw.get("grades", []))
         self.category_weights = self._normalize_category_weights(
             raw.get("categories", {})
         )
@@ -35,12 +36,6 @@ class Config:
             return {k: 1.0 / n for k in raw_weights}
         return {k: v / total for k, v in raw_weights.items()}
 
-    @staticmethod
-    def _parse_grades(grades: List[Dict[str, Any]]) -> List[Tuple[float, str]]:
-        parsed = [(float(g["min"]), str(g["name"])) for g in grades]
-        parsed.sort(key=lambda t: t[0], reverse=True)
-        return parsed
-
     def get(self, dotted: str, default: Any = None) -> Any:
         node: Any = self.raw
         for part in dotted.split("."):
@@ -49,12 +44,6 @@ class Config:
             else:
                 return default
         return node
-
-    def grade_for(self, score: float) -> str:
-        for minimum, name in self._grades:  # sorted desc
-            if score >= minimum:
-                return name
-        return self._grades[-1][1] if self._grades else ""
 
     @property
     def category_labels(self) -> Dict[str, str]:
@@ -81,7 +70,26 @@ class Config:
         return self.get("static.dependencies", {}) or {}
 
 
+# Parsed YAML per file, keyed on (mtime_ns, size): the preview proxy and the
+# result pages load the config per request and the parse alone costs ~100 ms.
+_CACHE: Dict[str, Tuple[Tuple[int, int], Dict[str, Any]]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
 def load_config(path: str = _DEFAULT_CONFIG_PATH) -> Config:
-    with open(path, "r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
-    return Config(raw or {})
+    """A fresh ``Config`` for ``path``. The YAML is parsed once per file version;
+    each call gets its own deep copy, since callers mutate the result
+    (``cfg.dev = True``, ``cfg.raw["codex"][...] = ...``)."""
+    key = os.path.abspath(path)
+    st = os.stat(key)
+    stamp = (st.st_mtime_ns, st.st_size)
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+    if hit is None or hit[0] != stamp:
+        with open(key, "r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+        with _CACHE_LOCK:
+            _CACHE[key] = (stamp, raw)
+    else:
+        raw = hit[1]
+    return Config(copy.deepcopy(raw))

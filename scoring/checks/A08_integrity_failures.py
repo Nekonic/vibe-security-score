@@ -9,7 +9,7 @@ from typing import List
 
 import requests
 
-from ..shared.http import _body_text, _json_or_none, _snip
+from ..shared.http import _body_text, _json_or_none, _post_payload, _snip, record_id
 from ..shared.sources import _balanced_arg
 from .base import Check, _undecidable, result
 
@@ -32,7 +32,7 @@ def check_insecure_deserialization(check: Check, sctx, cfg: dict):
             lineno = text.count("\n", 0, m.start()) + 1
             if token.lower().startswith(("eval", "exec")) and not _takes_request_input(text, lines, m.start(), lineno):
                 continue
-            reasons.append(f"{path}:{lineno} 안전하지 않은 역직렬화/동적 실행: {token.strip()}")
+            reasons.append(f"{path}:{lineno} Insecure Deserialization/동적 실행: {token.strip()}")
             evidence.append(f"{path}:{lineno}: {token.strip()}")
     if reasons:
         return result(check, cfg, score=cfg.get("score_found", 0), passed=False,
@@ -57,6 +57,14 @@ def _takes_request_input(text: str, lines: List[str], start: int, lineno: int) -
 _GIF_1x1 = bytes.fromhex(
     "47494638396101000100800000000000ffffff21f90401000000002c000000000100010000020144003b"
 )
+_PNG_1x1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154"
+    "789c6360000200000500017a5eab3f0000000049454e44ae426082"
+)
+# Image signatures an app may check by magic bytes alone (#65 accepted PNG only).
+_SIGNATURES = (("GIF89a", b"GIF89a", "image/gif"),
+               ("PNG", b"\x89PNG\r\n\x1a\n", "image/png"),
+               ("JPEG", b"\xff\xd8\xff\xe0", "image/jpeg"))
 
 
 def _active_upload_is_executable(resp, marker: str, kind: str) -> bool:
@@ -75,9 +83,8 @@ def dynamic_unrestricted_upload(check, ctx, cfg):
     Vulnerable only if the server returns it with an HTML content-type and the payload
     intact — judged on how the file is SERVED (a stored-but-sanitized or
     attachment/`text/plain`-served file is not a false positive). If the HTML is
-    rejected, a POSITIVE CONTROL (a real image) decides defended-vs-skip: an app that
-    serves the legit image but refused the HTML has a *restricted* upload (pass), while
-    an app with no working upload at all is undecidable (skip — never accuse)."""
+    rejected, a real image is the positive control for the evidence; an app that serves
+    no upload at all has nothing that could run either, so it passes too."""
     if ctx.userA is None:
         return _undecidable(check, cfg, "업로더 세션 없음으로 판정 불가")
     sess = ctx.userA.session
@@ -91,10 +98,31 @@ def dynamic_unrestricted_upload(check, ctx, cfg):
         ctype = resp.headers.get("Content-Type", "").lower()
         if _active_upload_is_executable(resp, html_marker, "html"):
             return result(check, cfg, score=cfg.get("score_unrestricted", 0), passed=False,
-                          reasons=[f"업로드한 HTML이 {url}에서 text/html로 그대로 서빙됨 → 임의 파일 업로드/저장형 XSS"],
+                          reasons=[f"업로드한 HTML이 {url}에서 text/html로 그대로 서빙됨 → Unrestricted File Upload / Stored XSS"],
                           evidence=[_snip(f"{url} ({ctype}): {_body_text(resp)[:120]}")])
         safe_evidence.append(_snip(
             f"업로드 HTML이 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})"
+        ))
+
+    # Polyglot: image magic bytes + HTML, a .html name and an image mime. Passes apps
+    # that check only magic bytes or the client-sent mime while keeping the uploaded
+    # extension — then the file is served back as text/html.
+    for sig_name, sig, mime in _SIGNATURES:
+        pm = uuid.uuid4().hex[:10]
+        poly_marker = f"UPPOLY-{pm}"
+        poly = _upload_and_fetch(ctx, sess, f"poc-{pm}.html",
+                                 sig + f"<script>{poly_marker}</script>".encode(), mime)
+        if poly is None:
+            continue
+        url, resp = poly
+        ctype = resp.headers.get("Content-Type", "").lower()
+        if _active_upload_is_executable(resp, poly_marker, "html"):
+            return result(check, cfg, score=cfg.get("score_unrestricted", 0), passed=False,
+                          reasons=[f"이미지 서명({sig_name})을 붙인 HTML이 {url}에서 text/html로 서빙됨 → "
+                                   "확장자 미검증 업로드 / Stored XSS"],
+                          evidence=[_snip(f"{url} ({ctype}): {_body_text(resp)[:120]}")])
+        safe_evidence.append(_snip(
+            f"이미지 서명 HTML이 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})"
         ))
 
     # SVG is commonly allow-listed as an "image" but can carry script/event
@@ -111,7 +139,7 @@ def dynamic_unrestricted_upload(check, ctx, cfg):
         ctype = resp.headers.get("Content-Type", "").lower()
         if _active_upload_is_executable(resp, svg_marker, "svg"):
             return result(check, cfg, score=cfg.get("score_unrestricted", 0), passed=False,
-                          reasons=[f"스크립트 가능한 SVG가 {url}에서 image/svg+xml로 인라인 서빙됨 → 저장형 XSS"],
+                          reasons=[f"스크립트 가능한 SVG가 {url}에서 image/svg+xml로 인라인 서빙됨 → Stored XSS"],
                           evidence=[_snip(f"{url} ({ctype}): {_body_text(resp)[:160]}")])
         safe_evidence.append(_snip(
             f"업로드 SVG가 실행 컨텍스트로 서빙되지 않음 ({url}, ctype={ctype!r})"
@@ -124,13 +152,17 @@ def dynamic_unrestricted_upload(check, ctx, cfg):
     # Active files were rejected (or their served URLs weren't discoverable). A
     # positive control with a real image distinguishes restriction from no upload.
     # legit image must upload AND serve for us to conclude a working, restricted upload.
-    m2 = uuid.uuid4().hex[:10]
-    img = _upload_and_fetch(ctx, sess, f"poc-{m2}.gif", _GIF_1x1, "image/gif")
-    if img is not None:
-        url, _resp = img
-        return result(check, cfg, score=cfg.get("score_restricted", 100), passed=True,
-                      evidence=[_snip(f"정상 이미지는 {url}로 서빙되나 HTML 업로드는 거부됨 → 제한된 업로드")])
-    return _undecidable(check, cfg, "업로드 기능 없음/서빙 경로 식별 불가로 판정 불가")
+    for ext, data, mime in (("gif", _GIF_1x1, "image/gif"), ("png", _PNG_1x1, "image/png")):
+        m2 = uuid.uuid4().hex[:10]
+        img = _upload_and_fetch(ctx, sess, f"poc-{m2}.{ext}", data, mime)
+        if img is not None:
+            url, _resp = img
+            return result(check, cfg, score=cfg.get("score_restricted", 100), passed=True,
+                          evidence=[_snip(f"정상 이미지는 {url}로 서빙되나 HTML 업로드는 거부됨 → 제한된 업로드")])
+    # Nothing uploaded comes back from the server, so nothing it serves can run. A
+    # broken upload is the contract's finding (R17), not an unrestricted one.
+    return result(check, cfg, score=cfg.get("score_restricted", 100), passed=True,
+                  evidence=[_snip("HTML·SVG·이미지 서명 HTML·정상 이미지 모두 서빙되지 않음 → 실행될 업로드 파일 없음")])
 
 
 def _upload_and_fetch(ctx, sess, fname: str, payload: bytes, content_type: str):
@@ -139,22 +171,32 @@ def _upload_and_fetch(ctx, sess, fname: str, payload: bytes, content_type: str):
     Returns (url, response) or None."""
     for path, field in (("/profile/avatar", "image"), ("/upload", "file"),
                         ("/upload", "image"), ("/posts", "image")):
-        r = ctx.upload(sess, path, field, fname, payload, content_type)
+        # A post needs its own fields, or the app rejects the upload as an invalid post.
+        extra = _post_payload(f"up-{fname}", "upload") if path == "/posts" else None
+        r = ctx.upload(sess, path, field, fname, payload, content_type, extra)
         # 200/201 (JSON) or a followed redirect to a page (also 200) both count as accepted.
         if r is None or r.status_code not in (200, 201):
             continue
         # The served file is often RENAMED, so try the response first, then the pages
         # that render it (profile, own posts) for a freshly-served image/file path.
         candidates = [_served_url(r, fname)]
+        j = _json_or_none(r)
+        if isinstance(j, dict) and record_id(j.get("id")) is not None and path == "/posts":
+            candidates.append(_served_url(ctx.get(sess, f"/posts/{j['id']}"), fname))
         if ctx.userA is not None and ctx.userA.user_id is not None:
             candidates.append(_served_url(ctx.get(sess, f"/users/{ctx.userA.user_id}"), fname))
         candidates.append(_served_url(ctx.get(sess, "/posts"), fname))
-        for url in candidates:
-            if not url or not url.startswith("/"):
+        for url, generic in filter(None, candidates):
+            if not url.startswith("/"):
                 continue
             got = ctx.get(sess, url)
-            if got is not None and got.status_code == 200:
-                return url, got
+            if got is None or got.status_code != 200:
+                continue
+            # A path found only by its shape may be any page asset (a layout logo):
+            # it counts only if it serves back what we uploaded.
+            if generic and payload not in got.content:
+                continue
+            return url, got
     return None
 
 
@@ -170,6 +212,8 @@ _SERVED_PATH = re.compile(
 
 
 def _served_url(resp, fname: str):
+    """``(url, generic)`` — ``generic`` when only the served-path shape matched — or
+    None."""
     if resp is None:
         return None
     j = _json_or_none(resp)
@@ -177,18 +221,18 @@ def _served_url(resp, fname: str):
         for key in _URL_KEYS:
             v = j.get(key)
             if isinstance(v, str) and v.startswith("/"):
-                return v
+                return v, False
     body = _body_text(resp)
     m = re.search(r"/[\w./-]*" + re.escape(fname), body)  # exact fname (un-renamed)
     if m:
-        return m.group(0)
+        return m.group(0), False
     m = _SERVED_PATH.search(body)  # renamed file served under an upload/static path
-    return m.group(1) if m else None
+    return (m.group(1), True) if m else None
 
 
 CHECKS = [
-    Check("insecure_deserialization", "안전하지 않은 역직렬화", "static",
+    Check("insecure_deserialization", "Insecure Deserialization", "static",
           check_insecure_deserialization),
-    Check("unrestricted_upload", "임의 파일 업로드", "dynamic",
+    Check("unrestricted_upload", "File Upload", "dynamic",
           dynamic_unrestricted_upload),
 ]

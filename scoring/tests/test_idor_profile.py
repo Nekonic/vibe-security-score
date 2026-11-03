@@ -99,13 +99,13 @@ def test_phone_readable_only_via_json_control_establishes_defended():
     assert not any("차단" in x for x in r.penalty_reasons)  # real control, no fallback note
 
 
-def test_murky_no_control_no_denial_stays_control_broken():
+def test_murky_no_control_no_denial_skips():
     # Owner can't show phone anywhere AND attacker got 200 (no explicit denial, no
-    # phone) -> genuinely ambiguous, keep the partial "control broken" verdict.
+    # phone) -> no PII surface to judge: skip. A failing score here would also trigger
+    # the idor_profile critical penalty for a leak that never happened.
     r = _run(_Ctx(owner_html_phone=False, owner_json_phone=False,
                   atk_html_phone=False, atk_json_phone=False, atk_code=200))
-    assert r.passed is False and r.score == 60.0
-    assert any("control broken" in x for x in r.penalty_reasons)
+    assert r.skipped is True
 
 
 def test_missing_account_undecidable():

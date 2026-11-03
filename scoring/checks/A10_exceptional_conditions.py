@@ -24,10 +24,10 @@ def dynamic_verbose_errors(check: Check, ctx: DynamicContext, cfg: dict):
         resp = ctx.get(sess, path, params=data) if method == "GET" else ctx.post(sess, path, data or {})
         if _leaks_trace(resp):
             return result(check, cfg, score=cfg.get("score_leaked", 0), passed=False,
-                          reasons=[f"{method} {path} → 스택트레이스/디버거 노출 (디버그 모드/상세 오류)"],
+                          reasons=[f"{method} {path} → Stack Trace/디버거 노출 (디버그 모드/상세 오류)"],
                           evidence=[_snip(f"{path}: {_body_text(resp)}")])
     return result(check, cfg, score=cfg.get("score_clean", 100), passed=True,
-                  evidence=[_snip("잘못된 입력에도 스택트레이스/디버거 미노출")])
+                  evidence=[_snip("잘못된 입력에도 Stack Trace/디버거 미노출")])
 
 
 def _malformed_requests():
@@ -47,6 +47,6 @@ def _leaks_trace(resp) -> bool:
 
 
 CHECKS = [
-    Check("verbose_errors", "오류 처리(스택트레이스 노출)", "dynamic",
+    Check("verbose_errors", "Stack Trace 노출", "dynamic",
           dynamic_verbose_errors),
 ]

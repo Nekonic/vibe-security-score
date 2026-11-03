@@ -1,0 +1,12 @@
+body {font-family: 'Trebuchet MS', 'Arial', sans-serif; background: linear-gradient(120deg,#eef2ff,#fef3c7); margin:0; padding:0; color:#102a43;}
+header {padding:16px; background:#0f172a; color:#fff;}
+nav a, nav button, a {color:#e2e8f0; margin-right:12px; text-decoration:none}
+main{max-width:900px; margin:24px auto; padding:16px; background:#fff; border-radius:10px; box-shadow:0 10px 30px rgba(2,6,23,0.08)}
+form{display:flex; flex-direction:column; gap:8px; margin-bottom:16px}
+input, textarea, button, select {padding:8px; border:1px solid #94a3b8; border-radius:8px}
+button{background:#1d4ed8; color:#fff; cursor:pointer}
+img{max-width:360px; border:1px solid #cbd5e1}
+ul{padding-left:20px}
+.error{color:#b91c1c; font-weight:bold}
+table{width:100%; border-collapse: collapse}
+td,th{padding:8px; border-bottom:1px solid #e2e8f0}

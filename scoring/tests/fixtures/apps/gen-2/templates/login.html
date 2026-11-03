@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>로그인</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if user %}
+  <p>로그인 상태: {{ user.username }} <a href="/logout">로그아웃</a></p>
+{% else %}
+<form method="post" action="/login">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <label>아이디/전화번호</label>
+  <input name="username" />
+  <label>비밀번호</label>
+  <input type="password" name="password" />
+  <button type="submit">로그인</button>
+</form>
+{% endif %}
+<p><a href="/signup">회원가입</a></p>
+{% endblock %}

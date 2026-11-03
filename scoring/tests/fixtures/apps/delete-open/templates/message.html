@@ -1,0 +1,14 @@
+{#
+  폼 요청이 성공했을 때 200 또는 201과 함께 그리는 결과 화면.
+  변수
+    message    보여줄 문구. base.html이 위에 보여준다
+    next_url   이어서 갈 주소. 없으면 /posts
+  이 화면에는 비밀번호 입력란을 두지 않는다.
+#}
+{% extends "base.html" %}
+{% block title %}완료{% endblock %}
+{% block content %}
+<div class="text-center">
+  <a class="btn btn-primary" href="{{ next_url or '/posts' }}">계속</a>
+</div>
+{% endblock %}

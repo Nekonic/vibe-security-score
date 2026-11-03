@@ -1,9 +1,5 @@
-"""CSRF-aware POST, shared by the grader's dynamic probes
-(``scoring.shared.http.DynamicContext``) and the attack container's ``poclib``.
-
-Kept dependency-free (``requests`` + stdlib) and free of intra-package imports so
-the attack image can drop this one file onto its PYTHONPATH and ``import csrf``
-directly — the two callers can never drift apart.
+"""CSRF-aware POST for the grader's dynamic probes (``scoring.shared.http.DynamicContext``),
+the same code the Kali box replays.
 
 A correctly CSRF-protected app rejects a token-less state-changing POST. To still
 act as a legit logged-in user, discover the session's token (login JSON, hidden
@@ -20,7 +16,9 @@ import requests
 
 CSRF_JSON_KEYS = ("csrf_token", "csrf", "csrfToken", "_csrf", "authenticity_token", "token")
 CSRF_FIELD = "csrf_token"
-CSRF_HEADER = "X-CSRF-Token"
+# Both spellings apps read (Flask-WTF reads X-CSRFToken). The functional contract sends
+# the same pair, so an app that passes the contract never 403s every probe.
+CSRF_HEADERS = ("X-CSRF-Token", "X-CSRFToken")
 # Field/meta NAME variants apps use for the CSRF token. Crucially this must include
 # ``_csrf`` (a very common hand-rolled name and one we ALREADY accept as a JSON key):
 # recognizing it only in JSON but not in HTML forms meant a form-only app's token
@@ -33,7 +31,7 @@ _CSRF_HTML_RE = (
     re.compile(r'<meta[^>]*?name=["\']' + _CSRF_NAME + r'["\'][^>]*?content=["\']([^"\']+)', re.I),
 )
 
-_REJECT_STATUSES = (400, 403, 419)   # token-less POST rejected (some apps abort 400)
+REJECT_STATUSES = (400, 403, 419)   # token-less POST rejected (some apps abort 400)
 _RETRY_JSON_STATUSES = (400, 415, 422)  # JSON not accepted -> retry as form
 
 
@@ -77,7 +75,7 @@ def send_post(post: Callable[..., Optional[requests.Response]], url: str,
     """One POST attempt: JSON first, form fallback if JSON is refused, with the
     token attached both as a header and a field. ``post`` is a session's POST
     bound with its timeout: ``post(url, json=..., data=..., headers=...)``."""
-    headers = {CSRF_HEADER: token} if token else None
+    headers = {h: token for h in CSRF_HEADERS} if token else None
     body = data if not token else {**data, CSRF_FIELD: token}
     r = post(url, json=body, headers=headers)
     if r is not None and r.status_code in _RETRY_JSON_STATUSES:
@@ -85,6 +83,11 @@ def send_post(post: Callable[..., Optional[requests.Response]], url: str,
         if r2 is not None and r2.status_code < r.status_code:
             return r2
     return r
+
+
+def retry_wins(first: requests.Response, retry: Optional[requests.Response]) -> bool:
+    """Whether the retry after a re-seeded token replaces the first answer."""
+    return retry is not None and (retry.status_code in (200, 201) or retry.status_code < first.status_code)
 
 
 def post_with_csrf(post: Callable[..., Optional[requests.Response]], url: str,
@@ -98,7 +101,7 @@ def post_with_csrf(post: Callable[..., Optional[requests.Response]], url: str,
     tok = extract_csrf(r)
     if tok:
         set_token(tok)  # login responses often return the next token
-    if r is not None and r.status_code in _REJECT_STATUSES:
+    if r is not None and r.status_code in REJECT_STATUSES:
         # A rejection MIGHT be a stale token — but 400 is also what apps return for
         # ordinary validation failures (bad file type, missing field), which have
         # nothing to do with CSRF. Discarding the token then failing to re-seed a new
@@ -115,6 +118,6 @@ def post_with_csrf(post: Callable[..., Optional[requests.Response]], url: str,
             tok2 = extract_csrf(r2)
             if tok2:
                 set_token(tok2)
-            if r2 is not None and (r2.status_code in (200, 201) or r2.status_code < r.status_code):
+            if retry_wins(r, r2):
                 return r2
     return r

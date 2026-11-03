@@ -1,0 +1,12 @@
+{
+ "app": "delete-open",
+ "path": "scoring/tests/fixtures/apps/delete-open",
+ "verdicts": {
+  "functional": "SAFE",
+  "idor_write": "VULNERABLE"
+ },
+ "why": {
+  "functional": "Generated app #30 (2026-11-01 regrade set, passed the contract) with one line changed: edit_post skips the author check for DELETE. Everything else is the generated code.",
+  "idor_write": "2026-11-02 red team on the OpenStack VM: user B sent PATCH, PUT and DELETE to user A's post and comment and the app's sqlite was read inside the container. Edits answered 403 and changed nothing; DELETE /posts/<id> answered 200 and A's post and its comment were gone from the DB."
+ }
+}

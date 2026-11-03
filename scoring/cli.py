@@ -37,7 +37,6 @@ def _cmd_static(app_dir: str, config_path: str | None, dev: bool = False) -> int
     _print_report({
         "app_dir": app_dir,
         "final_score": round(grade.score, 2),
-        "grade": grade.grade,
         "capped": grade.capped,
         "checks": [c.to_dict() for c in check_results],
         "result": grade.to_dict(),
@@ -58,7 +57,6 @@ def _cmd_dynamic(app_dir: str, config_path: str | None, dev: bool = False) -> in
     _print_report({
         "app_dir": app_dir,
         "final_score": round(grade.score, 2),
-        "grade": grade.grade,
         "capped": grade.capped,
         "cap_reason": grade.cap_reason,
         "functional_failed": functional_failed,
@@ -81,7 +79,7 @@ def _cmd_grade(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     )
 
     print(f"=== {app_dir} ===")
-    print(f"최종 점수: {round(grade.score, 2)} / 100  등급: {grade.grade}"
+    print(f"최종 점수: {round(grade.score, 2)} / 100"
           + (f"  (상한 적용: {grade.cap_reason})" if grade.capped else ""))
     if boot_failed and boot_log:
         print("--- 부팅 실패 로그 ---")
@@ -107,7 +105,6 @@ def _cmd_grade(app_dir: str, config_path: str | None, dev: bool = False) -> int:
     _print_report({
         "app_dir": app_dir,
         "final_score": round(grade.score, 2),
-        "grade": grade.grade,
         "capped": grade.capped,
         "cap_reason": grade.cap_reason,
         "functional_failed": functional_failed,
@@ -124,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, helptext in (
         ("static", "Run static analysis on an app directory"),
         ("dynamic", "Boot the app in a sandbox and attack it (dynamic only)"),
-        ("grade", "Run static + dynamic and print the combined score/grade"),
+        ("grade", "Run static + dynamic and print the combined score"),
     ):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("app_dir", help="Path to the participant app directory")

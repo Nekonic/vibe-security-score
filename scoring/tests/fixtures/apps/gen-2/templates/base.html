@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Secure Board</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Secure Board</h1>
+    <nav>
+      <a href="/posts">게시글</a>
+      <a href="/search">검색</a>
+      {% if user %}
+        <a href="/users/{{ user.id }}">내 프로필</a>
+        <form method="post" action="/logout" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit">로그아웃</button>
+        </form>
+        <span>{{ user.username }}</span>
+      {% else %}
+        <a href="/login">로그인</a>
+        <a href="/signup">회원가입</a>
+      {% endif %}
+      {% if user and user.is_admin %}
+        <a href="/admin">관리자</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

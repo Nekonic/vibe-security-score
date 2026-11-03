@@ -20,7 +20,7 @@ from ..models import CheckResult
 from ..shared.http import DynamicContext, _scored_zero
 from ..shared.sandbox import Sandbox
 from ..shared.sources import Source, _read_tree
-from ..shared.ssrf_callback import SSRFCallback
+from ..shared.ssrf_callback import PUBLIC_PAGE_MARKER, SSRFCallback, start_redirector
 
 _PY_EXT = ".py"
 _HTML_EXTS = (".html", ".htm", ".jinja", ".jinja2", ".j2")
@@ -129,8 +129,6 @@ def run_dynamic(app_dir: str, config: Config, on_check=None, box: Optional[Sandb
 
 
 def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
-    dyn_cfg = config.get("dynamic.checks", {}) or {}
-    require = list(config.get("gates.functional.require", ["signup", "login", "create_post"]))
     deadline = time.monotonic() + float(config.get("timeouts.dynamic_total", 180))
 
     if box.boot_failed:
@@ -144,12 +142,10 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
     cve_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dyn-cve")
     cve_future = cve_pool.submit(dependencies.dynamic_cve, box, config)
     ssrf_cb = None
+    redirector = None
     try:
         ctx = DynamicContext(box.base_url, config)
-        # Feed hardcoded SECRET_KEY literals to session_forgery so it forges with the
-        # app's ACTUAL key (a live PoC proving a hardcoded secret is exploitable).
-        from ..checks.A04_cryptographic_failures import extract_hardcoded_secrets
-        ctx.source_secrets = extract_hardcoded_secrets(_gather_sources(app_dir))
+        ctx.app_logs = lambda: box.logs(tail=2000)
         # Live SSRF: start a grader callback listener and hand the probe the address
         # the container reaches the host at (bridge gateway). If either is unavailable
         # (no docker gateway / bind failed), the ssrf probe skips → static fallback.
@@ -163,45 +159,31 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
             if hosts:
                 ctx.ssrf_callback = ssrf_cb
                 ctx.ssrf_hosts = hosts
-        dynamic_checks = by_phase("dynamic")
-        # functional runs first (drives the gate + seeds sessions); rest follow.
-        functional = next(c for c in dynamic_checks if c.id == "functional")
-        rest = [c for c in dynamic_checks if c.id != "functional"]
-
-        func_result = functional.fn(ctx, {**dyn_cfg.get(functional.id, {}), "require": require})
-        functional_failed = not func_result.passed
-        checks: List[CheckResult] = [func_result]
-        # App booted but a required flow (signup/login/create_post) failed at RUNTIME —
-        # the generic 500 body hides the cause. Capture the container's own stderr so the
-        # operator sees the real reason (e.g. sqlite3.IntegrityError: NOT NULL user.created_at)
-        # instead of just "HTTP 500". Surfaced via the 4th return (Submission.boot_log).
+                redirector = _start_redirector(config, box)
+                if redirector is not None:
+                    ctx.ssrf_redirect = redirector.url_for
+                    ctx.ssrf_public_page = (redirector.page_url(), PUBLIC_PAGE_MARKER)
         runtime_log = ""
-        if functional_failed:
-            runtime_log = (box.logs(tail=60) or "").strip()
-            lines = runtime_log.splitlines()
-            errline = next((ln for ln in reversed(lines)
-                            if any(k in ln for k in ("Error", "Exception", "Traceback"))),
-                           lines[-1] if lines else "")
-            if errline and isinstance(getattr(func_result, "evidence", None), list):
-                func_result.evidence.append(f"컨테이너 런타임 로그: {errline[:200]}")
-        if on_check:
-            on_check(functional.label)
 
-        for c in rest:
-            if time.monotonic() >= deadline:
-                checks.append(_undecidable(c, resolve_cfg(config, c), "동적 검사 전체 시간 예산 초과"))
-            elif c.standard:
-                # Standard probes carry pure logic; the runner owns exception wrapping
-                # (원칙 5). sqli opts out (standard=False) — its hard-fail must propagate.
-                cfg = resolve_cfg(config, c)
-                try:
-                    checks.append(c.fn(c, ctx, cfg))
-                except Exception as exc:
-                    checks.append(_undecidable(c, cfg, f"{c.label} 프로브 예외: {exc}"))
-            else:
-                checks.append(c.fn(ctx, dyn_cfg.get(c.id, {})))
+        def after(c, res):
+            nonlocal runtime_log
+            # App booted but a required flow (signup/login/create_post) failed at RUNTIME —
+            # the generic 500 body hides the cause. Capture the container's own stderr so the
+            # operator sees the real reason (e.g. sqlite3.IntegrityError: NOT NULL user.created_at)
+            # instead of just "HTTP 500". Surfaced via the 4th return (Submission.boot_log).
+            if c.id == "functional" and not res.passed:
+                runtime_log = (box.logs(tail=60) or "").strip()
+                lines = runtime_log.splitlines()
+                errline = next((ln for ln in reversed(lines)
+                                if any(k in ln for k in ("Error", "Exception", "Traceback"))),
+                               lines[-1] if lines else "")
+                if errline and isinstance(getattr(res, "evidence", None), list):
+                    res.evidence.append(f"컨테이너 런타임 로그: {errline[:200]}")
             if on_check:
                 on_check(c.label)
+
+        checks = run_probes(ctx, config, deadline=deadline, after=after)
+        functional_failed = not checks[0].passed
 
         # Join the concurrent CVE recompute (defensive: dynamic_cve never raises).
         try:
@@ -216,4 +198,51 @@ def _probe_dynamic(app_dir: str, config: Config, box: Sandbox, on_check=None):
     finally:
         if ssrf_cb is not None:
             ssrf_cb.__exit__(None, None, None)
+        if redirector is not None:
+            redirector.__exit__(None, None, None)
         cve_pool.shutdown(wait=True)
+
+
+def run_probes(ctx: DynamicContext, config: Config, *, deadline: Optional[float] = None,
+               before=None, after=None, stop_after: Optional[str] = None) -> List[CheckResult]:
+    """The dynamic probe sequence against a ready ``ctx``: functional first (drives the
+    gate and seeds userA/userB sessions), then every other dynamic check in registry
+    order. The grader and the Kali PoC replay both call this, so a demo runs exactly
+    the probes the score came from, in the same order. ``before(check)`` /
+    ``after(check, result)`` hook each check; ``stop_after`` ends the run after that id."""
+    dyn_cfg = config.get("dynamic.checks", {}) or {}
+    require = list(config.get("gates.functional.require", ["signup", "login", "create_post"]))
+    dynamic_checks = by_phase("dynamic")
+    functional = next(c for c in dynamic_checks if c.id == "functional")
+    rest = [c for c in dynamic_checks if c.id != "functional"]
+
+    checks: List[CheckResult] = []
+    for c in [functional] + rest:
+        if before:
+            before(c)
+        if c is functional:
+            res = functional.fn(ctx, {**dyn_cfg.get(functional.id, {}), "require": require})
+        elif deadline is not None and time.monotonic() >= deadline:
+            res = _undecidable(c, resolve_cfg(config, c), "동적 검사 전체 시간 예산 초과")
+        elif c.standard:
+            # Standard probes carry pure logic; the runner owns exception wrapping
+            # (원칙 5). sqli opts out (standard=False) — its hard-fail must propagate.
+            cfg = resolve_cfg(config, c)
+            try:
+                res = c.fn(c, ctx, cfg)
+            except Exception as exc:
+                res = _undecidable(c, cfg, f"{c.label} 프로브 예외: {exc}")
+        else:
+            res = c.fn(ctx, dyn_cfg.get(c.id, {}))
+        checks.append(res)
+        if after:
+            after(c, res)
+        if c.id == stop_after:
+            break
+    return checks
+
+
+def _start_redirector(config: Config, box: Sandbox):
+    """Public-looking 302 redirector for the SSRF redirect-bypass probe, attached to
+    the app container's network. None if disabled or docker can't set it up."""
+    return start_redirector(config, box.container_name)

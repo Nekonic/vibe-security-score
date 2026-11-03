@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>사용자 목록</h2>
+<table>
+  <tr><th>ID</th><th>username</th><th>phone</th><th>role</th><th>action</th></tr>
+  {% for u in users %}
+  <tr>
+    <td>{{ u.id }}</td>
+    <td>{{ u.username }}</td>
+    <td>{{ u.phone }}</td>
+    <td>{{ 'admin' if u.is_admin else 'user' }}</td>
+    <td>
+      <form method="post" action="/admin/users/{{ u.id }}/role">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <select name="role">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+        <button type="submit">변경</button>
+      </form>
+      <form method="post" action="/admin/users/{{ u.id }}?_method=DELETE" onsubmit="return confirm('delete?')">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button type="submit">삭제</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

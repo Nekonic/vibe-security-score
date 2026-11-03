@@ -1,0 +1,9 @@
+{#
+  글 목록 한 줄. posts.html, search.html, profile.html이 include한다.
+  변수 post: id, title, content, author, created_at
+#}
+<div class="list-group-item">
+  <a class="fw-semibold text-decoration-none" href="/posts/{{ post.id }}">{{ post.title }}</a>
+  <p class="mb-1 text-body-secondary text-break">{{ post.content }}</p>
+  <small class="text-body-secondary">{{ post.author }} · {{ post.created_at }}</small>
+</div>

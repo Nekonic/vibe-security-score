@@ -3,10 +3,12 @@ accounts, and response helpers. Probe verdicts themselves live in ``probes.py``.
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 import re
 import uuid
-from typing import Any, Dict, Optional
+import zlib
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -24,6 +26,19 @@ def _snip(text: str, limit: int = _EVIDENCE_MAX) -> str:
     return text
 
 
+def shows_number(text: str, digits: str) -> bool:
+    """``digits`` appear in ``text`` as one number: its digits in order with only
+    spaces (also &nbsp;), dashes (also en and em dashes), dots or parentheses between
+    them, and no digit right before or after. Joining every digit on the page instead
+    would let unrelated numbers (a username's digits after a token's) read as a
+    phone number."""
+    if not digits:
+        return False
+    sep = r"(?:[\s\u00a0\-\u2013\u2014.()]|&nbsp;)*"
+    pattern = r"(?<!\d)" + sep.join(re.escape(d) for d in digits) + r"(?!\d)"
+    return re.search(pattern, text or "") is not None
+
+
 def _body_text(resp: Optional[requests.Response]) -> str:
     if resp is None:
         return ""
@@ -31,6 +46,44 @@ def _body_text(resp: Optional[requests.Response]) -> str:
         return resp.text or ""
     except Exception:
         return ""
+
+
+def decode_flask_session(value: str) -> str:
+    """The readable payload of a Flask session cookie, '' when it isn't one. The
+    cookie is signed, not encrypted: ``<base64url payload>.<timestamp>.<signature>``,
+    the payload zlib-compressed when the value starts with '.'. Its holder can read
+    everything the app put in the session."""
+    v = (value or "").strip().strip('"')
+    compressed = v.startswith(".")
+    payload = (v[1:] if compressed else v).split(".")[0]
+    if not payload:
+        return ""
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        if compressed:
+            raw = zlib.decompress(raw)
+        return raw.decode("utf-8")
+    except (ValueError, zlib.error, UnicodeDecodeError):
+        return ""
+
+
+def cookie_texts(*holders: Any) -> List[str]:
+    """Decoded Flask sessions among the cookies of responses (every redirect hop
+    included) and sessions: what the requester can read from Set-Cookie."""
+    out: List[str] = []
+    for h in holders:
+        for hop in [*getattr(h, "history", []), h]:
+            jar = getattr(hop, "cookies", None)
+            try:
+                values = list(jar.values()) if jar is not None else []
+            except Exception:
+                values = []
+            out += [t for t in map(decode_flask_session, values) if t]
+    return out
+
+
+def _ok(resp: Optional[requests.Response]) -> bool:
+    return resp is not None and 200 <= resp.status_code < 300
 
 
 def _json_or_none(resp: Optional[requests.Response]) -> Optional[Any]:
@@ -61,8 +114,34 @@ def _post_payload(title: str, content: str) -> Dict[str, Any]:
     return {"title": title, "content": content, "body": content, "text": content}
 
 
+# A record id as the app gives it: an int or an opaque string such as a UUID (the
+# functional contract accepts both, so the probes must too).
+_POST_LINK = re.compile(r"""/posts/([^/"'?#\s<>]+)""")
+_NOT_AN_ID = {"new", "create", "edit", "search", "upload"}
+
+
+def record_id(value: Any) -> Optional[Any]:
+    """``value`` if it can be a record id in a path, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value and not re.search(r"""[/\s?#"'<>]""", value):
+        return value
+    return None
+
+
+def post_ids(text: str) -> List[Any]:
+    """Post ids linked from ``text``, newest first: numeric ids by value, others in
+    reverse page order."""
+    found = [m for m in _POST_LINK.findall(text) if m.lower() not in _NOT_AN_ID]
+    nums = sorted({int(m) for m in found if m.isdigit()}, reverse=True)
+    others = list(dict.fromkeys(m for m in reversed(found) if not m.isdigit()))
+    return [*nums, *others]
+
+
 def create_post_id(ctx, sess: requests.Session, title: str, content: str,
-                   extra: Optional[Dict[str, Any]] = None) -> Optional[int]:
+                   extra: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     """Create a post and return its id — from the create response JSON, else by
     matching ``content`` (use a unique value) to a ``/posts/<id>`` link the listing
     exposes (form apps that redirect). ``None`` if the id can't be pinned. Shared by
@@ -75,13 +154,16 @@ def create_post_id(ctx, sess: requests.Session, title: str, content: str,
     j = _json_or_none(r)
     if isinstance(j, dict):
         for key in ("id", "post_id", "pk"):
-            if isinstance(j.get(key), int):
+            if record_id(j.get(key)) is not None:
                 return j[key]
     listing = _body_text(ctx.get(sess, "/posts"))
-    if content not in listing:
+    # A body with markup is shown escaped in the list: fall back to the (unique,
+    # plain) title then.
+    key = content if content in listing else title if title in listing else None
+    if key is None:
         return None
-    for pid in sorted({int(n) for n in re.findall(r"/posts/(\d+)", listing)}, reverse=True):
-        if content in _body_text(ctx.get(sess, f"/posts/{pid}")):
+    for pid in post_ids(listing):
+        if key in _body_text(ctx.get(sess, f"/posts/{pid}")):
             return pid
     return None
 
@@ -106,13 +188,42 @@ class Account:
     username: str = ""
     session: requests.Session = field(default_factory=requests.Session)
     user_id: Optional[int] = None
-    is_admin: bool = False
+    signup_response: Optional[requests.Response] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         # Apps split between `phone` and `username` login; derive a username so
         # both contracts work (we send both fields in every auth request).
         if not self.username:
             self.username = (self.name or "user" + re.sub(r"\D", "", self.phone)[-6:])
+
+
+_HEX_TO_DIGIT = str.maketrans("abcdef", "012345")
+SIGNUP_ACCEPTED = (200, 201, 409)
+
+
+def new_account(ctx, prefix: str = "user", *, login: bool = False, n: int = 10,
+                username: Optional[str] = None, phone: Optional[str] = None,
+                name: Optional[str] = None, password: Optional[str] = None,
+                pw_tag: str = "Vf", extra: Optional[Dict[str, Any]] = None) -> Optional[Account]:
+    """Sign up a throwaway account on its own session: one POST /signup (plus
+    ``extra`` fields), and one POST /login when ``login``. The signup response is
+    kept on ``acct.signup_response``. Defaults: username = prefix + n random hex,
+    letters and digits only (apps commonly reject "-" or "_" in usernames), name =
+    username, password = ``{pw_tag}!<10 hex>9``. With ``login`` the result is None,
+    and no login is sent, when the signup is not accepted (200/201/409)."""
+    tag = uuid.uuid4().hex
+    if username is None:
+        username = re.sub(r"[^A-Za-z0-9]", "", prefix) + tag[:n]
+    acct = Account(phone=phone or "010" + tag[:8].translate(_HEX_TO_DIGIT),
+                   password=f"{pw_tag}!{uuid.uuid4().hex[:10]}9" if password is None else password,
+                   name=username if name is None else name, username=username)
+    acct.signup_response = ctx.post(acct.session, "/signup", {**_signup_payload(acct), **(extra or {})})
+    if login:
+        r = acct.signup_response
+        if r is None or r.status_code not in SIGNUP_ACCEPTED:
+            return None
+        ctx.post(acct.session, "/login", _login_payload(acct))
+    return acct
 
 
 class DynamicContext:
@@ -133,27 +244,28 @@ class DynamicContext:
         for acct in (self.userA, self.userB):
             if acct is not None:
                 tag = uuid.uuid4().hex[:8]
-                acct.username = "grader_" + tag
+                acct.username = "grader" + tag
                 acct.phone = "010" + tag.translate(str.maketrans("abcdef", "012345"))
-        adm = probes.get("admin_account", {}) or {}
-        self.admin = Account(phone=adm.get("phone", ""), password=adm.get("password", ""),
-                             name=adm.get("name", "Admin"), username=adm.get("username", "admin"))
-        self.admin.is_admin = True
 
         self.xss_payload = str(probes.get("xss_payload", "<script>alert('xss-{marker}')</script>"))
         # Multiple payloads cover several sink contexts (script/img/svg/attr/js-url).
         self.xss_payloads = [str(p) for p in (probes.get("xss_payloads") or [self.xss_payload])]
         self.sqli_payloads = list(probes.get("sqli_payloads", []) or [])
         self.sqli_auth_bypass = list(probes.get("sqli_auth_bypass", []) or [])
-        # SECRET_KEY literals extracted from the app source (set by run_dynamic).
-        # session_forgery forges with these too, so a HARDCODED key is proven
-        # forgeable (the grader knows its exact value), not just statically flagged.
-        self.source_secrets: list = []
         # Live SSRF probe wiring (set by run_dynamic when a callback listener is up;
         # ssrf_hosts = private/host addresses the container can reach the grader at
         # — host.docker.internal (portable) + the bridge gateway IP. Empty => skip).
         self.ssrf_callback = None
         self.ssrf_hosts: List[str] = []
+        # url_for(target) of a public-looking 302 redirector (redirect-bypass probe);
+        # None when docker couldn't set one up.
+        self.ssrf_redirect = None
+        # (url, title) of a public page the same redirector serves: the SSRF positive
+        # control without internet access. None falls back to the configured page.
+        self.ssrf_public_page: Optional[Tuple[str, str]] = None
+        # The app's stdout (the spec prints `VERIFY CODE:` / `RESET LINK:` there);
+        # the runner binds it to the sandbox container's log.
+        self.app_logs = lambda: ""
         self.dev = bool(getattr(config, "dev", False))  # gate real CLI tools (sqlmap)
         self.sqlmap_cfg = dict(config.get("tools.sqlmap", {}) or {})
         # Endpoints that hand out a CSRF token (JSON body / form / <meta>), tried in
@@ -218,8 +330,16 @@ class DynamicContext:
         self._desecure(sess)  # keep Secure cookies usable over the sandbox's HTTP
         return r
 
+    def cross_site_post(self, sess: requests.Session, path: str, data: Dict[str, Any],
+                        origin: str = "http://evil.example") -> Optional[requests.Response]:
+        """What a forged cross-site form submits: form-encoded, NO CSRF token, the
+        attacker's Origin/Referer, the victim's cookies. Redirects are not followed."""
+        return self._bound_post(sess)(self._url(path), data=data, allow_redirects=False,
+                                      headers={"Origin": origin, "Referer": origin + "/csrf.html"})
+
     def upload(self, sess: requests.Session, path: str, field: str, fname: str,
-               payload: bytes, content_type: str) -> Optional[requests.Response]:
+               payload: bytes, content_type: str,
+               extra: Optional[Dict[str, Any]] = None) -> Optional[requests.Response]:
         """Multipart file POST WITH CSRF handling (the raw sess.post the upload probe
         used before got 403'd by every CSRF-protected app): seed a token, send it as a
         form field + header alongside the file, and retry once with a fresh token on
@@ -228,8 +348,8 @@ class DynamicContext:
         post = self._bound_post(sess)
 
         def _try(token: str) -> Optional[requests.Response]:
-            headers = {csrf.CSRF_HEADER: token} if token else None
-            data = {csrf.CSRF_FIELD: token} if token else None
+            headers = {h: token for h in csrf.CSRF_HEADERS} if token else None
+            data = {**(extra or {}), **({csrf.CSRF_FIELD: token} if token else {})} or None
             return post(url, files={field: (fname, payload, content_type)},
                         data=data, headers=headers)
 
@@ -320,6 +440,19 @@ def _looks_like_admin(body: str, j: Any) -> bool:
     if isinstance(j, dict) and isinstance(j.get("users"), list) and j["users"]:
         return True
     return False
+
+
+def admin_access(ctx, sess: requests.Session) -> Tuple[Optional[str], bool]:
+    """(admin path ``sess`` reaches, or None; whether every probe got a response).
+    A timeout is not a denial, so callers judge "blocked" only when answered."""
+    answered = True
+    for path in ("/admin", "/admin/users"):
+        r = ctx.get(sess, path)
+        if r is None:
+            answered = False
+        elif r.status_code == 200 and _looks_like_admin(_body_text(r), _json_or_none(r)):
+            return path, True
+    return None, answered
 
 
 def _is_html_response(resp: Optional[requests.Response]) -> bool:

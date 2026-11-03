@@ -1,0 +1,2 @@
+<!doctype html><meta charset='utf-8'><main><h1>{{profile.username}}</h1>{% if profile.avatar_url %}<img src='{{profile.avatar_url}}'>{% endif %}{% if own %}<p>{{profile.phone}}</p>{% endif %}{% for p in posts %}<p><a href='/posts/{{p.id}}'>{{p.title}}</a></p>{% endfor %}</main>
+

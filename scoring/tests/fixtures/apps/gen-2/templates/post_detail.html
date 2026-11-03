@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{{ post.title }}</h2>
+<p>작성자: {{ post.author }} | {{ post.created_at }}</p>
+{% if post.image_url %}
+  <img src="{{ post.image_url }}" alt="image">
+{% endif %}
+<pre>{{ post.content | e }}</pre>
+{% if post.link_url %}
+  <div class="preview">
+    <a href="{{ post.link_url }}" target="_blank">참조 URL</a>
+    {% if post.link_preview_title %}<p>미리보기: {{ post.link_preview_title }}</p>{% endif %}
+    {% if post.link_preview_summary %}<p>{{ post.link_preview_summary }}</p>{% endif %}
+  </div>
+{% endif %}
+{% if user %}
+<form method="post" action="/posts/{{ post.id }}/comments" enctype="multipart/form-data">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <textarea name="content" required></textarea>
+  <button type="submit">댓글 작성</button>
+</form>
+{% endif %}
+<h3>댓글</h3>
+<ul>
+  {% for c in comments %}
+  <li>{{ c.author }}: {{ c.content }}</li>
+  {% else %}
+  <li>댓글 없음</li>
+  {% endfor %}
+</ul>
+{% endblock %}

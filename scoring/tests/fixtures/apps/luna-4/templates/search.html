@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<main><h1>검색: {{q}}</h1>{% for p in posts %}<p><a href=/posts/{{p.id}}>{{p.title}}</a> {{p.content}}</p>{% endfor %}</main>{% endblock %}

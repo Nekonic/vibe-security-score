@@ -1,9 +1,10 @@
 """Sandbox container lifecycle for the dynamic phase.
 
 ``Sandbox`` is a context manager that bind-mounts the app dir read-only, docker
-runs the prebuilt image with config resource limits (network STAYS ON), polls
-boot, and tears everything down on exit. All docker calls use argv lists (no
-shell) so Git-Bash path mangling does not apply.
+runs the app's prebuilt deps image (``deps_image``; nothing is installed at start)
+with config resource limits (network STAYS ON), polls boot, and tears everything
+down on exit. All docker calls use argv lists (no shell) so Git-Bash path mangling
+does not apply.
 """
 from __future__ import annotations
 
@@ -18,6 +19,12 @@ import urllib.error
 import urllib.request
 
 from ..config import Config
+from . import deps_image
+
+
+class SandboxError(RuntimeError):
+    """Docker itself could not start the container (not the app's fault). Callers
+    must retry or stop, never score it as the app failing to boot."""
 
 
 def _find_free_port() -> int:
@@ -31,6 +38,10 @@ class Sandbox:
         self.app_dir = app_dir
         self.config = config
         self.image = str(config.get("sandbox.image", "vibe-sec-sandbox:latest"))
+        # The deps image is picked on the first docker run; its build log when the
+        # build failed and the base image runs instead.
+        self.deps_log = ""
+        self._image_ready = False
         self.app_port = int(config.get("sandbox.app_port", 5000))
         self.memory = str(config.get("sandbox.memory", "512m"))
         self.cpus = str(config.get("sandbox.cpus", "1.0"))
@@ -43,6 +54,9 @@ class Sandbox:
         self.base_url = f"http://127.0.0.1:{self.host_port}"
 
         self.boot_failed = False
+        # Set when docker could not start the container at all (port race, daemon
+        # error): an infrastructure failure, NOT the app failing to boot.
+        self.infra_error = ""
 
     def __enter__(self) -> "Sandbox":
         try:
@@ -53,18 +67,47 @@ class Sandbox:
                 raise RuntimeError(
                     f"no app.py/wsgi.py/main.py in {mount_src}"
                 )
-            self._docker_run(mount_src)
+            if not self._start(mount_src):
+                self.boot_failed = True
+                return self
             if not self._wait_for_boot():
                 self.boot_failed = True
         except Exception:
             self.boot_failed = True
         return self
 
+    def _start(self, mount_src: str, attempts: int = 3) -> bool:
+        """docker run, retried on a fresh port and name (a free-port race or a busy
+        daemon must not read as the app failing). False + ``infra_error`` if docker
+        never started it. The fresh name keeps a retry from colliding with (or its
+        ``_teardown`` from removing) a container of the same name it did not create."""
+        base = self.container_name
+        for i in range(attempts):
+            try:
+                self._docker_run(mount_src)
+                self.infra_error = ""  # an earlier attempt's error no longer applies
+                return True
+            except Exception as exc:
+                self.infra_error = str(exc)[:500]
+                self._teardown()
+                self.container_name = f"{base}-r{i + 1}"
+                self.host_port = _find_free_port()
+                self.base_url = f"http://127.0.0.1:{self.host_port}"
+                time.sleep(1 + i)
+        return False
+
+    def raise_if_infra_error(self) -> None:
+        if self.infra_error and self.boot_failed:
+            raise SandboxError(f"샌드박스 컨테이너 시작 실패: {self.infra_error}")
+
     def __exit__(self, exc_type, exc, tb) -> bool:
         self._teardown()
         return False  # never swallow exceptions
 
     def _docker_run(self, mount_src: str) -> None:
+        if not self._image_ready:
+            self.image, self.deps_log = deps_image.ensure(mount_src, self.config)
+            self._image_ready = True
         argv = [
             "docker", "run", "-d",
             "--name", self.container_name,
@@ -91,9 +134,14 @@ class Sandbox:
             )
 
     def _wait_for_boot(self) -> bool:
-        """Poll GET /posts until it answers (any status) or app_boot elapses."""
+        """Poll GET /posts until it answers (any status) or app_boot elapses. Nothing
+        is installed at start, so an app that is going to boot answers within about a
+        second of docker run, even with several boxes starting at once."""
+        return self._poll_boot(self.boot_timeout)
+
+    def _poll_boot(self, seconds: float) -> bool:
         url = f"{self.base_url}/posts"
-        deadline = time.monotonic() + self.boot_timeout
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(url, timeout=3) as resp:
@@ -150,14 +198,19 @@ class Sandbox:
         return ""
 
     def logs(self, tail: int = 40) -> str:
+        """Container log tail, after the failed deps build's log tail if any (the
+        boot log shows why a package is missing, as pip at start used to)."""
+        head = ""
+        if self.deps_log:
+            head = "[sandbox] 의존성 설치 실패\n" + "\n".join(self.deps_log.splitlines()[-30:]) + "\n"
         try:
             proc = subprocess.run(
                 ["docker", "logs", "--tail", str(tail), self.container_name],
                 capture_output=True, text=True, timeout=15,
             )
-            return (proc.stdout or "") + (proc.stderr or "")
+            return head + (proc.stdout or "") + (proc.stderr or "")
         except Exception:
-            return ""
+            return head
 
     def _teardown(self) -> None:
         try:

@@ -1,0 +1,2 @@
+<!doctype html><meta charset='utf-8'><title>게시판</title><main><h1>게시판</h1>{% if query is not none %}<p>검색: {{query}}</p>{% endif %}{% for p in posts %}<article><h2><a href='/posts/{{p.id}}'>{{p.title}}</a></h2><p>{{p.content}}</p><small>{{p.username}} · {{p.created_at}}</small>{% if p.image_url %}<img src='{{p.image_url}}'>{% endif %}</article>{% endfor %}</main>
+

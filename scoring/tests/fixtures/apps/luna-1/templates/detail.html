@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block body %}<article><h1>{{post.title}}</h1><div>{{post.username}} · {{post.created_at}}</div><p>{{post.content_html|safe}}</p>{% if post.image_url %}<img src="{{post.image_url}}">{% endif %}</article><h2>댓글</h2>{% for c in comments %}<p><b>{{c.username}}</b>: {{c.content}}</p>{% else %}<p>댓글 없음</p>{% endfor %}{% endblock %}

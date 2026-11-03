@@ -4,7 +4,8 @@ Covers:
   * parse of canned sqlmap "injectable" output,
   * the stub-binary path: point tools.sqlmap.binary at a tiny script that emits
     canned sqlmap output and assert run_sqlmap parses it to injectable=True,
-  * disabled/absent => ran=False (caller falls back), never crashes.
+  * disabled/absent => ran=False, never crashes (outside --dev the caller then
+    hard-fails grading; only --dev uses the built-in oracle).
 """
 from __future__ import annotations
 
@@ -49,13 +50,13 @@ def test_parse_clean_output():
     assert sqlmap_tool.parse_sqlmap_output(_CANNED_CLEAN) is False
 
 
-def test_disabled_falls_back():
+def test_disabled_reports_not_ran():
     outcome = sqlmap_tool.run_sqlmap("http://127.0.0.1:5000", {"enabled": False, "binary": "sqlmap"})
     assert outcome.ran is False
     assert outcome.injectable is False
 
 
-def test_missing_binary_falls_back():
+def test_missing_binary_reports_not_ran():
     outcome = sqlmap_tool.run_sqlmap(
         "http://127.0.0.1:5000",
         {"enabled": True, "binary": "definitely-not-a-real-binary-xyz"},

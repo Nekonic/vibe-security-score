@@ -1,0 +1,15 @@
+{#
+  오류 화면.
+  변수
+    status   상태 코드
+    message  보여줄 문구. 무엇을 보여줄지는 app.py가 정한다
+#}
+{% extends "base.html" %}
+{% block title %}오류{% endblock %}
+{% block content %}
+<div class="card card-body text-center">
+  <h1 class="h4">{{ status or "오류" }}</h1>
+  <p class="mb-3 text-body-secondary">요청을 처리하지 못했습니다</p>
+  <div><a class="btn btn-outline-secondary" href="/posts">글 목록</a></div>
+</div>
+{% endblock %}

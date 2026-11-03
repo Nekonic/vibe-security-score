@@ -1,0 +1,12 @@
+{
+ "app": "delete-crash",
+ "path": "scoring/tests/fixtures/apps/delete-crash",
+ "verdicts": {
+  "functional": "SAFE",
+  "idor_write": "VULNERABLE"
+ },
+ "why": {
+  "functional": "Generated app #30 (2026-11-01 regrade set, passed the contract) with two lines changed: edit_post skips the author check for DELETE, and the post page drops its missing-post 404 so it answers 500 for a deleted post. Everything else is the generated code.",
+  "idor_write": "2026-11-03 red team on the OpenStack VM: user B sent PATCH, PUT and DELETE to user A's post and comment and the app's sqlite was read inside the container. Edits answered 403 and changed nothing; DELETE /posts/<id> answered 200 and A's post and its comment were gone from the DB. The post page then answers 500, so only search shows the post is gone."
+ }
+}

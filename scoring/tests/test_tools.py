@@ -1,6 +1,7 @@
-"""Tests for optional external-tool integrations (scoring/static/tools.py).
+"""Tests for external-tool integrations (scoring/shared/external_tools.py).
 
-SKIP path: tools absent/disabled => skipped, deterministic score unchanged.
+Non-dev: a missing/disabled required tool aborts at preflight (never a silent fallback).
+--dev SKIP path: tools absent/disabled => skipped, deterministic score unchanged.
 PARSE path: stub binary emits canned JSON => assert parse -> CheckResult mapping.
 """
 from __future__ import annotations
@@ -54,8 +55,24 @@ def _config_with_tool(base: Config, tool: str, **overrides) -> Config:
 # ---------------------------------------------------------------------------
 # SKIP path (no binaries present / disabled)
 # ---------------------------------------------------------------------------
-def test_gitleaks_skipped_when_binary_missing(base_config):
+def test_missing_tools_abort_preflight_outside_dev(base_config):
+    # Default (non-dev) mode: a missing enabled tool or a disabled sqlmap must be
+    # reported so grading aborts BEFORE scoring — never a silent fallback.
+    from scoring.shared.external_tools import missing_required_tools
+
     cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary="definitely-not-here-xyz")
+    cfg.dev = False
+    assert "definitely-not-here-xyz" in missing_required_tools(cfg)
+    cfg = _config_with_tool(base_config, "sqlmap", enabled=False)
+    cfg.dev = False
+    assert any(m.endswith("(비활성화)") for m in missing_required_tools(cfg))
+    cfg.dev = True
+    assert missing_required_tools(cfg) == []
+
+
+def test_gitleaks_skipped_in_dev_when_binary_missing(base_config):
+    cfg = _config_with_tool(base_config, "gitleaks", enabled=True, binary="definitely-not-here-xyz")
+    cfg.dev = True
     r = crypto.check_gitleaks_secrets(_by_id(crypto, "gitleaks_secrets"), _sctx(_APP_DIR, cfg), {})
     assert r.skipped is True
     assert r.weight == 0.0
@@ -71,19 +88,10 @@ def test_semgrep_skipped_when_disabled(base_config):
     assert r.tool == "semgrep"
 
 
-def test_pypi_disabled_by_default_no_network(base_config):
-    # default config has pypi_existence.enabled == false
-    reqs = parse_requirements("flask==2.0.1\n")
-    r = dependencies.check_hallucinated_package(reqs, base_config)
-    assert r.skipped is True
-    assert r.tool == "pypi"
-    assert r.weight == 0.0
-
-
-def test_osv_falls_back_to_local_snapshot_offline(base_config):
-    """OSV enabled but binary missing => identical score/shape to built-in,
-    and tool == "" (fallback used)."""
+def test_osv_uses_local_snapshot_in_dev(base_config):
+    """--dev: the built-in snapshot replaces osv-scanner (tool == "")."""
     cfg = _config_with_tool(base_config, "osv_scanner", enabled=True, binary="no-such-osv-bin")
+    cfg.dev = True
     dep_cfg = dict(base_config.static_dependencies)
     dep_cfg["weight"] = float(dep_cfg.get("weight", 0)) / 2.0
     reqs = parse_requirements(open(os.path.join(_APP_DIR, "requirements.txt"), encoding="utf-8").read())
@@ -151,3 +159,14 @@ def test_osv_stub_does_not_change_report_only_semantics(base_config):
     reqs = parse_requirements(open(req_path, encoding="utf-8").read())
     r = dependencies.check_cve(reqs, dep_cfg, req_path, cfg)
     assert r.weight == 5.0
+
+
+def test_osv_alias_ids_count_as_one_vulnerability():
+    # osv-scanner (online) lists one flaw under its GHSA id and again under the
+    # PYSEC alias; penalising both would double-count one CVE.
+    pkg = {"package": {"name": "urllib3", "version": "1.23"}, "vulnerabilities": [
+        {"id": "GHSA-wqvq-5m8c-6g24", "aliases": ["CVE-2020-26137", "PYSEC-2020-148"]},
+        {"id": "PYSEC-2020-148", "aliases": ["CVE-2020-26137", "GHSA-wqvq-5m8c-6g24"]},
+    ]}
+    found = dependencies._parse_osv_output({"results": [{"packages": [pkg]}]})
+    assert [f[2] for f in found] == ["GHSA-wqvq-5m8c-6g24"]

@@ -1,0 +1,18 @@
+{
+ "app": "specb-n3",
+ "path": "scoring/tests/fixtures/apps/specb-n3",
+ "verdicts": {
+  "functional": "SAFE",
+  "stored_xss": "VULNERABLE",
+  "private_post_access": "VULNERABLE",
+  "reset_host_poisoning": "VULNERABLE",
+  "idor_write": "SAFE"
+ },
+ "why": {
+  "functional": "Spec B trial app n3 (2026-10-30, gpt-5.6-luna low, neutral sentence). Passed the contract after one repair. templates/ is the current seed; the app was generated with a seed that also had the dropped point and signature features, and app.py still serves them.",
+  "stored_xss": "Manual curl on the OpenStack VM: alice posts Markdown blocks '<img src=x onerror=alert(1)>' and '<script>alert(2)</script>'; anonymous GET /posts/<id> returns both tags verbatim. app.py converts with markdown.markdown and no sanitizer, and post_detail.html inserts content_html as is.",
+  "private_post_access": "Manual: alice posts is_private=true. Anonymous and bob get nothing from GET /posts/<id>, /search?q=<word>, /posts?sort=title or /posts, but GET /users/<alice id> lists the private post to both.",
+  "reset_host_poisoning": "Manual: POST /password/reset/request username=alicex with 'Host: attacker.example' answers 200 and stdout shows 'RESET LINK: http://attacker.example/password/reset?token=...'. That token resets alice's password (200) and the new password logs in (200). The link is built from request.url_root.",
+  "idor_write": "2026-11-02 red team on the OpenStack VM: user B sent PATCH, PUT and DELETE to user A's post and comment, then the app's sqlite was read inside the container. 0 forged rows; A's post and comment still there. A's own edit changed the DB, so the requests were valid."
+ }
+}

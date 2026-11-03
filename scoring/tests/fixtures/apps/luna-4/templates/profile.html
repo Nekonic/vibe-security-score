@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<main>{% if profile.avatar_url %}<img class=avatar src={{profile.avatar_url}}>{% endif %}<h1>{{profile.username}}</h1>{% if user and user.id==profile.id %}{{profile.phone}}{% endif %}{% for p in posts %}<p>{{p.title}}</p>{% endfor %}</main>{% endblock %}
